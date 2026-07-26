@@ -1,1 +1,21 @@
+services:
 
+  postgres:
+    image: postgres:16
+
+    container_name: insightpilot-postgres
+
+    environment:
+      POSTGRES_USER: insightpilot
+      POSTGRES_PASSWORD: insightpilot
+      POSTGRES_DB: insightpilot
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+
+volumes:
+  postgres_data:
