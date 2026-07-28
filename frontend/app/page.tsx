@@ -1,14 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { DatasetProfile } from "@/types/report";
+import { DatasetAnalysis } from "@/types/report";
 import UploadCard from "@/components/upload/UploadCard";
 import SummaryCards from "@/components/report/SummaryCards";
 import ExecutiveSummary from "@/components/report/ExecutiveSummary";
+import DatasetClassification from "@/components/report/DatasetClassification";
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
-  const [result, setResult] = useState<DatasetProfile | null>(null);
+  const [result, setResult] = useState<DatasetAnalysis | null>(null);
   const [loading, setLoading] = useState(false);
 
 
@@ -73,16 +74,18 @@ export default function Home() {
             Data Profile
           </h2>
 
-          <SummaryCards summary={result.summary} />
+          <SummaryCards summary={result.profile.summary} />
 
-          <ExecutiveSummary profile={result} />
+          <ExecutiveSummary profile={result.profile} />
+
+          <DatasetClassification classification={result.classification} />
 
           <h3 className="mt-4 font-semibold">
             Columns
           </h3>
 
           <ul>
-            {(result.columns?.names || []).map(
+            {(result.profile.columns?.names || []).map(
               (col: string) => (
                 <li key={col}>
                   {col}

@@ -1,23 +1,28 @@
 # InsightPilot Roadmap
 
-## MVP
-- [x] CSV Upload
-- [x] Dataset Profiling
-- [x] Summary Cards
-- [x] Executive Summary
-- [ ] Dataset Classification
+## Sprint 1
+- [x] Project setup
+- [x] Next.js
+- [x] FastAPI
+- [x] PostgreSQL
+
+## Sprint 2
+- [x] CSV upload
+- [x] Dataset profiler
+- [x] Summary dashboard
+- [x] Executive summary
+
+## Sprint 3
+- [ ] Business metrics engine
+- [ ] Dataset classification
+- [ ] Data quality improvements
+
+## Sprint 4
+- [ ] AI narrative generation
 - [ ] Charts
-- [ ] AI Insights
+- [ ] Report export
 
-## v1.0
+## Sprint 5
 - [ ] Authentication
-- [ ] Saved Reports
-- [ ] Stripe Billing
-- [ ] PDF Export
-- [ ] Report History
-
-## Future
-- [ ] SQL Server Connector
-- [ ] Snowflake Connector
-- [ ] Salesforce Connector
-- [ ] Power BI Connector
+- [ ] Saved reports
+- [ ] Stripe subscriptions
