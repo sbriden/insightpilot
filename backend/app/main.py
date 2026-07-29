@@ -6,6 +6,7 @@ from . import models
 
 from .routers import health
 from .routers import upload
+from .routers import executive_brief
 
 
 # Create database tables
@@ -50,4 +51,10 @@ app.include_router(
     upload.router,
     prefix="/api/upload",
     tags=["Upload"]
+)
+
+app.include_router(
+    executive_brief.router,
+    prefix="/api/executive-brief",
+    tags=["Executive Brief"],
 )

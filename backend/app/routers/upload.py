@@ -2,9 +2,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 
 import pandas as pd
 
-from ..services.profiler import profile_dataframe
-from ..services.metrics import generate_metrics
-from ..services.classifier import classify_dataset
+from ..services.analysis import analyze_dataframe
 
 router = APIRouter()
 
@@ -27,17 +25,9 @@ async def upload(file: UploadFile = File(...)):
                 encoding="latin-1"
             )
 
-        # Generate analysis
-        profile = profile_dataframe(df)
-        metrics = generate_metrics(df)
-        classification = classify_dataset(df.columns.tolist())
+        context = analyze_dataframe(df)
 
-        # Return unified response
-        return {
-            "profile": profile,
-            "metrics": metrics,
-            "classification": classification,
-        }
+        return context.to_dict()
 
     except Exception as e:
         raise HTTPException(
