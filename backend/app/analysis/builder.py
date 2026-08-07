@@ -22,19 +22,21 @@ class AnalysisBuilder:
 
     def dataset(
         self,
-        name,
+        name: str,
         data,
     ):
 
-        if isinstance(
+        if hasattr(
             data,
-            pd.DataFrame,
+            "to_dict",
         ):
             data = data.to_dict(
                 orient="records"
             )
 
-        self.dashboard.datasets[name] = data
+        self.dashboard.datasets[
+            name
+        ] = data
 
     #
     # METRICS

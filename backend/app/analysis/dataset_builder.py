@@ -6,54 +6,19 @@ class DatasetBuilder:
     def __init__(self, dataframe: pd.DataFrame):
         self.df = dataframe
 
-    def group_sum(
-        self,
-        dimension: str,
-        measure: str,
-        output_name="value",
-    ):
-
-        return (
-            self.df
-            .groupby(dimension)
-            .agg(**{
-                output_name: (
-                    measure,
-                    "sum",
-                )
-            })
-            .reset_index()
-            .sort_values(
-                output_name,
-                ascending=False,
-            )
-        )
-
-    def group_count(
-        self,
-        dimension: str,
-        output_name="count",
-    ):
-
-        return (
-            self.df
-            .groupby(dimension)
-            .size()
-            .reset_index(name=output_name)
-            .sort_values(
-                output_name,
-                ascending=False,
-            )
-        )
+    # ============================================================
+    # GROUP OPERATIONS
+    # ============================================================
 
     def group_metrics(
         self,
-        dimension,
-        metrics,
-        sort_by=None,
-        ascending=False,
+        dimension: str,
+        metrics: dict,
+        sort_by: str | None = None,
+        ascending: bool = False,
     ):
-        result = (
+
+        dataset = (
             self.df
             .groupby(dimension)
             .agg(**metrics)
@@ -61,27 +26,38 @@ class DatasetBuilder:
         )
 
         if sort_by:
-            result = result.sort_values(
+            dataset = dataset.sort_values(
                 sort_by,
                 ascending=ascending,
             )
 
-        return result
+        return dataset
 
-    def group_average(
+    # ============================================================
+    # DATASET OPERATIONS
+    # ============================================================
+
+    def filter(
         self,
-        dimension,
-        measure,
-        output_name="average",
+        dataset: pd.DataFrame,
+        predicate,
     ):
 
-        return (
-            self.df
-            .groupby(dimension)[measure]
-            .mean()
-            .reset_index(name=output_name)
-        )
+        return dataset[
+            predicate(dataset)
+        ].copy()
 
+    def sort(
+        self,
+        dataset: pd.DataFrame,
+        column: str,
+        ascending=False,
+    ):
+
+        return dataset.sort_values(
+            column,
+            ascending=ascending,
+        )
 
     def top_n(
         self,
@@ -93,26 +69,46 @@ class DatasetBuilder:
 
     def bottom_n(
         self,
-        df,
+        dataset: pd.DataFrame,
+        column: str,
         n=10,
-        sort_column="value",
     ):
 
         return (
-            df
+            dataset
             .sort_values(
-                sort_column,
+                column,
                 ascending=True,
             )
             .head(n)
         )
 
-    def distribution(
+    def select(
         self,
-        column: str,
+        dataset: pd.DataFrame,
+        columns: list[str],
     ):
 
-        return self.df[[column]].copy()
+        return dataset[
+            columns
+        ].copy()
+
+    def add_calculated_column(
+        self,
+        dataset: pd.DataFrame,
+        column_name: str,
+        calculation,
+    ):
+
+        dataset = dataset.copy()
+
+        dataset[column_name] = calculation(dataset)
+
+        return dataset
+
+    # ============================================================
+    # VISUALIZATION DATASETS
+    # ============================================================
 
     def scatter(
         self,
@@ -120,7 +116,18 @@ class DatasetBuilder:
         y: str,
     ):
 
-        return self.df[[x, y]].copy()
+        return self.df[
+            [x, y]
+        ].copy()
+
+    def distribution(
+        self,
+        column: str,
+    ):
+
+        return self.df[
+            [column]
+        ].copy()
 
     def time_series(
         self,
@@ -136,7 +143,8 @@ class DatasetBuilder:
         )
 
         return (
-            df.groupby(
+            df
+            .groupby(
                 pd.Grouper(
                     key=date_column,
                     freq=frequency,

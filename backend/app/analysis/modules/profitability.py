@@ -60,53 +60,84 @@ class ProfitabilityModule(AnalysisModule):
 
         product = resolver.product()
 
-        category_profit = datasets.group_sum(
+        category_profit = datasets.group_metrics(
             dimension=category,
-            measure=profit,
-            output_name="profit",
+            metrics={
+                "profit": (
+                    profit,
+                    "sum",
+                ),
+                "sales": (
+                    sales,
+                    "sum",
+                ),
+            },
+            sort_by="profit",
         )
 
-        customer_profit = datasets.group_sum(
+        customer_profit = datasets.group_metrics(
             dimension=customer,
-            measure=profit,
-            output_name="profit",
+            metrics={
+                "profit": (
+                    profit,
+                    "sum",
+                ),
+                "sales": (
+                    sales,
+                    "sum",
+                ),
+            },
+            sort_by="profit",
         )
 
-        product_profit = datasets.group_sum(
+        product_profit = datasets.group_metrics(
             dimension=product,
-            measure=profit,
-            output_name="profit",
+            metrics={
+                "profit": (
+                    profit,
+                    "sum",
+                ),
+                "sales": (
+                    sales,
+                    "sum",
+                ),
+            },
+            sort_by="profit",
+        )
+
+        negative_customers = datasets.filter(
+            customer_profit,
+            lambda df: df["profit"] < 0,
         )
 
         loss_customers = datasets.bottom_n(
-            customer_profit,
-            sort_column="profit",
+            negative_customers,
+            column="profit",
+        )
+
+        negative_products = datasets.filter(
+            product_profit,
+            lambda df: df["profit"] < 0,
         )
 
         loss_products = datasets.bottom_n(
-            product_profit,
-            sort_column="profit",
+            negative_products,
+            column="profit",
         )
 
         builder.dataset(
             "category_profit",
-            category_profit.to_dict(
-                orient="records"
-            ),
+            category_profit,
         )
 
         builder.dataset(
             "loss_customers",
-            loss_customers.to_dict(
-                orient="records"
-            ),
+            loss_customers,
         )
 
         builder.dataset(
             "loss_products",
-            loss_products.to_dict(
-                orient="records"
-            ),
+            loss_products,
         )
 
         overall_profit = (
@@ -137,13 +168,13 @@ class ProfitabilityModule(AnalysisModule):
         builder.metric(
             "loss_customers",
             "Loss Customers",
-            str(
-                len(
-                    customer_profit[
-                        customer_profit.profit < 0
-                    ]
-                )
-            ),
+            str(len(negative_customers)),
+        )
+
+        builder.metric(
+            "loss_products",
+            "Loss Products",
+            str(len(negative_products)),
         )
 
         builder.visualization(
@@ -161,16 +192,18 @@ class ProfitabilityModule(AnalysisModule):
                 "Overall margin is below 10%."
             )
 
-        if len(loss_customers):
+        if len(negative_customers):
+
             builder.insight(
                 "medium",
-                f"{len(loss_customers)} customers generated losses."
+                f"{len(negative_customers)} customers generated negative profit."
             )
 
-        if len(loss_products):
+        if len(negative_products):
+
             builder.insight(
                 "medium",
-                f"{len(loss_products)} products generated losses."
+                f"{len(negative_products)} products generated negative profit."
             )
 
         builder.action(

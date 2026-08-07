@@ -64,7 +64,23 @@ class CustomerConcentrationModule(AnalysisModule):
 
         customer_summary = datasets.group_metrics(
             dimension=customer_column,
-            metrics=metrics,
+            metrics={
+                "revenue": (
+                    sales_column,
+                    "sum",
+                ),
+                "orders": (
+                    sales_column,
+                    "count",
+                ),
+                "profit": (
+                    profit_column,
+                    "sum",
+                ) if profit_column else (
+                    sales_column,
+                    "count",
+                ),
+            },
             sort_by="revenue",
         )
 
