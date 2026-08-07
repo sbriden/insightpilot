@@ -87,7 +87,8 @@ def calculate_date_metrics(df: pd.DataFrame) -> dict:
         try:
             dates = pd.to_datetime(
                 df[column],
-                errors="raise",
+                format="mixed",
+                errors="coerce",
             ).dropna()
 
             if dates.empty:

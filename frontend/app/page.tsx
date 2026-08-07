@@ -1,44 +1,31 @@
 "use client";
 
 import { useState } from "react";
-import { DatasetAnalysis } from "@/types/report";
+
 import UploadCard from "@/components/upload/UploadCard";
-import SummaryCards from "@/components/report/SummaryCards";
-import ExecutiveSummary from "@/components/report/ExecutiveSummary";
-import DatasetClassification from "@/components/report/DatasetClassification";
+import AnalysisResults from "@/components/report/AnalysisResults";
+
+import { useAnalysis } from "@/hooks/useAnalysis";
 
 export default function Home() {
-  const [file, setFile] = useState<File | null>(null);
-  const [result, setResult] = useState<DatasetAnalysis | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [file, setFile] =
+    useState<File | null>(null);
 
+  const {
+    analysis,
+    brief,
 
-  async function uploadFile() {
+    upload,
 
+    analysisLoading,
+    briefLoading,
+  } = useAnalysis();
+
+  async function analyze() {
     if (!file) return;
 
-    setLoading(true);
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-
-    const response = await fetch(
-      "http://localhost:8000/api/upload/",
-      {
-        method: "POST",
-        body: formData,
-      }
-    );
-
-
-    const data = await response.json();
-
-    setResult(data);
-
-    setLoading(false);
+    await upload(file);
   }
-
 
   return (
     <main className="min-h-screen p-10">
@@ -51,48 +38,27 @@ export default function Home() {
         Upload your data and generate AI-powered insights.
       </p>
 
-
       <UploadCard
         file={file}
-        loading={loading}
+        loading={analysisLoading}
         onFileChange={setFile}
-        onAnalyze={uploadFile}
+        onAnalyze={analyze}
       />
 
-
-      {loading && (
+      {analysisLoading && (
         <p className="mt-6">
           Analyzing...
         </p>
       )}
 
-
-      {result && (
+      {analysis && (
         <div className="mt-8 rounded border p-6">
 
-          <h2 className="text-2xl font-semibold">
-            Data Profile
-          </h2>
-
-          <SummaryCards summary={result.profile.summary} />
-
-          <ExecutiveSummary profile={result.profile} />
-
-          <DatasetClassification classification={result.classification} />
-
-          <h3 className="mt-4 font-semibold">
-            Columns
-          </h3>
-
-          <ul>
-            {(result.profile.columns?.names || []).map(
-              (col: string) => (
-                <li key={col}>
-                  {col}
-                </li>
-              )
-            )}
-          </ul>
+          <AnalysisResults
+            result={analysis}
+            executiveBrief={brief}
+            briefLoading={briefLoading}
+          />
 
         </div>
       )}

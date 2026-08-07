@@ -14,7 +14,7 @@ export default function ExecutiveSummary({ profile }: Props) {
   return (
     <Card className="mt-6">
       <CardHeader>
-        <CardTitle>Executive Summary</CardTitle>
+        <CardTitle>Dataset Overview</CardTitle>
       </CardHeader>
 
       <CardContent className="space-y-3">

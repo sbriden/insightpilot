@@ -1,0 +1,62 @@
+import {
+    ResponsiveContainer,
+    BarChart,
+    Bar,
+    XAxis,
+    YAxis,
+    CartesianGrid,
+    Tooltip,
+} from "recharts";
+
+type Props = {
+    data: any[];
+    visualization: any;
+};
+
+export default function BarChartView({
+    data,
+    visualization,
+}: Props) {
+
+    return (
+
+        <div className="mt-6">
+
+            <h4 className="font-semibold mb-3">
+
+                {visualization.title}
+
+            </h4>
+
+            <ResponsiveContainer
+                width="100%"
+                height={350}
+            >
+
+                <BarChart data={data}>
+
+                    <CartesianGrid
+                        strokeDasharray="3 3"
+                    />
+
+                    <XAxis
+                        dataKey={visualization.x}
+                    />
+
+                    <YAxis />
+
+                    <Tooltip />
+
+                    <Bar
+                        dataKey={visualization.y}
+                        radius={[4, 4, 0, 0]}
+                    />
+
+                </BarChart>
+
+            </ResponsiveContainer>
+
+        </div>
+
+    );
+}

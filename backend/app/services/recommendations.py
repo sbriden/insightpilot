@@ -23,6 +23,17 @@ def generate_recommendations(
                 "description": "Determine whether a small number of customers contribute most of the revenue.",
                 "priority": "High",
                 "category": "Revenue",
+                "analysis_type": "contribution",
+                "dimension_keywords": [
+                    "customer",
+                    "account",
+                    "client",
+                ],
+                "measure_keywords": [
+                    "sales",
+                    "revenue",
+                    "amount",
+                ],
             },
             {
                 "id": "profitability",
@@ -30,6 +41,18 @@ def generate_recommendations(
                 "description": "Compare profit margins across products or services.",
                 "priority": "High",
                 "category": "Finance",
+                "analysis_type": "relationship",
+                "dimension_keywords": [
+                    "product",
+                    "service",
+                    "category",
+                ],
+                "measure_keywords": [
+                    "profit",
+                    "margin",
+                    "sales",
+                    "revenue",
+                ],
             },
             {
                 "id": "revenue_trends",
@@ -37,6 +60,18 @@ def generate_recommendations(
                 "description": "Analyze revenue over time and identify seasonal patterns.",
                 "priority": "Medium",
                 "category": "Time Series",
+                "analysis_type": "time_series",
+                "dimension_keywords": [
+                    "date",
+                    "time",
+                    "month",
+                    "year",
+                ],
+                "measure_keywords": [
+                    "sales",
+                    "revenue",
+                    "amount",
+                ],
             },
             {
                 "id": "outliers",
@@ -44,6 +79,13 @@ def generate_recommendations(
                 "description": "Identify unusually large or unusually small transactions.",
                 "priority": "Medium",
                 "category": "Quality",
+                "analysis_type": "outlier_detection",
+                "measure_keywords": [
+                    "sales",
+                    "revenue",
+                    "amount",
+                    "price",
+                ],
             },
         ])
 

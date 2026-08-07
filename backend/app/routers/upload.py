@@ -27,9 +27,12 @@ async def upload(file: UploadFile = File(...)):
 
         context = analyze_dataframe(df)
 
-        return context.to_dict()
+        return context.to_api_response()
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+
         raise HTTPException(
             status_code=400,
             detail=f"Unable to process uploaded file: {str(e)}",
