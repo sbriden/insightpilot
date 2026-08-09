@@ -8,6 +8,10 @@ from ..column_resolver import ColumnResolver
 
 from ..dataset_builder import DatasetBuilder
 
+from ..insights.engine import InsightEngine
+
+from ..insights.profitability import RULES
+
 
 class ProfitabilityModule(AnalysisModule):
 
@@ -115,6 +119,10 @@ class ProfitabilityModule(AnalysisModule):
             column="profit",
         )
 
+        negative_customer_profit = (
+            negative_customers["profit"].sum()
+        )
+
         negative_products = datasets.filter(
             product_profit,
             lambda df: df["profit"] < 0,
@@ -123,6 +131,10 @@ class ProfitabilityModule(AnalysisModule):
         loss_products = datasets.bottom_n(
             negative_products,
             column="profit",
+        )
+
+        negative_product_profit = (
+            negative_products["profit"].sum()
         )
 
         builder.dataset(
@@ -149,8 +161,9 @@ class ProfitabilityModule(AnalysisModule):
         )
 
         margin = (
-            overall_profit
-            / overall_sales
+            overall_profit / overall_sales
+            if overall_sales
+            else 0
         )
 
         builder.metric(
@@ -186,25 +199,41 @@ class ProfitabilityModule(AnalysisModule):
             y="profit",
         )
 
-        if margin < .10:
-            builder.insight(
-                "high",
-                "Overall margin is below 10%."
-            )
+        facts = {
+            "margin": margin,
 
-        if len(negative_customers):
+            "overall_profit": overall_profit,
 
-            builder.insight(
-                "medium",
-                f"{len(negative_customers)} customers generated negative profit."
-            )
+            "overall_sales": overall_sales,
 
-        if len(negative_products):
+            "negative_customers": len(
+                negative_customers
+            ),
 
-            builder.insight(
-                "medium",
-                f"{len(negative_products)} products generated negative profit."
-            )
+            "negative_customer_pct": (
+                len(negative_customers) / len(customer_profit)
+                if len(customer_profit)
+                else 0
+            ),
+
+            "negative_customer_profit": (
+                negative_customer_profit
+            ),
+
+            "negative_products": len(
+                negative_products
+            ),
+
+            "negative_product_pct": (
+                len(negative_products) / len(product_profit)
+                if len(product_profit)
+                else 0
+            ),
+
+            "negative_product_profit": (
+                negative_product_profit
+            ),
+        }
 
         builder.action(
             "Review pricing strategy."
@@ -220,6 +249,16 @@ class ProfitabilityModule(AnalysisModule):
 
         builder.action(
             "Investigate loss-making products."
+        )
+
+        engine = InsightEngine(
+            RULES
+        )
+
+        dashboard.insights = (
+            engine.evaluate(
+                facts
+            )
         )
 
         return builder.build()

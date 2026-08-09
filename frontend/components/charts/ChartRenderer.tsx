@@ -32,7 +32,8 @@ export default function ChartRenderer({
             return (
                 <LineChartView
                     data={data}
-                    visualization={visualization}
+                    x={visualization.x}
+                    y={visualization.y}
                 />
             );
 

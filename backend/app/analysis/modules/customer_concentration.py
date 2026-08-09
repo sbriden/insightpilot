@@ -5,6 +5,8 @@ from ..builder import AnalysisBuilder
 from ..column_resolver import ColumnResolver
 from ..dataset_builder import DatasetBuilder
 from ..models import AnalysisDashboard
+from ..insights.engine import InsightEngine
+from ..insights.customer_concentration import RULES
 
 
 class CustomerConcentrationModule(AnalysisModule):
@@ -118,10 +120,15 @@ class CustomerConcentrationModule(AnalysisModule):
             customer_column,
         )
 
-        self.build_insights(
-            builder,
-            customer_summary,
-            customer_column,
+        facts = self.build_facts(
+            customer_summary
+        )
+
+
+        dashboard.insights = InsightEngine(
+            RULES
+        ).evaluate(
+            facts
         )
 
         self.build_actions(
@@ -160,8 +167,9 @@ class CustomerConcentrationModule(AnalysisModule):
         top10_share = (
             customer_summary
             .head(10)["revenue"]
-            .sum()
-            / total_revenue
+            .sum() / total_revenue
+            if total_revenue
+            else 0
         )
 
         builder.integer_metric(
@@ -226,60 +234,50 @@ class CustomerConcentrationModule(AnalysisModule):
             priority="High",
         )
 
-    def build_insights(
+    def build_facts(
         self,
-        builder,
         customer_summary,
-        customer_column,
     ):
 
         total_revenue = (
-            customer_summary[
-                "revenue"
-            ].sum()
+            customer_summary["revenue"].sum()
         )
 
-        average_revenue = (
-            customer_summary[
-                "revenue"
-            ].mean()
-        )
-
-        top_customer = (
-            customer_summary.iloc[0]
-        )
-
-        top10_share = (
+        top10_revenue = (
             customer_summary
             .head(10)["revenue"]
             .sum()
-            / total_revenue
         )
 
-        builder.info(
-            (
-                f"The top 10 customers "
-                f"represent {top10_share:.1%} "
-                f"of total revenue."
-            )
+        top_customer_revenue = (
+            customer_summary.iloc[0]["revenue"]
         )
 
-        builder.info(
-            (
-                f"Average revenue per "
-                f"customer is "
-                f"${average_revenue:,.0f}."
-            )
+        top10_share = (
+            top10_revenue / total_revenue
+            if total_revenue
+            else 0
         )
 
-        builder.info(
-            (
-                f"{top_customer[customer_column]} "
-                f"is the highest revenue "
-                f"customer with "
-                f"${top_customer['revenue']:,.0f}."
-            )
+        top_customer_share = (
+            top_customer_revenue / total_revenue
+            if total_revenue
+            else 0
         )
+
+        return {
+            "total_customers":
+                len(customer_summary),
+
+            "top10_share":
+                top10_share,
+
+            "top_customer_revenue":
+                top_customer_revenue,
+
+            "top_customer_share":
+                top_customer_share,
+        }
 
     def build_actions(
         self,

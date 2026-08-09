@@ -1,58 +1,53 @@
+"use client";
+
 import {
     ResponsiveContainer,
-    BarChart,
-    Bar,
+    CartesianGrid,
     XAxis,
     YAxis,
-    CartesianGrid,
     Tooltip,
+    Line,
+    LineChart as RechartsLineChart,
 } from "recharts";
 
-type Props = {
+interface LineChartProps {
     data: any[];
-    visualization: any;
-};
+    x: string;
+    y: string;
+}
 
-export default function BarChartView({
+export default function LineChartView({
     data,
-    visualization,
-}: Props) {
+    x,
+    y,
+}: LineChartProps) {
 
     return (
+        <ResponsiveContainer
+            width="100%"
+            height={300}
+        >
+            <RechartsLineChart data={data}>
 
-        <div className="mt-6">
+                <CartesianGrid
+                    strokeDasharray="3 3"
+                />
 
-            <h4 className="font-semibold mb-3">
+                <XAxis
+                    dataKey={x}
+                />
 
-                {visualization.title}
+                <YAxis />
 
-            </h4>
+                <Tooltip />
 
-            <ResponsiveContainer
-                width="100%"
-                height={350}
-            >
+                <Line
+                    type="monotone"
+                    dataKey={y}
+                    dot={false}
+                />
 
-                <LineChart data={data}>
-
-                    <CartesianGrid strokeDasharray="3 3"/>
-
-                    <XAxis dataKey={visualization.x}/>
-
-                    <YAxis/>
-
-                    <Tooltip/>
-
-                    <Line
-                        type="monotone"
-                        dataKey={visualization.y}
-                    />
-
-                </LineChart>
-
-            </ResponsiveContainer>
-
-        </div>
-
+            </RechartsLineChart>
+        </ResponsiveContainer>
     );
 }

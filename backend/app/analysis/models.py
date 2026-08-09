@@ -33,6 +33,7 @@ class Visualization:
 class Insight:
     severity: str
     message: str
+    title: str | None = None
 
 
 @dataclass
