@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 
 DATABASE_URL = (
-    "postgresql://insightpilot:insightpilot@localhost:5432/insightpilot"
+    "postgresql://insightpilot:insightpilot@localhost:5433/insightpilot"
 )
 
 

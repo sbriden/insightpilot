@@ -37,7 +37,15 @@ class ColumnResolver:
 
     def customer(self):
         return self.find(
-            keywords=["customer"]
+            keywords=[
+                        "customer",
+                        "customer name",
+                        "customer_name",
+                        "client",
+                        "client name",
+                        "account",
+                        "account name",
+                    ]
         )
 
 
@@ -72,6 +80,14 @@ class ColumnResolver:
 
 
     def product(self):
+
         return self.find(
-            keywords=["product"]
+            keywords=[
+                        "product",
+                        "product name",
+                        "product_name",
+                        "item",
+                        "item name",
+                        "sku",
+                    ]
         )

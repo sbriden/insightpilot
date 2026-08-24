@@ -7,6 +7,11 @@ from . import models
 from .routers import health
 from .routers import upload
 
+from app.products.router import (
+    router as data_products_router,
+)
+
+from app.datasets.router import router as dataset_types_router
 
 from dotenv import load_dotenv
 
@@ -26,7 +31,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000"
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -55,4 +61,12 @@ app.include_router(
     upload.router,
     prefix="/api/upload",
     tags=["Upload"]
+)
+
+app.include_router(
+    data_products_router
+)
+
+app.include_router(
+    dataset_types_router
 )

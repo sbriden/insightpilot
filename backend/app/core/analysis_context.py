@@ -10,18 +10,32 @@ class AnalysisContext:
     metrics: dict
     classification: dict
 
-    recommendations: list = field(default_factory=list)
-    insights: list = field(default_factory=list)
+    recommendations: list = field(
+        default_factory=list
+    )
 
-    column_profiles: list = field(default_factory=list)
-    visualizations: list = field(default_factory=list)
+    insights: list = field(
+        default_factory=list
+    )
 
-    analysis_dashboards: list = field(default_factory=list)
+    column_profiles: list = field(
+        default_factory=list
+    )
+
+    visualizations: list = field(
+        default_factory=list
+    )
+
+    analysis_dashboards: list = field(
+        default_factory=list
+    )
 
     executive_brief: dict | None = None
+
     quality: dict | None = None
 
     created_at: datetime | None = None
+
     analysis_metadata: dict | None = None
 
     dataframe: pd.DataFrame | None = field(
@@ -29,26 +43,52 @@ class AnalysisContext:
         repr=False,
     )
 
+    data_products: list = field(
+        default_factory=list
+    )
+
+    selected_product_ids: list[str] = field(
+        default_factory=list
+    )
+
 
     def to_dict(self):
         """
         Complete internal representation.
+
         Useful for persistence and debugging.
         """
-        return asdict(self)
+
+        return asdict(
+            self
+        )
 
 
     def to_prompt_context(self):
         """
         Lightweight context sent to the LLM.
         """
+
         return {
-            "profile": self.profile,
-            "metrics": self.metrics,
-            "classification": self.classification,
-            "recommendations": self.recommendations,
-            "insights": self.insights,
-            "analysis_dashboards": self.analysis_dashboards,
+
+            "profile":
+                self.profile,
+
+            "metrics":
+                self.metrics,
+
+            "classification":
+                self.classification,
+
+            "recommendations":
+                self.recommendations,
+
+            "insights":
+                self.insights,
+
+            "analysis_dashboards":
+                self.analysis_dashboards,
+
         }
 
 
@@ -56,21 +96,46 @@ class AnalysisContext:
         """
         Public API contract.
         """
+
         return {
-            "profile": self.profile,
-            "metrics": self.metrics,
-            "classification": self.classification,
 
-            "recommendations": self.recommendations,
-            "insights": self.insights,
+            "profile":
+                self.profile,
 
-            "column_profiles": self.column_profiles,
-            "visualizations": self.visualizations,
+            "metrics":
+                self.metrics,
 
-            "analysis_dashboards": self.analysis_dashboards,
+            "classification":
+                self.classification,
 
-            "executive_brief": self.executive_brief,
-            "quality": self.quality,
+            "recommendations":
+                self.recommendations,
 
-            "created_at": self.created_at,
+            "insights":
+                self.insights,
+
+            "column_profiles":
+                self.column_profiles,
+
+            "visualizations":
+                self.visualizations,
+
+            "analysis_dashboards":
+                self.analysis_dashboards,
+
+            "executive_brief":
+                self.executive_brief,
+
+            "quality":
+                self.quality,
+
+            "data_products":
+                self.data_products,
+
+            "selected_product_ids":
+                self.selected_product_ids,
+
+            "created_at":
+                self.created_at,
+
         }
