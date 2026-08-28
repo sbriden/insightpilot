@@ -2,6 +2,26 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, List, Optional, Dict
 
+
+@dataclass
+class FieldOpportunity:
+    field: str
+
+    description: str = ""
+
+    analyses: List[str] = field(
+        default_factory=list
+    )
+
+    metrics: List[str] = field(
+        default_factory=list
+    )
+
+    priority: str = "medium"
+
+    required: bool = False
+
+
 @dataclass
 class DataProductDefinition:
     """
@@ -35,6 +55,12 @@ class DataProductDefinition:
         default_factory=list
     )
 
+    field_opportunities: List[
+        FieldOpportunity
+    ] = field(
+        default_factory=list
+    )
+
 
 @dataclass
 class DataProduct:
@@ -59,6 +85,12 @@ class DataProduct:
 
     version: int = 1
 
+    definition_id: str = ""
+
+    dataset_identity: str = ""
+
+    previous_product_id: str | None = None
+
     analyses: List[Any] = field(
         default_factory=list
     )
@@ -70,6 +102,12 @@ class DataProduct:
     insights: List[Dict[str, Any]] = field(
         default_factory=list
     )
+
+    dashboards: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+
+    change_summary: Dict[str, Any] | None = None
 
     metadata: Dict[str, Any] = field(
         default_factory=dict
@@ -118,25 +156,14 @@ class DataProductInsight:
 
 
 @dataclass
-class FieldOpportunity:
-    field: str
-
-    description: str = ""
-
-    analyses: List[str] = field(
-        default_factory=list
-    )
-
-    priority: str = "medium"
-
-
-@dataclass
 class DataCoverageResult:
     product_id: str
 
     product_name: str
 
     coverage_percent: int
+
+    required_coverage_percent: int = 0
 
     required_fields: List[str] = field(
         default_factory=list

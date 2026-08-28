@@ -1,6 +1,25 @@
-from typing import List
+from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class FieldOpportunitySchema(BaseModel):
+
+    field: str
+
+    description: str = ""
+
+    analyses: List[str] = Field(
+        default_factory=list
+    )
+
+    metrics: List[str] = Field(
+        default_factory=list
+    )
+
+    priority: str = "medium"
+
+    required: bool = False
 
 
 class DataProductRequirement(BaseModel):
@@ -19,6 +38,12 @@ class DataProductRequirement(BaseModel):
 
     analyses: List[str]
 
+    field_opportunities: List[
+        FieldOpportunitySchema
+    ] = Field(
+        default_factory=list
+    )
+
 
 class DatasetTypeRequirementsResponse(BaseModel):
 
@@ -27,3 +52,36 @@ class DatasetTypeRequirementsResponse(BaseModel):
     data_products: List[
         DataProductRequirement
     ]
+
+
+class SavedFieldMappingItem(BaseModel):
+
+    requiredField: str
+
+    uploadedField: Optional[str] = None
+
+    matchType: str = "manual"
+
+    confidence: float = 0
+
+    required: bool = False
+
+    valid: bool = False
+
+
+class SaveFieldMappingsRequest(BaseModel):
+
+    uploaded_columns: List[str]
+
+    mappings: List[SavedFieldMappingItem]
+
+
+class SavedFieldMappingsResponse(BaseModel):
+
+    dataset_type_id: str
+
+    uploaded_columns: List[str]
+
+    mappings: List[SavedFieldMappingItem]
+
+    updated_at: Optional[str] = None

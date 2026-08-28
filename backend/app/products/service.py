@@ -1,10 +1,12 @@
 from datetime import datetime
+import hashlib
 
 from .repository import (
     update_data_product as repository_update_data_product,
     create_data_product as repository_create_data_product,
     get_data_product as repository_get_data_product,
     get_data_products as repository_get_data_products,
+    get_latest_by_dataset_identity as repository_get_latest_by_dataset_identity,
 )
 
 from .models import (
@@ -12,6 +14,20 @@ from .models import (
     DataProductAnalysis,
     DataProductInsight,
     DataProductMetric,
+)
+
+from .catalog import (
+    get_product_definition,
+    get_product_definitions,
+)
+
+from .identity import (
+    build_dataset_identity,
+    build_product_instance_id,
+)
+
+from .comparison import (
+    compare_product_metrics,
 )
 
 
@@ -168,40 +184,17 @@ def _extract_insights(
     return insights
 
 
-def _calculate_coverage(
-    profile: dict,
-) -> float:
-
-    summary = profile.get(
-        "summary",
-        {},
-    )
-
-    score = summary.get(
-        "data_quality_score"
-    )
-
-    if score is None:
-        return 0.0
-
-    try:
-
-        return round(
-            float(score),
-            1,
-        )
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-
-        return 0.0
-
-
 def _determine_status(
     coverage: float,
+    can_analyze: bool,
 ) -> str:
+    """
+    Status is driven by field readiness for
+    the product, not dataset quality score.
+    """
+
+    if not can_analyze:
+        return "limited"
 
     if coverage >= 80:
         return "ready"
@@ -236,6 +229,18 @@ def _serialize_product(
         "coverage": product.coverage,
 
         "version": product.version,
+
+        "definition_id": (
+            product.definition_id
+        ),
+
+        "dataset_identity": (
+            product.dataset_identity
+        ),
+
+        "previous_product_id": (
+            product.previous_product_id
+        ),
 
         "analyses": [
             {
@@ -277,6 +282,14 @@ def _serialize_product(
             in product.insights
         ],
 
+        "dashboards": (
+            product.dashboards
+        ),
+
+        "change_summary": (
+            product.change_summary
+        ),
+
         "metadata": product.metadata,
 
         "created_at": (
@@ -289,19 +302,138 @@ def _serialize_product(
     }
 
 
+def _analysis_title(
+    analysis_id: str,
+) -> str:
+
+    return (
+        analysis_id
+        .replace("_", " ")
+        .title()
+    )
+
+
+def _product_field_coverage(
+    required_fields: list[str],
+    optional_fields: list[str],
+    columns: list[str],
+) -> tuple[float, float, bool]:
+    """
+    Return overall coverage, required coverage,
+    and whether the product can be analyzed.
+
+    Coverage = share of this product's field
+    contract present in the mapped dataset.
+    """
+
+    column_set = set(columns)
+
+    required = list(required_fields or [])
+    optional = list(optional_fields or [])
+
+    mapped_required = sum(
+        1
+        for field in required
+        if field in column_set
+    )
+
+    mapped_optional = sum(
+        1
+        for field in optional
+        if field in column_set
+    )
+
+    required_count = len(required)
+    optional_count = len(optional)
+    total = required_count + optional_count
+
+    required_coverage = (
+        100.0
+        if required_count == 0
+        else round(
+            (mapped_required / required_count)
+            * 100,
+            1,
+        )
+    )
+
+    overall_coverage = (
+        100.0
+        if total == 0
+        else round(
+            (
+                (mapped_required + mapped_optional)
+                / total
+            )
+            * 100,
+            1,
+        )
+    )
+
+    can_analyze = (
+        mapped_required == required_count
+    )
+
+    return (
+        overall_coverage,
+        required_coverage,
+        can_analyze,
+    )
+
+
+def _definitions_for_selection(
+    selected_product_ids: list[str] | None,
+):
+
+    definitions = (
+        get_product_definitions()
+    )
+
+    if selected_product_ids is None:
+        return list(definitions)
+
+    definition_by_id = {
+        definition.id: definition
+        for definition in definitions
+    }
+
+    ordered = []
+
+    for product_id in selected_product_ids:
+
+        normalized_id = str(
+            product_id
+        ).strip()
+
+        if not normalized_id:
+            continue
+
+        definition = definition_by_id.get(
+            normalized_id
+        ) or get_product_definition(
+            normalized_id
+        )
+
+        if definition is None:
+            continue
+
+        ordered.append(definition)
+
+    return ordered
+
+
 def generate_data_products(
     context,
     selected_product_ids: list[str] | None = None,
 ) -> list[dict]:
     """
-    Generate data products for the current analysis.
+    Generate a separate versioned result for each
+    selected data product.
 
-    If selected_product_ids is provided, only those products
-    are generated.
-
-    If selected_product_ids is None, all available products
-    are generated. This preserves the existing behavior for
-    callers that have not yet been updated to pass selection.
+    When the dataset identity matches a prior
+    product, a new version is created and key
+    metrics are compared. Prior versions are
+    never overwritten.
     """
 
     dashboards = (
@@ -309,161 +441,138 @@ def generate_data_products(
         or []
     )
 
-    profile = (
-        context.profile
-        or {}
-    )
+    columns = []
 
-    coverage = _calculate_coverage(
-        profile
-    )
+    if context.dataframe is not None:
+        columns = list(
+            context.dataframe.columns
+        )
 
-    status = _determine_status(
-        coverage
-    )
+    classification_type = ""
 
-    product_definitions = [
-        {
-            "id": "customer_intelligence",
-
-            "name": "Customer Intelligence",
-
-            "description": (
-                "Understand customer behavior, "
-                "concentration, growth, "
-                "profitability, and "
-                "cross-sell opportunities."
-            ),
-
-            "business_purpose": (
-                "Help organizations understand "
-                "customer value and identify "
-                "opportunities to improve "
-                "retention, growth, and revenue."
-            ),
-
-            "analysis_ids": [
-                "customer_concentration",
-                "customer_growth",
-                "cross_sell",
-            ],
-        },
-
-        {
-            "id": "revenue_intelligence",
-
-            "name": "Revenue Intelligence",
-
-            "description": (
-                "Understand revenue trends, "
-                "concentration, and unusual "
-                "revenue behavior."
-            ),
-
-            "business_purpose": (
-                "Provide visibility into revenue "
-                "performance, concentration, "
-                "trends, and anomalies."
-            ),
-
-            "analysis_ids": [
-                "revenue_trends",
-                "customer_concentration",
-                "anomaly_detection",
-            ],
-        },
-
-        {
-            "id": "profitability_intelligence",
-
-            "name": "Profitability Intelligence",
-
-            "description": (
-                "Identify profitability drivers, "
-                "loss-making customers and "
-                "products, and improvement "
-                "opportunities."
-            ),
-
-            "business_purpose": (
-                "Help decision makers understand "
-                "profitability and identify "
-                "actions that can improve margins."
-            ),
-
-            "analysis_ids": [
-                "profitability",
-                "profit_improvement",
-            ],
-        },
-    ]
-
-    
-    """
-    /*
-     * Normalize the selection once so the rest of
-     * the function can work with a simple list.
-     *
-     * None means "no selection supplied yet" and
-     * preserves the previous behavior of generating
-     * all products.
-     */
-     """
-
-    normalized_selected_ids = None
-
-    if selected_product_ids is not None:
-
-        normalized_selected_ids = {
-            str(product_id)
-            for product_id
-            in selected_product_ids
-            if product_id
-        }
+    if isinstance(
+        context.classification,
+        dict,
+    ):
+        classification_type = str(
+            context.classification.get("type")
+            or context.classification.get(
+                "dataset_type"
+            )
+            or ""
+        )
 
     products = []
 
-    for definition in product_definitions:
+    upload_batch_id = hashlib.sha256(
+        "|".join(
+            [
+                context.created_at.isoformat()
+                if context.created_at
+                else datetime.utcnow().isoformat(),
+                classification_type.lower(),
+                ",".join(
+                    sorted(
+                        str(column).strip()
+                        for column in columns
+                        if str(column).strip()
+                    )
+                ),
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:32]
 
-        """
-        /*
-         * If product selection was supplied, skip any
-         * product that was not selected.
-         */
-         """
+    profile_summary = {}
 
-        if (
-            normalized_selected_ids is not None
-            and definition["id"]
-            not in normalized_selected_ids
-        ):
+    if isinstance(
+        context.profile,
+        dict,
+    ):
+        profile_summary = (
+            context.profile.get("summary")
+            or {}
+        )
 
-            continue
+    metrics_dataset = {}
+
+    if isinstance(
+        context.metrics,
+        dict,
+    ):
+        metrics_dataset = (
+            context.metrics.get("dataset")
+            or {}
+        )
+
+    batch_created_at = datetime.utcnow()
+
+    for definition in _definitions_for_selection(
+        selected_product_ids
+    ):
+
+        analysis_ids = (
+            definition.analyses or []
+        )
 
         selected_dashboards = [
             dashboard
             for dashboard in dashboards
             if dashboard.get("id")
-            in definition["analysis_ids"]
+            in analysis_ids
         ]
 
-        analyses = [
-            DataProductAnalysis(
-                id=dashboard.get("id"),
-
-                title=_dashboard_title(
-                    dashboard
-                ),
-
-                description=(
-                    _dashboard_description(
-                        dashboard
-                    )
-                ),
-            )
+        dashboard_by_id = {
+            dashboard.get("id"): dashboard
             for dashboard
             in selected_dashboards
-        ]
+        }
+
+        analyses = []
+
+        for analysis_id in analysis_ids:
+
+            dashboard = dashboard_by_id.get(
+                analysis_id
+            )
+
+            if dashboard:
+
+                analyses.append(
+                    DataProductAnalysis(
+                        id=analysis_id,
+
+                        title=_dashboard_title(
+                            dashboard
+                        ),
+
+                        description=(
+                            _dashboard_description(
+                                dashboard
+                            )
+                            or dashboard.get(
+                                "summary",
+                                "",
+                            )
+                        ),
+                    )
+                )
+
+            else:
+
+                analyses.append(
+                    DataProductAnalysis(
+                        id=analysis_id,
+
+                        title=_analysis_title(
+                            analysis_id
+                        ),
+
+                        description=(
+                            "Not available for "
+                            "this dataset."
+                        ),
+                    )
+                )
 
         metrics = _extract_metrics(
             selected_dashboards
@@ -473,27 +582,121 @@ def generate_data_products(
             selected_dashboards
         )
 
+        coverage, required_coverage, can_analyze = (
+            _product_field_coverage(
+                definition.required_fields,
+                definition.optional_fields,
+                columns,
+            )
+        )
+
+        dataset_identity = (
+            build_dataset_identity(
+                definition_id=definition.id,
+                classification_type=(
+                    classification_type
+                ),
+                grain=definition.grain or "",
+                required_fields=(
+                    definition.required_fields
+                    or []
+                ),
+                columns=columns,
+            )
+        )
+
+        previous_product = (
+            repository_get_latest_by_dataset_identity(
+                dataset_identity
+            )
+        )
+
+        previous_version = 0
+        previous_product_id = None
+        change_summary = None
+
+        if previous_product:
+
+            previous_version = int(
+                previous_product.get(
+                    "version",
+                    1,
+                )
+                or 1
+            )
+
+            previous_product_id = (
+                previous_product.get("id")
+            )
+
+            change_summary = (
+                compare_product_metrics(
+                    previous_metrics=(
+                        previous_product.get(
+                            "metrics"
+                        )
+                        or []
+                    ),
+                    current_metrics=[
+                        {
+                            "id": metric.id,
+                            "name": metric.name,
+                            "value": metric.value,
+                            "unit": metric.unit,
+                        }
+                        for metric in metrics
+                    ],
+                    previous_version=(
+                        previous_version
+                    ),
+                    current_version=(
+                        previous_version + 1
+                    ),
+                )
+            )
+
+        version = previous_version + 1
+
+        product_id = (
+            build_product_instance_id(
+                definition.id,
+                dataset_identity,
+                version,
+            )
+        )
+
         product = DataProduct(
 
-            id=definition["id"],
+            id=product_id,
 
-            name=definition["name"],
+            name=definition.name,
 
-            description=definition[
-                "description"
-            ],
+            description=definition.description,
 
-            business_purpose=definition[
-                "business_purpose"
-            ],
+            business_purpose=(
+                definition.business_purpose
+            ),
 
             source_dataset=(
                 "uploaded_dataset"
             ),
 
-            status=status,
+            status=_determine_status(
+                coverage,
+                can_analyze,
+            ),
 
             coverage=coverage,
+
+            version=version,
+
+            definition_id=definition.id,
+
+            dataset_identity=dataset_identity,
+
+            previous_product_id=(
+                previous_product_id
+            ),
 
             analyses=analyses,
 
@@ -501,9 +704,17 @@ def generate_data_products(
 
             insights=insights,
 
+            dashboards=selected_dashboards,
+
+            change_summary=change_summary,
+
             metadata={
                 "analysis_count": len(
-                    analyses
+                    selected_dashboards
+                ),
+
+                "expected_analysis_count": len(
+                    analysis_ids
                 ),
 
                 "metric_count": len(
@@ -513,19 +724,88 @@ def generate_data_products(
                 "insight_count": len(
                     insights
                 ),
+
+                "completed_analysis_ids": [
+                    dashboard.get("id")
+                    for dashboard
+                    in selected_dashboards
+                ],
+
+                "persisted": True,
+
+                "dataset_identity": (
+                    dataset_identity
+                ),
+
+                "definition_id": (
+                    definition.id
+                ),
+
+                "previous_version": (
+                    previous_version
+                    if previous_version > 0
+                    else None
+                ),
+
+                "required_coverage": (
+                    required_coverage
+                ),
+
+                "can_analyze": can_analyze,
+
+                "field_coverage": coverage,
+
+                "upload_batch_id": (
+                    upload_batch_id
+                ),
+
+                "data_quality_score": (
+                    profile_summary.get(
+                        "data_quality_score"
+                    )
+                ),
+
+                "dataset_rows": (
+                    profile_summary.get("rows")
+                ),
+
+                "dataset_columns": (
+                    profile_summary.get(
+                        "columns"
+                    )
+                ),
+
+                "classification_type": (
+                    classification_type
+                ),
+
+                "missing_percentage": (
+                    metrics_dataset.get(
+                        "missing_percentage"
+                    )
+                ),
             },
 
-            version=1,
+            created_at=batch_created_at,
 
-            created_at=datetime.utcnow(),
+            updated_at=batch_created_at,
+        )
 
-            updated_at=datetime.utcnow(),
+        serialized = _serialize_product(
+            product
+        )
+
+        # Persist as a new version. Prior rows
+        # remain intact for comparison history.
+
+        persisted = (
+            repository_create_data_product(
+                serialized
+            )
         )
 
         products.append(
-            _serialize_product(
-                product
-            )
+            persisted or serialized
         )
 
     return products

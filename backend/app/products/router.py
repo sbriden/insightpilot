@@ -5,6 +5,7 @@ from .repository import (
     create_data_product,
     get_data_product,
     get_data_products,
+    get_versions_by_definition_id,
     list_data_products,
     update_data_product,    
 )
@@ -63,6 +64,28 @@ def get_products():
             status_code=500,
             detail=str(error),
         )
+
+
+@router.get("/by-definition/{definition_id}/versions")
+def get_product_versions(
+    definition_id: str,
+):
+
+    versions = get_versions_by_definition_id(
+        definition_id
+    )
+
+    if not versions:
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No versions found for data "
+                f"product '{definition_id}'."
+            ),
+        )
+
+    return versions
 
 
 @router.get("/{product_id}")
@@ -139,7 +162,7 @@ def calculate_coverage(
         (
             product
             for product in DATA_PRODUCT_CATALOG
-            if product.get("id")
+            if getattr(product, "id", None)
             == request.product_id
         ),
         None,

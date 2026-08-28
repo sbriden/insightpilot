@@ -2,16 +2,22 @@ from fastapi import APIRouter, HTTPException
 
 from .service import (
     get_dataset_types,
-    get_dataset_type,
-    get_products_for_dataset_type,
 )
 
 from .schemas import (
     DatasetTypeRequirementsResponse,
+    SaveFieldMappingsRequest,
+    SavedFieldMappingsResponse,
+)
+
+from .mapping_memory import (
+    get_field_mappings as repository_get_field_mappings,
+    save_field_mappings as repository_save_field_mappings,
 )
 
 from app.products.catalog import (
-    get_products_for_dataset_type,
+    get_products_for_dataset_type as catalog_products_for_dataset_type,
+    serialize_product_definition,
     DATA_PRODUCT_CATALOG,
 )
 
@@ -39,7 +45,7 @@ def get_dataset_type_data_products(
     dataset_type_id: str,
 ):
 
-    products = get_products_for_dataset_type(
+    products = catalog_products_for_dataset_type(
         dataset_type_id
     )
 
@@ -57,31 +63,10 @@ def get_dataset_type_data_products(
         "dataset_type": dataset_type_id,
 
         "data_products": [
-
-            {
-                "id": product.id,
-
-                "name": product.name,
-
-                "description":
-                    product.description,
-
-                "grain":
-                    product.grain,
-
-                "required_fields":
-                    product.required_fields,
-
-                "optional_fields":
-                    product.optional_fields,
-
-                "analyses":
-                    product.analyses,
-
-            }
-
+            serialize_product_definition(
+                product
+            )
             for product in products
-
         ],
     }
 
@@ -136,4 +121,91 @@ def map_fields(
             request.product_id,
 
         **result,
+    }
+
+
+@router.get(
+    "/{dataset_type_id}/field-mappings",
+    response_model=SavedFieldMappingsResponse,
+)
+def get_saved_field_mappings(
+    dataset_type_id: str,
+):
+
+    record = repository_get_field_mappings(
+        dataset_type_id
+    )
+
+    if record is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No saved field mappings found "
+                f"for dataset type '{dataset_type_id}'."
+            ),
+        )
+
+    return {
+        "dataset_type_id": (
+            record["dataset_type_id"]
+        ),
+
+        "uploaded_columns": (
+            record.get("uploaded_columns")
+            or []
+        ),
+
+        "mappings": (
+            record.get("mappings")
+            or []
+        ),
+
+        "updated_at": (
+            record.get("updated_at")
+        ),
+    }
+
+
+@router.put(
+    "/{dataset_type_id}/field-mappings",
+    response_model=SavedFieldMappingsResponse,
+)
+def save_saved_field_mappings(
+    dataset_type_id: str,
+    request: SaveFieldMappingsRequest,
+):
+
+    record = repository_save_field_mappings(
+        dataset_type_id,
+
+        uploaded_columns=(
+            request.uploaded_columns
+        ),
+
+        mappings=[
+            mapping.model_dump()
+            for mapping
+            in request.mappings
+        ],
+    )
+
+    return {
+        "dataset_type_id": (
+            record["dataset_type_id"]
+        ),
+
+        "uploaded_columns": (
+            record.get("uploaded_columns")
+            or []
+        ),
+
+        "mappings": (
+            record.get("mappings")
+            or []
+        ),
+
+        "updated_at": (
+            record.get("updated_at")
+        ),
     }

@@ -15,11 +15,21 @@ from app.datasets.router import router as dataset_types_router
 
 from dotenv import load_dotenv
 
+from app.products.schema import (
+    ensure_data_products_schema,
+)
+
+from app.datasets.schema import (
+    ensure_datasets_schema,
+)
+
 load_dotenv()
 
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
+ensure_data_products_schema()
+ensure_datasets_schema()
 
 
 app = FastAPI(
