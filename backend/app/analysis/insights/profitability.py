@@ -1,6 +1,9 @@
 from .models import InsightRule
 
 
+CATEGORY = "Profitability"
+
+
 RULES = [
 
     InsightRule(
@@ -11,6 +14,11 @@ RULES = [
         message=lambda f: (
             f"Profit margin is {f['margin']:.1%}, "
             "which is below the recommended 10% threshold."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Investigate margin drivers and define "
+            "actions to restore healthy profitability."
         ),
     ),
 
@@ -28,6 +36,11 @@ RULES = [
             f"contributing ${abs(f['negative_customer_profit']):,.0f} "
             "in aggregate losses."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Review account economics for unprofitable "
+            "customers and adjust pricing or service levels."
+        ),
     ),
 
     InsightRule(
@@ -42,6 +55,11 @@ RULES = [
             "generated negative profit, indicating a meaningful "
             "portion of the customer base may require review "
             "of pricing, discounts, or account economics."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Launch a customer profitability remediation "
+            "program with finance and sales leadership."
         ),
     ),
 
@@ -59,6 +77,11 @@ RULES = [
             f"contributing ${abs(f['negative_product_profit']):,.0f} "
             "in aggregate losses."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Review product pricing, discounting, and "
+            "cost-to-serve for loss-making items."
+        ),
     ),
 
     InsightRule(
@@ -72,6 +95,11 @@ RULES = [
             f"{f['negative_product_pct']:.1%} of products "
             "generated negative profit, suggesting a broader "
             "pricing, discount, or cost-structure issue."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Prioritize portfolio fixes for products with "
+            "sustained negative margins."
         ),
     ),
 

@@ -1,6 +1,9 @@
 from .models import InsightRule
 
 
+CATEGORY = "Cross-Sell"
+
+
 RULES = [
 
     InsightRule(
@@ -17,6 +20,11 @@ RULES = [
             f"${f['estimated_revenue']:,.0f} "
             "in estimated revenue potential."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Prioritize the highest-value product pairs "
+            "and brief account teams on cross-sell targets."
+        ),
     ),
 
     InsightRule(
@@ -30,6 +38,11 @@ RULES = [
             f"{f['high_confidence_count']:,} cross-sell "
             "relationships have at least 50% customer "
             "adoption from the source product."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Launch targeted outreach for high-confidence "
+            "cross-sell pairs with the highest revenue upside."
         ),
     ),
 

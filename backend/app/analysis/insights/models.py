@@ -8,3 +8,5 @@ class InsightRule:
     title: str
     condition: callable
     message: callable
+    category: str = "Analysis"
+    recommended_action: str = ""

@@ -1,5 +1,10 @@
 from ..models import Insight
 
+from .normalize import (
+    DEFAULT_RECOMMENDED_ACTIONS,
+    normalize_priority,
+)
+
 
 class InsightEngine:
 
@@ -14,11 +19,36 @@ class InsightEngine:
 
             if rule.condition(facts):
 
+                priority = normalize_priority(
+                    rule.severity
+                )
+
+                why_it_matters = (
+                    rule.message(facts)
+                )
+
                 insights.append(
                     Insight(
-                        severity=rule.severity,
+                        severity=priority,
+
+                        priority=priority,
+
                         title=rule.title,
-                        message=rule.message(facts),
+
+                        message=why_it_matters,
+
+                        category=rule.category,
+
+                        what_happened=rule.title,
+
+                        why_it_matters=why_it_matters,
+
+                        recommended_action=(
+                            rule.recommended_action
+                            or DEFAULT_RECOMMENDED_ACTIONS[
+                                priority
+                            ]
+                        ),
                     )
                 )
 

@@ -56,6 +56,16 @@ SCHEMA_STATEMENTS = [
     """,
 
     """
+    ALTER TABLE data_products
+    ADD COLUMN IF NOT EXISTS executive_summary JSONB
+    """,
+
+    """
+    ALTER TABLE data_products
+    ADD COLUMN IF NOT EXISTS health JSONB
+    """,
+
+    """
     CREATE INDEX IF NOT EXISTS
     idx_data_products_dataset_identity_version
     ON data_products (

@@ -1,6 +1,9 @@
 from .models import InsightRule
 
 
+CATEGORY = "Product Performance"
+
+
 RULES = [
 
     InsightRule(
@@ -18,6 +21,11 @@ RULES = [
             f"${abs(f['negative_product_profit']):,.0f} "
             "in aggregate losses."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Review pricing, discounts, and cost structure "
+            "for loss-making products."
+        ),
     ),
 
     InsightRule(
@@ -31,6 +39,11 @@ RULES = [
             f"{f['negative_product_pct']:.1%} of products "
             "generated negative profit, suggesting a "
             "broader pricing or cost-structure issue."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Escalate portfolio review for products with "
+            "sustained negative economics."
         ),
     ),
 
@@ -47,6 +60,11 @@ RULES = [
             "potential pricing or cost optimization "
             "opportunities."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Identify low-margin SKUs and test price "
+            "or cost improvements."
+        ),
     ),
 
     InsightRule(
@@ -62,6 +80,11 @@ RULES = [
             "of total revenue, indicating significant "
             "product concentration."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Reduce reliance on top products by "
+            "investing in broader portfolio growth."
+        ),
     ),
 
     InsightRule(
@@ -76,6 +99,11 @@ RULES = [
             f"{f['top10_revenue_share']:.1%} "
             "of total revenue, indicating a diversified "
             "product mix."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Maintain portfolio balance while tracking "
+            "emerging concentration trends."
         ),
     ),
 

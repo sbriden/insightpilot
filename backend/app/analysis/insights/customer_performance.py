@@ -1,6 +1,9 @@
 from .models import InsightRule
 
 
+CATEGORY = "Customer Performance"
+
+
 RULES = [
 
     InsightRule(
@@ -18,6 +21,11 @@ RULES = [
             f"${abs(f['negative_customer_profit']):,.0f} "
             "in aggregate losses."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Review pricing, discounts, and service costs "
+            "for loss-making customer accounts."
+        ),
     ),
 
     InsightRule(
@@ -32,6 +40,11 @@ RULES = [
             "generated negative profit, suggesting a "
             "potential pricing, servicing, or cost issue."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Escalate account economics review and define "
+            "remediation plans for unprofitable segments."
+        ),
     ),
 
     InsightRule(
@@ -45,6 +58,11 @@ RULES = [
             f"{f['low_margin_customer_pct']:.1%} of customers "
             "have margins below 10%, indicating potential "
             "pricing or cost optimization opportunities."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Identify low-margin accounts and test pricing "
+            "or cost-to-serve improvements."
         ),
     ),
 
@@ -61,6 +79,11 @@ RULES = [
             "of total revenue, indicating significant "
             "customer concentration."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Monitor top-account retention and pursue "
+            "diversification in the customer base."
+        ),
     ),
 
     InsightRule(
@@ -75,6 +98,11 @@ RULES = [
             f"{f['top10_revenue_share']:.1%} "
             "of total revenue, indicating a diversified "
             "customer base."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Continue monitoring concentration while "
+            "supporting balanced growth across accounts."
         ),
     ),
 

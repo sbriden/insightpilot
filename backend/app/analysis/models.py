@@ -34,6 +34,11 @@ class Insight:
     severity: str
     message: str
     title: str | None = None
+    priority: str | None = None
+    category: str | None = None
+    what_happened: str | None = None
+    why_it_matters: str | None = None
+    recommended_action: str | None = None
 
 
 @dataclass

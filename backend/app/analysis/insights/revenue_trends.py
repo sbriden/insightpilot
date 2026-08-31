@@ -1,6 +1,9 @@
 from .models import InsightRule
 
 
+CATEGORY = "Revenue Trends"
+
+
 RULES = [
 
     InsightRule(
@@ -15,6 +18,11 @@ RULES = [
             f"{f['overall_growth']:.1%} "
             "between the first and latest periods."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Identify growth drivers and reinforce "
+            "what is working in the current period."
+        ),
     ),
 
     InsightRule(
@@ -28,6 +36,11 @@ RULES = [
             f"Revenue declined by "
             f"{abs(f['overall_growth']):.1%} "
             "between the first and latest periods."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Investigate decline drivers and define "
+            "recovery actions with sales leadership."
         ),
     ),
 
@@ -44,6 +57,11 @@ RULES = [
             f"{f['trend_change']:.1%} above the "
             "preceding three-month period."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Monitor momentum and allocate resources "
+            "to sustain the positive trend."
+        ),
     ),
 
     InsightRule(
@@ -58,6 +76,11 @@ RULES = [
             "most recent three-month average "
             f"{abs(f['trend_change']):.1%} below the "
             "preceding three-month period."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Review pipeline, pricing, and demand "
+            "signals to reverse the downward trend."
         ),
     ),
 
@@ -74,6 +97,11 @@ RULES = [
             f"changing by only {abs(f['trend_change']):.1%} "
             "from the preceding three-month period."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Look for growth pockets while maintaining "
+            "current performance levels."
+        ),
     ),
 
     InsightRule(
@@ -87,6 +115,11 @@ RULES = [
             f"{f['anomaly_count']} revenue periods "
             "showed significant deviation from the "
             "recent trend, exceeding 20%."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Validate whether anomalies reflect one-time "
+            "events or a shift in underlying demand."
         ),
     ),
 
@@ -104,6 +137,11 @@ RULES = [
             f"{f['largest_positive_anomaly']['trend_deviation']:.1%} "
             "above the recent trend."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Determine whether the spike is repeatable "
+            "and how to capture similar upside."
+        ),
     ),
 
     InsightRule(
@@ -119,6 +157,11 @@ RULES = [
             f"running "
             f"{abs(f['largest_negative_anomaly']['trend_deviation']):.1%} "
             "below the recent trend."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Investigate root cause of the drop and "
+            "mitigate risk of recurrence."
         ),
     ),
 

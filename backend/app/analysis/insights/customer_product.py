@@ -1,6 +1,9 @@
 from .models import InsightRule
 
 
+CATEGORY = "Customer & Product"
+
+
 RULES = [
 
     InsightRule(
@@ -19,6 +22,11 @@ RULES = [
             "25% of customers, indicating potential "
             "cross-sell opportunities."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Target under-penetrated products in "
+            "existing customer campaigns."
+        ),
     ),
 
     InsightRule(
@@ -34,6 +42,11 @@ RULES = [
         message=lambda f: (
             "Most products have broad customer adoption, "
             "suggesting a relatively diversified product mix."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Maintain current mix and look for "
+            "incremental expansion opportunities."
         ),
     ),
 
@@ -54,6 +67,11 @@ RULES = [
             f"{f['negative_combination_pct']:.1%} "
             "of all combinations."
         ),
+        category=CATEGORY,
+        recommended_action=(
+            "Review pricing and fulfillment economics "
+            "for unprofitable combinations."
+        ),
     ),
 
     InsightRule(
@@ -71,6 +89,11 @@ RULES = [
             "of customer/product combinations generate "
             "negative profit, indicating potential "
             "pricing or servicing issues."
+        ),
+        category=CATEGORY,
+        recommended_action=(
+            "Prioritize remediation for the highest-loss "
+            "customer/product pairings."
         ),
     ),
 

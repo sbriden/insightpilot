@@ -25,6 +25,8 @@ PRODUCT_COLUMNS = """
     insights,
     dashboards,
     change_summary,
+    executive_summary,
+    health,
     metadata,
     created_at,
     updated_at
@@ -108,6 +110,16 @@ def _serialize_row(
         None,
     )
 
+    product["executive_summary"] = _parse_json_field(
+        product.get("executive_summary"),
+        None,
+    )
+
+    product["health"] = _parse_json_field(
+        product.get("health"),
+        None,
+    )
+
     product["metadata"] = _parse_json_field(
         product.get("metadata"),
         {},
@@ -140,6 +152,12 @@ def _product_params(
     change_summary = product.get(
         "change_summary"
     )
+
+    executive_summary = product.get(
+        "executive_summary"
+    )
+
+    health = product.get("health")
 
     return {
         "id": product["id"],
@@ -217,6 +235,24 @@ def _product_params(
             )
         ),
 
+        "executive_summary": (
+            None
+            if executive_summary is None
+            else _json_dumps(
+                executive_summary,
+                None,
+            )
+        ),
+
+        "health": (
+            None
+            if health is None
+            else _json_dumps(
+                health,
+                None,
+            )
+        ),
+
         "metadata": _json_dumps(
             product.get("metadata"),
             {},
@@ -259,6 +295,8 @@ def create_data_product(
             CAST(:insights AS JSONB),
             CAST(:dashboards AS JSONB),
             CAST(:change_summary AS JSONB),
+            CAST(:executive_summary AS JSONB),
+            CAST(:health AS JSONB),
             CAST(:metadata AS JSONB),
             :created_at,
             :updated_at
@@ -510,6 +548,8 @@ def update_data_product(
             insights = CAST(:insights AS JSONB),
             dashboards = CAST(:dashboards AS JSONB),
             change_summary = CAST(:change_summary AS JSONB),
+            executive_summary = CAST(:executive_summary AS JSONB),
+            health = CAST(:health AS JSONB),
             metadata = CAST(:metadata AS JSONB),
             updated_at = :updated_at
         WHERE id = :id
@@ -576,6 +616,24 @@ def update_data_product(
             if product.get("change_summary") is None
             else _json_dumps(
                 product.get("change_summary"),
+                None,
+            )
+        ),
+
+        "executive_summary": (
+            None
+            if product.get("executive_summary") is None
+            else _json_dumps(
+                product.get("executive_summary"),
+                None,
+            )
+        ),
+
+        "health": (
+            None
+            if product.get("health") is None
+            else _json_dumps(
+                product.get("health"),
                 None,
             )
         ),

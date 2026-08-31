@@ -161,12 +161,64 @@ class AnalysisBuilder:
         self,
         severity,
         message,
+        title=None,
+        category=None,
+        what_happened=None,
+        why_it_matters=None,
+        recommended_action=None,
     ):
+
+        from app.analysis.insights.normalize import (
+            DEFAULT_RECOMMENDED_ACTIONS,
+            first_sentence,
+            normalize_priority,
+        )
+
+        priority = normalize_priority(
+            severity
+        )
+
+        resolved_title = (
+            title
+            or what_happened
+            or first_sentence(message)
+            or "Analysis finding identified"
+        )
+
+        resolved_why = (
+            why_it_matters
+            or message
+            or resolved_title
+        )
 
         self.dashboard.insights.append(
             Insight(
-                severity=severity,
-                message=message,
+                severity=priority,
+
+                priority=priority,
+
+                title=resolved_title,
+
+                message=resolved_why,
+
+                category=(
+                    category
+                    or self.dashboard.title
+                ),
+
+                what_happened=(
+                    what_happened
+                    or resolved_title
+                ),
+
+                why_it_matters=resolved_why,
+
+                recommended_action=(
+                    recommended_action
+                    or DEFAULT_RECOMMENDED_ACTIONS[
+                        priority
+                    ]
+                ),
             )
         )
 

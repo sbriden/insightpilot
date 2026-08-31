@@ -30,6 +30,31 @@ from .comparison import (
     compare_product_metrics,
 )
 
+from .change_summary import (
+    merge_change_summaries,
+)
+
+from .data_quality_snapshot import (
+    build_data_quality_snapshot,
+    snapshot_from_product_metadata,
+)
+
+from .data_quality_changes import (
+    compare_data_quality,
+)
+
+from app.analysis.insights.normalize import (
+    normalize_insight_record,
+)
+
+from .executive_summary import (
+    build_product_executive_summary,
+)
+
+from .health import (
+    assess_product_health,
+)
+
 
 def _dashboard_title(
     dashboard: dict,
@@ -149,35 +174,38 @@ def _extract_insights(
                 f"{dashboard_id}:{raw_insight_id}"
             )
 
+            normalized = normalize_insight_record(
+                insight,
+                default_category=_dashboard_title(
+                    dashboard
+                ),
+            )
+
             insights.append(
                 DataProductInsight(
                     id=insight_id,
 
-                    title=(
-                        insight.get("title")
-                        or "Insight"
-                    ),
+                    title=normalized["title"],
 
-                    message=(
-                        insight.get(
-                            "message"
-                        )
-                        or insight.get(
-                            "description"
-                        )
-                        or ""
-                    ),
+                    message=normalized["message"],
 
-                    severity=(
-                        insight.get(
-                            "severity"
-                        )
-                        or "low"
-                    ),
+                    severity=normalized["severity"],
 
-                    category=insight.get(
-                        "category"
-                    ),
+                    priority=normalized["priority"],
+
+                    category=normalized["category"],
+
+                    what_happened=normalized[
+                        "what_happened"
+                    ],
+
+                    why_it_matters=normalized[
+                        "why_it_matters"
+                    ],
+
+                    recommended_action=normalized[
+                        "recommended_action"
+                    ],
                 )
             )
 
@@ -276,7 +304,20 @@ def _serialize_product(
                 "severity": (
                     insight.severity
                 ),
+                "priority": (
+                    insight.priority
+                    or insight.severity
+                ),
                 "category": insight.category,
+                "what_happened": (
+                    insight.what_happened
+                ),
+                "why_it_matters": (
+                    insight.why_it_matters
+                ),
+                "recommended_action": (
+                    insight.recommended_action
+                ),
             }
             for insight
             in product.insights
@@ -289,6 +330,12 @@ def _serialize_product(
         "change_summary": (
             product.change_summary
         ),
+
+        "executive_summary": (
+            product.executive_summary
+        ),
+
+        "health": product.health,
 
         "metadata": product.metadata,
 
@@ -615,6 +662,38 @@ def generate_data_products(
         previous_product_id = None
         change_summary = None
 
+        current_snapshot = (
+            build_data_quality_snapshot(
+                profile_summary=(
+                    profile_summary
+                ),
+
+                metrics_dataset=(
+                    metrics_dataset
+                ),
+
+                columns=columns,
+
+                required_fields=(
+                    definition.required_fields
+                    or []
+                ),
+
+                optional_fields=(
+                    definition.optional_fields
+                    or []
+                ),
+
+                required_coverage=(
+                    required_coverage
+                ),
+
+                overall_coverage=coverage,
+
+                can_analyze=can_analyze,
+            )
+        )
+
         if previous_product:
 
             previous_version = int(
@@ -629,7 +708,7 @@ def generate_data_products(
                 previous_product.get("id")
             )
 
-            change_summary = (
+            metric_summary = (
                 compare_product_metrics(
                     previous_metrics=(
                         previous_product.get(
@@ -655,7 +734,111 @@ def generate_data_products(
                 )
             )
 
+            previous_snapshot = (
+                snapshot_from_product_metadata(
+                    previous_product.get(
+                        "metadata"
+                    )
+                )
+            )
+
+            data_quality_summary = (
+                compare_data_quality(
+                    previous_snapshot=(
+                        previous_snapshot
+                    ),
+
+                    current_snapshot=(
+                        current_snapshot
+                    ),
+
+                    previous_version=(
+                        previous_version
+                    ),
+
+                    current_version=(
+                        previous_version + 1
+                    ),
+                )
+            )
+
+            change_summary = (
+                merge_change_summaries(
+                    metric_summary,
+                    data_quality_summary,
+                )
+            )
+
         version = previous_version + 1
+
+        executive_summary = (
+            build_product_executive_summary(
+                product_name=definition.name,
+
+                business_purpose=(
+                    definition.business_purpose
+                ),
+
+                description=(
+                    definition.description
+                ),
+
+                analyses=analyses,
+
+                dashboards=selected_dashboards,
+
+                metrics=metrics,
+
+                insights=insights,
+
+                change_summary=change_summary,
+            )
+        )
+
+        product_status = _determine_status(
+            coverage,
+            can_analyze,
+        )
+
+        health = assess_product_health(
+            can_analyze=can_analyze,
+
+            required_coverage=required_coverage,
+
+            overall_coverage=coverage,
+
+            data_quality_score=(
+                profile_summary.get(
+                    "data_quality_score"
+                )
+            ),
+
+            missing_percentage=(
+                metrics_dataset.get(
+                    "missing_percentage"
+                )
+            ),
+
+            status=product_status,
+
+            analysis_count=len(
+                selected_dashboards
+            ),
+
+            expected_analysis_count=len(
+                analysis_ids
+            ),
+
+            insights=[
+                {
+                    "priority": insight.priority,
+                    "severity": insight.severity,
+                }
+                for insight in insights
+            ],
+
+            change_summary=change_summary,
+        )
 
         product_id = (
             build_product_instance_id(
@@ -681,10 +864,7 @@ def generate_data_products(
                 "uploaded_dataset"
             ),
 
-            status=_determine_status(
-                coverage,
-                can_analyze,
-            ),
+            status=product_status,
 
             coverage=coverage,
 
@@ -707,6 +887,10 @@ def generate_data_products(
             dashboards=selected_dashboards,
 
             change_summary=change_summary,
+
+            executive_summary=executive_summary,
+
+            health=health,
 
             metadata={
                 "analysis_count": len(
@@ -783,6 +967,40 @@ def generate_data_products(
                     metrics_dataset.get(
                         "missing_percentage"
                     )
+                ),
+
+                "duplicate_count": (
+                    metrics_dataset.get(
+                        "duplicates"
+                    )
+                ),
+
+                "column_names": (
+                    current_snapshot.get(
+                        "column_names"
+                    )
+                ),
+
+                "mapped_required_fields": (
+                    current_snapshot.get(
+                        "mapped_required_fields"
+                    )
+                ),
+
+                "missing_required_fields": (
+                    current_snapshot.get(
+                        "missing_required_fields"
+                    )
+                ),
+
+                "mapped_optional_fields": (
+                    current_snapshot.get(
+                        "mapped_optional_fields"
+                    )
+                ),
+
+                "data_quality_snapshot": (
+                    current_snapshot
                 ),
             },
 

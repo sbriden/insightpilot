@@ -109,6 +109,10 @@ class DataProduct:
 
     change_summary: Dict[str, Any] | None = None
 
+    executive_summary: Dict[str, Any] | None = None
+
+    health: Dict[str, Any] | None = None
+
     metadata: Dict[str, Any] = field(
         default_factory=dict
     )
@@ -152,7 +156,11 @@ class DataProductInsight:
     title: str
     message: str
     severity: str = "low"
+    priority: str = "low"
     category: Optional[str] = None
+    what_happened: str = ""
+    why_it_matters: str = ""
+    recommended_action: str = ""
 
 
 @dataclass
