@@ -2,6 +2,14 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime
 import pandas as pd
 
+from app.core.responsibilities import (
+    NARRATIVE_PROMPT_FACT_KEYS,
+    build_narrative_constraints,
+)
+from app.datasets.semantic_context import (
+    build_semantic_understanding,
+)
+
 
 @dataclass
 class AnalysisContext:
@@ -51,6 +59,21 @@ class AnalysisContext:
         default_factory=list
     )
 
+    # Semantic analysis layer — structured facts shared by
+    # analytical modules regardless of dataset archetype.
+    # Produced and validated by deterministic code.
+    semantic_model: dict = field(
+        default_factory=dict
+    )
+
+    capabilities: list = field(
+        default_factory=list
+    )
+
+    dataset_archetype: dict = field(
+        default_factory=dict
+    )
+
 
     def to_dict(self):
         """
@@ -64,13 +87,41 @@ class AnalysisContext:
         )
 
 
-    def to_prompt_context(self):
+    def analytical_facts(self) -> dict:
         """
-        Lightweight context sent to the LLM.
+        Precomputed analytical facts owned by deterministic code.
+
+        Counts, aggregations, distributions, comparisons, trends,
+        anomalies, and related statistics live here (or in module
+        dashboards built from those calculations). Narrative /
+        LLM layers may only consume these facts — never recompute
+        or invent them.
         """
 
         return {
+            "profile": self.profile,
+            "metrics": self.metrics,
+            "insights": self.insights,
+            "analysis_dashboards": self.analysis_dashboards,
+            "classification": self.classification,
+            "semantic_model": self.semantic_model,
+            "capabilities": self.capabilities,
+            "dataset_archetype": self.dataset_archetype,
+            "recommendations": self.recommendations,
+        }
 
+
+    def to_prompt_context(self):
+        """
+        Narrative-only context for LLM generation.
+
+        Contains precomputed structured facts only. Never includes
+        the raw dataframe or calculation inputs. The LLM must not
+        invent numbers, aggregations, trends, or other analytical
+        results — see ``narrative_constraints``.
+        """
+
+        payload = {
             "profile":
                 self.profile,
 
@@ -79,6 +130,15 @@ class AnalysisContext:
 
             "classification":
                 self.classification,
+
+            "semantic_model":
+                self.semantic_model,
+
+            "capabilities":
+                self.capabilities,
+
+            "dataset_archetype":
+                self.dataset_archetype,
 
             "recommendations":
                 self.recommendations,
@@ -89,13 +149,31 @@ class AnalysisContext:
             "analysis_dashboards":
                 self.analysis_dashboards,
 
+            "narrative_constraints":
+                build_narrative_constraints(),
         }
+
+        # Guardrail: prompt context stays within the fact surface.
+        unexpected = set(payload) - NARRATIVE_PROMPT_FACT_KEYS
+        if unexpected:
+            raise ValueError(
+                "Prompt context includes non-fact keys: "
+                f"{sorted(unexpected)}"
+            )
+
+        return payload
 
 
     def to_api_response(self):
         """
         Public API contract.
         """
+
+        semantic_layer = {
+            "semantic_model": self.semantic_model,
+            "capabilities": self.capabilities,
+            "dataset_archetype": self.dataset_archetype,
+        }
 
         return {
 
@@ -107,6 +185,22 @@ class AnalysisContext:
 
             "classification":
                 self.classification,
+
+            "semantic_model":
+                self.semantic_model,
+
+            "capabilities":
+                self.capabilities,
+
+            "dataset_archetype":
+                self.dataset_archetype,
+
+            # Developer inspection surface for semantic engine
+            # correctness (concepts, grain, role buckets, etc.).
+            "semantic_understanding":
+                build_semantic_understanding(
+                    semantic_layer
+                ),
 
             "recommendations":
                 self.recommendations,

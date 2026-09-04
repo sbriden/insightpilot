@@ -448,6 +448,8 @@ class ProfitImprovementModule(AnalysisModule):
                 f"approximately ${total_opportunity:,.0f} "
                 "in estimated additional profit."
             ),
+            title="Profit Improvement Potential",
+            category="Profit Improvement",
         )
 
         high_priority = (
@@ -478,4 +480,6 @@ class ProfitImprovementModule(AnalysisModule):
                     "revenue, margin gap, and estimated "
                     "profit potential."
                 ),
+                title=f"Top Opportunity: {product_name}",
+                category="Profit Improvement",
             )

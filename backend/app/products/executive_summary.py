@@ -373,6 +373,13 @@ def _build_what_matters(
             )
         )
 
+        if (
+            detail
+            and headline
+            and detail.strip() == headline.strip()
+        ):
+            detail = ""
+
         if not headline:
             continue
 

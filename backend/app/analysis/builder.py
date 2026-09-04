@@ -185,6 +185,19 @@ class AnalysisBuilder:
             or "Analysis finding identified"
         )
 
+        if (
+            not title
+            and not what_happened
+            and message
+            and resolved_title.strip()
+            == message.strip()
+        ):
+            resolved_title = (
+                category
+                or self.dashboard.title
+                or "Key finding"
+            )
+
         resolved_why = (
             why_it_matters
             or message

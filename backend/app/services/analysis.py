@@ -12,6 +12,10 @@ from .recommendations import generate_recommendations
 from .visualizations import recommend_visualizations
 from .column_profiler import profile_columns
 from ..analysis.engine import generate_analysis_dashboards
+from ..datasets.semantic_context import (
+    build_semantic_layer_from_dataframe,
+    log_semantic_understanding,
+)
 from .ai import generate_executive_brief
 
 
@@ -234,12 +238,29 @@ def analyze_dataframe(
 
 
     # ---------------------------------------------------------
-    # Classify dataset
+    # Classify dataset (legacy keyword classifier)
     # ---------------------------------------------------------
 
     classification = classify_dataset(
         mapped_df.columns.tolist()
     )
+
+
+    # ---------------------------------------------------------
+    # Semantic analysis layer (structured facts, validated)
+    # ---------------------------------------------------------
+    # Deterministic concept identification, capabilities,
+    # archetype, and grain. Validated before AnalysisContext.
+    # LLM is never the calculation engine for analytical facts.
+
+    semantic_layer = build_semantic_layer_from_dataframe(
+        mapped_df,
+        column_profiles,
+    )
+
+    # Developer logging — inspect what the semantic engine
+    # believes about this dataset (concepts, grain, etc.).
+    log_semantic_understanding(semantic_layer)
 
 
     # ---------------------------------------------------------
@@ -281,6 +302,9 @@ def analyze_dataframe(
         profile=profile,
         metrics=metrics,
         classification=classification,
+        semantic_model=semantic_layer["semantic_model"],
+        capabilities=semantic_layer["capabilities"],
+        dataset_archetype=semantic_layer["dataset_archetype"],
         recommendations=recommendations,
         insights=insights,
         column_profiles=column_profiles,
@@ -302,7 +326,7 @@ def analyze_dataframe(
 
 
     # ---------------------------------------------------------
-    # Generate executive brief
+    # Generate executive brief (narrative over facts only)
     # ---------------------------------------------------------
 
     context.executive_brief = (

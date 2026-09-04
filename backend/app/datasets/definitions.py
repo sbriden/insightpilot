@@ -150,4 +150,34 @@ DATASET_TYPES = [
         product_ids=[],
     ),
 
+    DatasetTypeDefinition(
+        id="workforce",
+        name="Workforce",
+        description=(
+            "Employees, compensation, departments, "
+            "roles and workforce performance."
+        ),
+        keywords=[
+            "employee",
+            "staff",
+            "workforce",
+            "salary",
+            "wage",
+            "compensation",
+            "department",
+            "hire",
+            "hr",
+        ],
+        example_fields=[
+            "employee_id",
+            "employee_name",
+            "department",
+            "role",
+            "hire_date",
+            "salary",
+            "status",
+        ],
+        product_ids=[],
+    ),
+
 ]

@@ -8,6 +8,16 @@ from .schemas import (
     DatasetTypeRequirementsResponse,
     SaveFieldMappingsRequest,
     SavedFieldMappingsResponse,
+    IdentifyConceptsRequest,
+    ConceptIdentificationResponse,
+    DetectCapabilitiesRequest,
+    CapabilityDetectionResponse,
+    ClassifyDatasetRequest,
+    ClassifyDatasetResponse,
+    DetermineGrainRequest,
+    DetermineGrainResponse,
+    SemanticUnderstandingRequest,
+    SemanticUnderstandingResponse,
 )
 
 from .mapping_memory import (
@@ -25,6 +35,27 @@ from pydantic import BaseModel
 
 from app.datasets.mapping import (
     suggest_field_mapping,
+)
+
+from app.datasets.concept_identification import (
+    identify_business_concepts,
+)
+
+from app.datasets.capability_detection import (
+    detect_analytical_capabilities,
+)
+
+from app.datasets.dataset_classification import (
+    classify_dataset,
+)
+
+from app.datasets.grain_detection import (
+    determine_dataset_grain,
+)
+
+from app.datasets.semantic_context import (
+    build_semantic_layer,
+    build_semantic_understanding,
 )
 
 router = APIRouter(
@@ -121,6 +152,114 @@ def map_fields(
             request.product_id,
 
         **result,
+    }
+
+
+@router.post(
+    "/identify-concepts",
+    response_model=ConceptIdentificationResponse,
+)
+def identify_concepts(
+    request: IdentifyConceptsRequest,
+):
+
+    return identify_business_concepts(
+        [
+            column.model_dump()
+            for column
+            in request.columns
+        ]
+    )
+
+
+@router.post(
+    "/detect-capabilities",
+    response_model=CapabilityDetectionResponse,
+)
+def detect_capabilities(
+    request: DetectCapabilitiesRequest,
+):
+
+    return detect_analytical_capabilities(
+        [
+            concept.model_dump()
+            for concept
+            in request.concepts
+        ]
+    )
+
+
+@router.post(
+    "/classify",
+    response_model=ClassifyDatasetResponse,
+)
+def classify(
+    request: ClassifyDatasetRequest,
+):
+
+    return classify_dataset(
+        [
+            concept.model_dump()
+            for concept
+            in request.concepts
+        ]
+    )
+
+
+@router.post(
+    "/determine-grain",
+    response_model=DetermineGrainResponse,
+)
+def determine_grain(
+    request: DetermineGrainRequest,
+):
+
+    return determine_dataset_grain(
+        [
+            concept.model_dump()
+            for concept
+            in request.concepts
+        ],
+        column_stats=[
+            stat.model_dump()
+            for stat
+            in request.column_stats
+        ]
+        or None,
+    )
+
+
+@router.post(
+    "/semantic-understanding",
+    response_model=SemanticUnderstandingResponse,
+)
+def semantic_understanding(
+    request: SemanticUnderstandingRequest,
+):
+    """
+    One-shot developer endpoint for inspecting semantic
+    understanding without running a full analysis.
+    """
+
+    layer = build_semantic_layer(
+        [
+            column.model_dump()
+            for column
+            in request.columns
+        ],
+        column_stats=[
+            stat.model_dump()
+            for stat
+            in request.column_stats
+        ]
+        or None,
+    )
+
+    return {
+        **layer,
+        "semantic_understanding": (
+            build_semantic_understanding(layer)
+        ),
     }
 
 
