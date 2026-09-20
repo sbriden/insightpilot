@@ -46,6 +46,12 @@ class AnalysisContext:
 
     analysis_metadata: dict | None = None
 
+    # Optional dataset lineage for Insight/product comparison.
+    dataset_id: str | None = None
+    dataset_version: str | int | None = None
+    dataset_identity: str | None = None
+    source_dataset: str | None = None
+
     dataframe: pd.DataFrame | None = field(
         default=None,
         repr=False,
@@ -73,6 +79,109 @@ class AnalysisContext:
     dataset_archetype: dict = field(
         default_factory=dict
     )
+
+    # Analyses applicable for this dataset, derived from
+    # semantic capabilities + archetype (not a hardcoded sales suite).
+    analytical_candidates: list = field(
+        default_factory=list
+    )
+
+    # Structured findings emitted by analytical modules.
+    # Always plain dicts (see serialize_candidate_finding).
+    candidate_findings: list = field(
+        default_factory=list
+    )
+
+    # Validated subset of candidate findings (structural gate).
+    # Not every validated finding becomes an Insight.
+    validated_findings: list = field(
+        default_factory=list
+    )
+
+    # Promoted Insights derived from insight-eligible
+    # validated findings only.
+    promoted_insights: list = field(
+        default_factory=list
+    )
+
+    # Alpha Initial Results Contract (recommended surface set).
+    insight_initial_results: dict | None = None
+
+    def normalized_candidate_findings(self) -> list:
+        """JSON-safe findings for API / prompt / persistence."""
+
+        from app.analysis.insights.findings import (
+            serialize_candidate_finding,
+        )
+
+        return [
+            serialized
+            for serialized in (
+                serialize_candidate_finding(item)
+                for item in self.candidate_findings
+            )
+            if serialized is not None
+        ]
+
+    def normalized_validated_findings(self) -> list:
+        """JSON-safe validated findings for API / prompt."""
+
+        from app.analysis.insights.validation import (
+            serialize_validated_finding,
+            validate_findings,
+        )
+
+        if self.validated_findings:
+            return [
+                serialized
+                for serialized in (
+                    serialize_validated_finding(item)
+                    for item in self.validated_findings
+                )
+                if serialized is not None
+            ]
+
+        return validate_findings(
+            self.normalized_candidate_findings()
+        )
+
+    def normalized_promoted_insights(self) -> list:
+        """JSON-safe Insights promoted from eligible findings."""
+
+        from app.analysis.insights.insight import (
+            promote_findings,
+            serialize_insight,
+        )
+
+        if self.promoted_insights:
+            return [
+                serialized
+                for serialized in (
+                    serialize_insight(item)
+                    for item in self.promoted_insights
+                )
+                if serialized is not None
+            ]
+
+        # Only insight-eligible validated findings promote.
+        return promote_findings(
+            self.normalized_validated_findings(),
+            require_insight_eligible=True,
+        )
+
+    def normalized_insight_initial_results(self) -> dict:
+        """Alpha Initial Results Contract for recommended surfacing."""
+
+        from app.analysis.insights.initial_results import (
+            build_initial_results,
+        )
+
+        if isinstance(self.insight_initial_results, dict):
+            return self.insight_initial_results
+
+        return build_initial_results(
+            self.normalized_promoted_insights()
+        )
 
 
     def to_dict(self):
@@ -107,6 +216,15 @@ class AnalysisContext:
             "semantic_model": self.semantic_model,
             "capabilities": self.capabilities,
             "dataset_archetype": self.dataset_archetype,
+            "analytical_candidates": self.analytical_candidates,
+            "candidate_findings":
+                self.normalized_candidate_findings(),
+            "validated_findings":
+                self.normalized_validated_findings(),
+            "promoted_insights":
+                self.normalized_promoted_insights(),
+            "insight_initial_results":
+                self.normalized_insight_initial_results(),
             "recommendations": self.recommendations,
         }
 
@@ -139,6 +257,18 @@ class AnalysisContext:
 
             "dataset_archetype":
                 self.dataset_archetype,
+
+            "analytical_candidates":
+                self.analytical_candidates,
+
+            "candidate_findings":
+                self.normalized_candidate_findings(),
+
+            "validated_findings":
+                self.normalized_validated_findings(),
+
+            "promoted_insights":
+                self.normalized_promoted_insights(),
 
             "recommendations":
                 self.recommendations,
@@ -195,6 +325,21 @@ class AnalysisContext:
             "dataset_archetype":
                 self.dataset_archetype,
 
+            "analytical_candidates":
+                self.analytical_candidates,
+
+            "candidate_findings":
+                self.normalized_candidate_findings(),
+
+            "validated_findings":
+                self.normalized_validated_findings(),
+
+            "promoted_insights":
+                self.normalized_promoted_insights(),
+
+            "insight_initial_results":
+                self.normalized_insight_initial_results(),
+
             # Developer inspection surface for semantic engine
             # correctness (concepts, grain, role buckets, etc.).
             "semantic_understanding":
@@ -231,5 +376,17 @@ class AnalysisContext:
 
             "created_at":
                 self.created_at,
+
+            "dataset_id":
+                self.dataset_id,
+
+            "dataset_version":
+                self.dataset_version,
+
+            "dataset_identity":
+                self.dataset_identity,
+
+            "source_dataset":
+                self.source_dataset,
 
         }

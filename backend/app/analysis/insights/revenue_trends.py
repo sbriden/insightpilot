@@ -11,7 +11,7 @@ RULES = [
         severity="low",
         title="Revenue Growth",
         condition=lambda f: (
-            f["overall_growth"] > 0
+            f["overall_growth"] >= 0.05
         ),
         message=lambda f: (
             f"Revenue increased by "
@@ -23,6 +23,14 @@ RULES = [
             "Identify growth drivers and reinforce "
             "what is working in the current period."
         ),
+        metric="overall_revenue_growth",
+        observed=lambda f: f["overall_growth"],
+        baseline=0.0,
+        comparison="vs_prior_period",
+        magnitude=lambda f: f["overall_growth"],
+        magnitude_unit="ratio",
+        dimensions=["date"],
+        min_abs_magnitude=0.05,
     ),
 
     InsightRule(
@@ -30,7 +38,7 @@ RULES = [
         severity="medium",
         title="Revenue Decline",
         condition=lambda f: (
-            f["overall_growth"] < 0
+            f["overall_growth"] <= -0.05
         ),
         message=lambda f: (
             f"Revenue declined by "
@@ -42,6 +50,14 @@ RULES = [
             "Investigate decline drivers and define "
             "recovery actions with sales leadership."
         ),
+        metric="overall_revenue_growth",
+        observed=lambda f: f["overall_growth"],
+        baseline=0.0,
+        comparison="vs_prior_period",
+        magnitude=lambda f: f["overall_growth"],
+        magnitude_unit="ratio",
+        dimensions=["date"],
+        min_abs_magnitude=0.05,
     ),
 
     InsightRule(
@@ -62,6 +78,13 @@ RULES = [
             "Monitor momentum and allocate resources "
             "to sustain the positive trend."
         ),
+        metric="trend_change",
+        observed=lambda f: f["trend_change"],
+        baseline=0.05,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["trend_change"] - 0.05,
+        magnitude_unit="ratio",
+        dimensions=["date"],
     ),
 
     InsightRule(
@@ -82,6 +105,13 @@ RULES = [
             "Review pipeline, pricing, and demand "
             "signals to reverse the downward trend."
         ),
+        metric="trend_change",
+        observed=lambda f: f["trend_change"],
+        baseline=-0.05,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["trend_change"] - (-0.05),
+        magnitude_unit="ratio",
+        dimensions=["date"],
     ),
 
     InsightRule(
@@ -102,6 +132,13 @@ RULES = [
             "Look for growth pockets while maintaining "
             "current performance levels."
         ),
+        metric="trend_change",
+        observed=lambda f: f["trend_change"],
+        baseline=0.0,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["trend_change"],
+        magnitude_unit="ratio",
+        dimensions=["date"],
     ),
 
     InsightRule(
@@ -121,6 +158,13 @@ RULES = [
             "Validate whether anomalies reflect one-time "
             "events or a shift in underlying demand."
         ),
+        metric="anomaly_count",
+        observed=lambda f: f["anomaly_count"],
+        baseline=0,
+        comparison="vs_threshold",
+        magnitude=lambda f: float(f["anomaly_count"]),
+        magnitude_unit="count",
+        dimensions=["date"],
     ),
 
     InsightRule(
@@ -142,6 +186,17 @@ RULES = [
             "Determine whether the spike is repeatable "
             "and how to capture similar upside."
         ),
+        metric="trend_deviation",
+        observed=lambda f: (
+            f["largest_positive_anomaly"]["trend_deviation"]
+        ),
+        baseline=0.20,
+        comparison="vs_threshold",
+        magnitude=lambda f: (
+            f["largest_positive_anomaly"]["trend_deviation"] - 0.20
+        ),
+        magnitude_unit="ratio",
+        dimensions=["date"],
     ),
 
     InsightRule(
@@ -163,6 +218,17 @@ RULES = [
             "Investigate root cause of the drop and "
             "mitigate risk of recurrence."
         ),
+        metric="trend_deviation",
+        observed=lambda f: (
+            f["largest_negative_anomaly"]["trend_deviation"]
+        ),
+        baseline=-0.20,
+        comparison="vs_threshold",
+        magnitude=lambda f: (
+            f["largest_negative_anomaly"]["trend_deviation"] - (-0.20)
+        ),
+        magnitude_unit="ratio",
+        dimensions=["date"],
     ),
 
 ]

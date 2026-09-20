@@ -156,6 +156,65 @@ class DetectCapabilitiesRequest(BaseModel):
     concepts: List[BusinessConceptSchema]
 
 
+# ── Analytical candidate generation ───────────────────────────
+
+class AnalyticalCandidateSchema(BaseModel):
+
+    id: str
+
+    title: str
+
+    description: str = ""
+
+    domain: str = "general"
+
+    executable: bool = True
+
+    required_capabilities: List[str] = Field(
+        default_factory=list
+    )
+
+    matched_capabilities: List[str] = Field(
+        default_factory=list
+    )
+
+    archetypes: List[str] = Field(
+        default_factory=list
+    )
+
+    confidence: float = 0.0
+
+    explanation: str = ""
+
+
+class GenerateAnalysisCandidatesRequest(BaseModel):
+
+    capabilities: List[AnalyticalCapabilitySchema] = Field(
+        default_factory=list
+    )
+
+    # Prefer primary_archetype; dataset_archetype may be the
+    # full classifier payload ({"primary": ...}) when available.
+    primary_archetype: Optional[str] = None
+
+    dataset_archetype: Optional[dict] = None
+
+
+class GenerateAnalysisCandidatesResponse(BaseModel):
+
+    candidates: List[AnalyticalCandidateSchema] = Field(
+        default_factory=list
+    )
+
+    candidate_count: int = 0
+
+    archetype: Optional[str] = None
+
+    supported_capabilities: List[str] = Field(
+        default_factory=list
+    )
+
+
 # ── Dataset classification ────────────────────────────────────
 
 class ClassifyDatasetRequest(BaseModel):

@@ -162,6 +162,11 @@ def analyze_dataframe(
     df: pd.DataFrame,
     field_mappings: list | None = None,
     selected_product_ids: list[str] | None = None,
+    *,
+    dataset_id: str | None = None,
+    dataset_identity: str | None = None,
+    source_dataset: str | None = None,
+    dataset_version: str | int | None = None,
 ) -> AnalysisContext:
     """
     Runs the complete InsightPilot analysis pipeline.
@@ -173,6 +178,10 @@ def analyze_dataframe(
     selected_product_ids contains the data products explicitly
     selected by the user. The selection is carried through the
     analysis context and used when generating data products.
+
+    Optional dataset lineage fields are stamped on the context
+    before dashboards/insights run so promoted insights carry
+    correct provenance.
     """
 
     # ---------------------------------------------------------
@@ -311,11 +320,16 @@ def analyze_dataframe(
         visualizations=visualizations,
         selected_product_ids=normalized_product_ids,
         created_at=datetime.utcnow(),
+        dataset_id=dataset_id,
+        dataset_identity=dataset_identity or dataset_id,
+        source_dataset=source_dataset,
+        dataset_version=dataset_version,
     )
 
 
     # ---------------------------------------------------------
     # Generate analysis dashboards
+    # (also attaches context.candidate_findings from modules)
     # ---------------------------------------------------------
 
     context.analysis_dashboards = (
@@ -327,6 +341,9 @@ def analyze_dataframe(
 
     # ---------------------------------------------------------
     # Generate executive brief (narrative over facts only)
+    # Brief reads insights + prompt facts; findings are
+    # available via context.to_prompt_context() without
+    # changing the deterministic brief shape.
     # ---------------------------------------------------------
 
     context.executive_brief = (
@@ -338,6 +355,8 @@ def analyze_dataframe(
 
     # ---------------------------------------------------------
     # Generate data products
+    # Products lift findings from selected dashboards; findings
+    # persist inside dashboards JSONB (no schema migration).
     # ---------------------------------------------------------
 
     from app.products.service import (

@@ -180,6 +180,127 @@ CONCEPT_DEFINITIONS: list[dict] = [
             "manufacturer",
         ],
     },
+    {
+        "concept": "Player",
+        "default_role": "entity",
+        "keywords": [
+            "player",
+            "player_id",
+            "gsis",
+            "gsis_id",
+            "athlete",
+            "roster",
+        ],
+    },
+    {
+        "concept": "Team",
+        "default_role": "entity",
+        "keywords": [
+            "team",
+            "team_id",
+            "franchise",
+            "club",
+            "opponent",
+        ],
+    },
+    {
+        "concept": "Game",
+        "default_role": "entity",
+        "keywords": [
+            "game",
+            "game_id",
+            "matchup",
+            "contest",
+        ],
+    },
+    {
+        "concept": "Season",
+        "default_role": "category",
+        "keywords": [
+            "season",
+            "season_year",
+            "nfl_season",
+        ],
+    },
+    {
+        "concept": "Week",
+        "default_role": "category",
+        "keywords": [
+            "week",
+            "week_number",
+            "nfl_week",
+            "game_week",
+        ],
+    },
+    {
+        "concept": "Position",
+        "default_role": "category",
+        "keywords": [
+            "position",
+            "pos",
+            "roster_position",
+        ],
+    },
+    {
+        "concept": "FantasyPoints",
+        "default_role": "measure",
+        "keywords": [
+            "fantasy_points",
+            "fantasy_point",
+            "fpts",
+            "ppr",
+            "half_ppr",
+            "fantasy_score",
+        ],
+    },
+    {
+        "concept": "Targets",
+        "default_role": "measure",
+        "keywords": [
+            "targets",
+            "target",
+            "target_share",
+            "targetshare",
+        ],
+    },
+    {
+        "concept": "Carries",
+        "default_role": "measure",
+        "keywords": [
+            "carries",
+            "carry",
+            "rush_attempts",
+            "rushing_attempts",
+        ],
+    },
+    {
+        "concept": "Routes",
+        "default_role": "measure",
+        "keywords": [
+            "routes",
+            "route",
+            "routes_run",
+            "route_participation",
+        ],
+    },
+    {
+        "concept": "SignalType",
+        "default_role": "category",
+        "keywords": [
+            "signal_type",
+            "signaltype",
+            "fantasy_signal",
+        ],
+    },
+    {
+        "concept": "SignalStrength",
+        "default_role": "measure",
+        "keywords": [
+            "signal_strength",
+            "signalstrength",
+            "signal_score",
+        ],
+    },
 ]
 
 
@@ -222,6 +343,14 @@ MEASURE_TOKENS = [
     "units",
     "count",
     "volume",
+    "fantasy_points",
+    "fpts",
+    "ppr",
+    "targets",
+    "target_share",
+    "carries",
+    "routes",
+    "signal_strength",
     "spend",
     "fee",
     "salary",
@@ -530,8 +659,20 @@ def resolve_role(
     if concept in {
         "Revenue",
         "Quantity",
+        "FantasyPoints",
+        "Targets",
+        "Carries",
+        "Routes",
+        "SignalStrength",
     }:
         return "measure"
+
+    if concept in {
+        "Player",
+        "Team",
+        "Game",
+    }:
+        return "entity"
 
     return default_role
 

@@ -1,6 +1,9 @@
 from .models import (
     DataProductDefinition,
     FieldOpportunity,
+    PRODUCT_TYPE_NATIVE,
+    PRODUCT_TYPE_USER_CREATED,
+    _LEGACY_PRE_CANNED,
 )
 
 
@@ -566,7 +569,221 @@ DATA_PRODUCT_DEFINITIONS = [
 
     ),
 
+    # -----------------------------------------------------------------------
+    # Fantasy Football
+    # -----------------------------------------------------------------------
+
+    DataProductDefinition(
+
+        id="fantasy_football",
+
+        name="Fantasy Football",
+
+        description=(
+            "Actionable fantasy football insights from "
+            "nflverse-backed signals — breakout candidates, "
+            "buy-low / sell-high, start/sit, and opportunity shifts."
+        ),
+
+        product_type=PRODUCT_TYPE_NATIVE,
+
+        dataset_types=[
+            "fantasy_football",
+        ],
+
+        grain=(
+            "Player × Week (fantasy signal)"
+        ),
+
+        required_fields=[
+            "player_id",
+            "season",
+            "week",
+            "signal_type",
+            "signal_strength",
+        ],
+
+        optional_fields=[
+            "confidence",
+            "direction",
+            "player_name",
+            "position",
+            "team_id",
+        ],
+
+        analyses=[
+            "player_overview",
+            "daily_fantasy",
+        ],
+
+        field_opportunities=[
+
+            FieldOpportunity(
+                field="player_id",
+                description=(
+                    "Identifies each player so signals "
+                    "and insights can be attributed."
+                ),
+                analyses=[
+                    "player_overview",
+                ],
+                metrics=[
+                    "Eligible signals",
+                    "Findings by player",
+                ],
+                priority="high",
+                required=True,
+            ),
+
+            FieldOpportunity(
+                field="season",
+                description=(
+                    "Scopes signals to an NFL season."
+                ),
+                analyses=[
+                    "player_overview",
+                ],
+                metrics=[
+                    "Season coverage",
+                ],
+                priority="high",
+                required=True,
+            ),
+
+            FieldOpportunity(
+                field="week",
+                description=(
+                    "Anchors weekly start/sit and "
+                    "waiver decisions."
+                ),
+                analyses=[
+                    "player_overview",
+                ],
+                metrics=[
+                    "Week coverage",
+                ],
+                priority="high",
+                required=True,
+            ),
+
+            FieldOpportunity(
+                field="signal_type",
+                description=(
+                    "SME signal taxonomy (breakout, "
+                    "buy-low, start/sit, etc.)."
+                ),
+                analyses=[
+                    "player_overview",
+                ],
+                metrics=[
+                    "Signals by type",
+                ],
+                priority="high",
+                required=True,
+            ),
+
+            FieldOpportunity(
+                field="signal_strength",
+                description=(
+                    "Strength score used for materiality "
+                    "and ranking of fantasy insights."
+                ),
+                analyses=[
+                    "player_overview",
+                ],
+                metrics=[
+                    "Top signal strength",
+                    "Eligible signals",
+                ],
+                priority="high",
+                required=True,
+            ),
+
+            FieldOpportunity(
+                field="confidence",
+                description=(
+                    "Confidence gate for promoting "
+                    "signals to insights."
+                ),
+                analyses=[
+                    "player_overview",
+                ],
+                metrics=[
+                    "Average confidence",
+                ],
+                priority="medium",
+                required=False,
+            ),
+
+        ],
+
+    ),
+
 ]
+
+
+# Product-facing analysis id → executable analysis module ids.
+PRODUCT_ANALYSIS_MODULES: dict[str, tuple[str, ...]] = {
+    "player_overview": ("fantasy_signals",),
+    # UI/API-driven; no executable dashboard module yet.
+    "daily_fantasy": (),
+}
+
+PRODUCT_ANALYSIS_META: dict[str, dict[str, str]] = {
+    "player_overview": {
+        "title": "Player Overview",
+        "description": (
+            "Analyze a player's performance, usage, "
+            "trends and fantasy outlook."
+        ),
+    },
+    "daily_fantasy": {
+        "title": "Daily Fantasy",
+        "description": (
+            "Analyze today's slate, identify the strongest "
+            "DFS opportunities, and build optimized lineups."
+        ),
+    },
+}
+
+
+def expand_to_module_ids(
+    analysis_ids: list[str] | tuple[str, ...] | set[str],
+) -> set[str]:
+    """
+    Expand product-facing analysis ids to executable
+    module ids. Unknown ids pass through unchanged.
+    """
+
+    modules: set[str] = set()
+
+    for analysis_id in analysis_ids:
+        if analysis_id in PRODUCT_ANALYSIS_MODULES:
+            modules.update(
+                PRODUCT_ANALYSIS_MODULES[analysis_id]
+            )
+        else:
+            modules.add(analysis_id)
+
+    return modules
+
+
+def product_analysis_title(
+    analysis_id: str,
+) -> str:
+    meta = PRODUCT_ANALYSIS_META.get(analysis_id)
+    if meta and meta.get("title"):
+        return meta["title"]
+    return analysis_id.replace("_", " ").title()
+
+
+def product_analysis_description(
+    analysis_id: str,
+) -> str:
+    meta = PRODUCT_ANALYSIS_META.get(analysis_id)
+    if meta:
+        return meta.get("description", "")
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +820,39 @@ def get_product_definition(
     return None
 
 
+def resolve_product_type(
+    definition_id: str | None,
+    stored: str | None = None,
+) -> str:
+    """
+    Resolve product_type for an instance.
+
+    Prefer a persisted value; otherwise look up
+    the catalog definition; default to user_created.
+    """
+
+    if stored in (
+        PRODUCT_TYPE_USER_CREATED,
+        PRODUCT_TYPE_NATIVE,
+    ):
+        return stored
+
+    if stored == _LEGACY_PRE_CANNED:
+        return PRODUCT_TYPE_NATIVE
+
+    if definition_id:
+        definition = get_product_definition(
+            definition_id
+        )
+        if definition is not None:
+            return (
+                definition.product_type
+                or PRODUCT_TYPE_USER_CREATED
+            )
+
+    return PRODUCT_TYPE_USER_CREATED
+
+
 def get_analysis_ids_for_products(
     product_ids: list[str] | None,
 ) -> set[str] | None:
@@ -629,7 +879,9 @@ def get_analysis_ids_for_products(
             continue
 
         analysis_ids.update(
-            definition.analyses or []
+            expand_to_module_ids(
+                definition.analyses or []
+            )
         )
 
     return analysis_ids
@@ -691,6 +943,11 @@ def serialize_product_definition(
 
         "business_purpose": (
             product.business_purpose
+        ),
+
+        "product_type": (
+            product.product_type
+            or PRODUCT_TYPE_USER_CREATED
         ),
 
         "dataset_types": list(

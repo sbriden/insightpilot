@@ -16,6 +16,8 @@ Supported grains:
     operational_event
     product
     account
+    player_week
+    player_game
     unknown
 """
 
@@ -40,6 +42,8 @@ GrainId = Literal[
     "operational_event",
     "product",
     "account",
+    "player_week",
+    "player_game",
     "unknown",
 ]
 
@@ -52,6 +56,8 @@ GRAIN_LABELS: dict[GrainId, str] = {
     "operational_event": "Operational event",
     "product": "Product",
     "account": "Account",
+    "player_week": "Player × Week",
+    "player_game": "Player × Game",
     "unknown": "Unknown",
 }
 
@@ -997,11 +1003,129 @@ def _score_operational_event(
     )
 
 
+def _score_player_week(
+    inv: SemanticInventory,
+    stats_index: dict[str, dict],
+) -> _Score:
+    del stats_index
+    evidence: list[_Evidence] = []
+    signals: list[float] = []
+
+    has_player, player_conf, player_matches = inv.has_concept(
+        "Player"
+    )
+    has_week, week_conf, week_matches = inv.has_concept("Week")
+    has_season, season_conf, season_matches = inv.has_concept(
+        "Season"
+    )
+    has_game, _, _ = inv.has_concept("Game")
+    has_signal, signal_conf, signal_matches = inv.has_concept(
+        "SignalType"
+    )
+
+    if not has_player or not has_week:
+        return _Score("player_week", 0.0)
+
+    signals.append(player_conf)
+    evidence.append(
+        _Evidence(
+            signal="player_entity",
+            columns=_concept_names(player_matches),
+            detail="Player concept present.",
+        )
+    )
+    signals.append(week_conf)
+    evidence.append(
+        _Evidence(
+            signal="week_dimension",
+            columns=_concept_names(week_matches),
+            detail="Week concept present.",
+        )
+    )
+    if has_season:
+        signals.append(season_conf * 0.8)
+        evidence.append(
+            _Evidence(
+                signal="season_dimension",
+                columns=_concept_names(season_matches),
+                detail="Season concept present.",
+            )
+        )
+    if has_signal:
+        signals.append(signal_conf * 0.9)
+        evidence.append(
+            _Evidence(
+                signal="fantasy_signal",
+                columns=_concept_names(signal_matches),
+                detail="Fantasy signal type present.",
+            )
+        )
+    # Prefer week grain when Game is absent.
+    if has_game:
+        signals.append(0.35)
+
+    score = _avg(*signals) if signals else 0.0
+    return _Score(
+        grain="player_week",
+        score=score,
+        evidence=evidence,
+        explanation=(
+            "Each row appears to represent a player in a given week."
+        ),
+    )
+
+
+def _score_player_game(
+    inv: SemanticInventory,
+    stats_index: dict[str, dict],
+) -> _Score:
+    del stats_index
+    evidence: list[_Evidence] = []
+    signals: list[float] = []
+
+    has_player, player_conf, player_matches = inv.has_concept(
+        "Player"
+    )
+    has_game, game_conf, game_matches = inv.has_concept("Game")
+
+    if not has_player or not has_game:
+        return _Score("player_game", 0.0)
+
+    signals.append(player_conf)
+    evidence.append(
+        _Evidence(
+            signal="player_entity",
+            columns=_concept_names(player_matches),
+            detail="Player concept present.",
+        )
+    )
+    signals.append(game_conf)
+    evidence.append(
+        _Evidence(
+            signal="game_entity",
+            columns=_concept_names(game_matches),
+            detail="Game concept present.",
+        )
+    )
+
+    score = _avg(*signals) if signals else 0.0
+    return _Score(
+        grain="player_game",
+        score=score,
+        evidence=evidence,
+        explanation=(
+            "Each row appears to represent a player in a given game."
+        ),
+    )
+
+
 # ──────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────
 
 _SCORERS = [
+    _score_player_week,
+    _score_player_game,
     _score_transaction,
     _score_invoice,
     _score_customer,

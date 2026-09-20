@@ -6,6 +6,15 @@ from typing import Any
 from sqlalchemy import text
 
 from app.database import engine
+from app.analysis.insights.findings import (
+    collect_candidate_findings_from_dashboards,
+)
+from app.analysis.insights.insight import (
+    collect_promoted_insights_from_dashboards,
+)
+from app.analysis.insights.validation import (
+    collect_validated_findings_from_dashboards,
+)
 
 
 PRODUCT_COLUMNS = """
@@ -13,6 +22,7 @@ PRODUCT_COLUMNS = """
     name,
     description,
     business_purpose,
+    product_type,
     source_dataset,
     status,
     coverage,
@@ -125,6 +135,81 @@ def _serialize_row(
         {},
     )
 
+    from app.products.catalog import (
+        resolve_product_type,
+    )
+
+    product["product_type"] = resolve_product_type(
+        product.get("definition_id"),
+        product.get("product_type"),
+    )
+
+    # Additive API field: findings persist inside dashboards
+    # JSONB; rebuild the top-level list on read so older rows
+    # and schema-without-column stay compatible.
+    product["candidate_findings"] = (
+        collect_candidate_findings_from_dashboards(
+            product.get("dashboards") or [],
+            scope_by_dashboard=True,
+        )
+    )
+
+    product["validated_findings"] = (
+        collect_validated_findings_from_dashboards(
+            product.get("dashboards") or [],
+            scope_by_dashboard=True,
+        )
+    )
+
+    product["promoted_insights"] = (
+        collect_promoted_insights_from_dashboards(
+            product.get("dashboards") or [],
+            scope_by_dashboard=True,
+        )
+    )
+
+    from app.analysis.insights.ai_cache import (
+        apply_insight_ai_cache_to_product,
+        cache_has_usable_overlays,
+        get_insight_ai_cache,
+    )
+    from app.services.ai import (
+        generate_insight_explanations_for_selection,
+        generate_insight_executive_brief_for_results,
+    )
+
+    cache = get_insight_ai_cache(product.get("metadata"))
+
+    # Prefer the per-version AI cache. Never re-call the provider
+    # on detail reads when overlays were already generated.
+    if cache_has_usable_overlays(cache):
+        apply_insight_ai_cache_to_product(
+            product,
+            generate_if_missing=False,
+        )
+    else:
+        # Legacy rows: deterministic fallback only (no provider).
+        try:
+            apply_insight_ai_cache_to_product(
+                product,
+                generate_if_missing=True,
+                generator_explanations=(
+                    generate_insight_explanations_for_selection
+                ),
+                generator_brief=(
+                    generate_insight_executive_brief_for_results
+                ),
+            )
+        except Exception:
+            from app.analysis.insights.initial_results import (
+                build_initial_results,
+            )
+
+            product["insight_initial_results"] = build_initial_results(
+                product["promoted_insights"]
+            )
+            product["executive_brief"] = None
+
     for field in (
         "created_at",
         "updated_at",
@@ -137,6 +222,81 @@ def _serialize_row(
             product[field] = (
                 value.isoformat()
             )
+
+    return product
+
+
+def _serialize_row_summary(row: Any) -> dict | None:
+    """
+    Fast serializer for product list endpoints.
+
+    Skips dashboard rehydration and omits bulky analysis payloads
+    so the home page / saved-product lists stay responsive.
+    """
+
+    if row is None:
+        return None
+
+    product = dict(row)
+
+    product["analyses"] = _parse_json_field(
+        product.get("analyses"),
+        [],
+    )
+    product["metrics"] = _parse_json_field(
+        product.get("metrics"),
+        [],
+    )
+    product["insights"] = _parse_json_field(
+        product.get("insights"),
+        [],
+    )
+    product["change_summary"] = _parse_json_field(
+        product.get("change_summary"),
+        None,
+    )
+    product["executive_summary"] = _parse_json_field(
+        product.get("executive_summary"),
+        None,
+    )
+    product["health"] = _parse_json_field(
+        product.get("health"),
+        None,
+    )
+    product["metadata"] = _parse_json_field(
+        product.get("metadata"),
+        {},
+    )
+
+    metadata = product.get("metadata") or {}
+    product["dashboards"] = []
+    product["candidate_findings"] = []
+    product["validated_findings"] = []
+    product["promoted_insights"] = []
+    product["insight_initial_results"] = {
+        "version": "v1",
+        "total_discovered": int(
+            metadata.get("promoted_insight_count") or 0
+        ),
+        "tier_counts": {},
+        "tiers": [],
+        "recommended_cap": 5,
+        "recommended_count": 0,
+        "recommended_insight_ids": [],
+        "recommended_insights": [],
+        "headline": "",
+        "summary": "",
+        "executive_brief": None,
+    }
+    product["executive_brief"] = None
+
+    for field in (
+        "created_at",
+        "updated_at",
+    ):
+        value = product.get(field)
+        if hasattr(value, "isoformat"):
+            product[field] = value.isoformat()
 
     return product
 
@@ -172,6 +332,11 @@ def _product_params(
         "business_purpose": product.get(
             "business_purpose",
             "",
+        ),
+
+        "product_type": product.get(
+            "product_type",
+            "user_created",
         ),
 
         "source_dataset": product.get(
@@ -283,6 +448,7 @@ def create_data_product(
             :name,
             :description,
             :business_purpose,
+            :product_type,
             :source_dataset,
             :status,
             :coverage,
@@ -421,7 +587,7 @@ def get_versions_by_definition_id(
         )
 
     return [
-        _serialize_row(row)
+        _serialize_row_summary(row)
         for row in rows
     ]
 
@@ -482,7 +648,7 @@ def get_data_products():
         )
 
     return [
-        _serialize_row(row)
+        _serialize_row_summary(row)
         for row in rows
     ]
 
@@ -540,6 +706,7 @@ def update_data_product(
             name = :name,
             description = :description,
             business_purpose = :business_purpose,
+            product_type = :product_type,
             source_dataset = :source_dataset,
             status = :status,
             coverage = :coverage,
@@ -574,6 +741,11 @@ def update_data_product(
         "business_purpose": product.get(
             "business_purpose",
             "",
+        ),
+
+        "product_type": product.get(
+            "product_type",
+            "user_created",
         ),
 
         "source_dataset": product.get(

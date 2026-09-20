@@ -1,7 +1,11 @@
 from ..base import AnalysisModule
 from ..builder import AnalysisBuilder
 from ..models import AnalysisDashboard
-from ..column_resolver import ColumnResolver
+from ..column_resolver import (
+    ColumnResolver,
+    apply_entity_labels,
+    build_entity_label_map,
+)
 from ..dataset_builder import DatasetBuilder
 
 from ..insights.engine import InsightEngine
@@ -21,9 +25,13 @@ class CustomerPerformanceModule(AnalysisModule):
 
     def supports(self, context):
 
-        return (
-            context.classification.get("type")
-            == "Sales & Revenue"
+        from app.analysis.candidates import (
+            analysis_supported,
+        )
+
+        return analysis_supported(
+            self.id,
+            context,
         )
 
     def run(self, context):
@@ -32,7 +40,8 @@ class CustomerPerformanceModule(AnalysisModule):
             context.column_profiles
         )
 
-        customer_column = resolver.customer()
+        customer_column = resolver.customer_key()
+        customer_label_column = resolver.customer_label()
 
         sales_column = resolver.sales()
 
@@ -48,6 +57,12 @@ class CustomerPerformanceModule(AnalysisModule):
                     "could not be identified."
                 ),
             )
+
+        customer_labels = build_entity_label_map(
+            context.dataframe,
+            customer_column,
+            customer_label_column,
+        )
 
         dashboard = AnalysisDashboard(
             id=self.id,
@@ -113,6 +128,12 @@ class CustomerPerformanceModule(AnalysisModule):
 
             customer_summary["margin"] = 0
 
+        customer_summary = apply_entity_labels(
+            customer_summary,
+            key_column=customer_column,
+            label_map=customer_labels,
+        )
+
         # Average order value
 
         customer_summary["average_order_value"] = (
@@ -129,6 +150,12 @@ class CustomerPerformanceModule(AnalysisModule):
         customer_summary = (
             customer_summary
             .fillna(0)
+        )
+
+        customer_summary = apply_entity_labels(
+            customer_summary,
+            key_column=customer_column,
+            label_map=customer_labels,
         )
 
         # Store complete dataset
@@ -224,17 +251,26 @@ class CustomerPerformanceModule(AnalysisModule):
             profit_column,
         )
 
-        insights = InsightEngine(
+        source_columns = [
+            col for col in [
+                customer_column,
+                sales_column,
+                profit_column,
+            ]
+            if col
+        ]
+
+        insights, findings = InsightEngine(
             RULES
-        ).evaluate(
-            facts
+        ).evaluate_with_findings(
+            facts,
+            analysis_type=self.id,
+            source_columns=source_columns,
+            relevant_dimensions=["customer"],
         )
 
-        for insight in insights:
-
-            dashboard.insights.append(
-                insight
-            )
+        dashboard.insights.extend(insights)
+        dashboard.candidate_findings.extend(findings)
 
         builder.action(
             "Review the highest-value customers."

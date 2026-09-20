@@ -20,6 +20,12 @@ RULES = [
             "Investigate margin drivers and define "
             "actions to restore healthy profitability."
         ),
+        metric="profit_margin",
+        observed=lambda f: f["margin"],
+        baseline=0.10,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["margin"] - 0.10,
+        magnitude_unit="ratio",
     ),
 
     InsightRule(
@@ -41,6 +47,13 @@ RULES = [
             "Review account economics for unprofitable "
             "customers and adjust pricing or service levels."
         ),
+        metric="negative_customer_count",
+        observed=lambda f: f["negative_customers"],
+        baseline=0,
+        comparison="vs_threshold",
+        magnitude=lambda f: float(f["negative_customers"]),
+        magnitude_unit="count",
+        dimensions=["customer"],
     ),
 
     InsightRule(
@@ -61,6 +74,13 @@ RULES = [
             "Launch a customer profitability remediation "
             "program with finance and sales leadership."
         ),
+        metric="negative_customer_rate",
+        observed=lambda f: f["negative_customer_pct"],
+        baseline=0.20,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["negative_customer_pct"] - 0.20,
+        magnitude_unit="ratio",
+        dimensions=["customer"],
     ),
 
     InsightRule(
@@ -82,6 +102,13 @@ RULES = [
             "Review product pricing, discounting, and "
             "cost-to-serve for loss-making items."
         ),
+        metric="negative_product_count",
+        observed=lambda f: f["negative_products"],
+        baseline=0,
+        comparison="vs_threshold",
+        magnitude=lambda f: float(f["negative_products"]),
+        magnitude_unit="count",
+        dimensions=["product"],
     ),
 
     InsightRule(
@@ -101,6 +128,13 @@ RULES = [
             "Prioritize portfolio fixes for products with "
             "sustained negative margins."
         ),
+        metric="negative_product_rate",
+        observed=lambda f: f["negative_product_pct"],
+        baseline=0.20,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["negative_product_pct"] - 0.20,
+        magnitude_unit="ratio",
+        dimensions=["product"],
     ),
 
 ]

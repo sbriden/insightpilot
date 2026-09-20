@@ -1,7 +1,12 @@
 from ..base import AnalysisModule
 from ..builder import AnalysisBuilder
 from ..models import AnalysisDashboard
-from ..column_resolver import ColumnResolver
+from ..column_resolver import (
+    ColumnResolver,
+    apply_entity_labels,
+    build_entity_label_map,
+    labeled_entity_pair,
+)
 from ..dataset_builder import DatasetBuilder
 
 from ..insights.engine import InsightEngine
@@ -21,9 +26,13 @@ class CustomerProductModule(AnalysisModule):
 
     def supports(self, context):
 
-        return (
-            context.classification.get("type")
-            == "Sales & Revenue"
+        from app.analysis.candidates import (
+            analysis_supported,
+        )
+
+        return analysis_supported(
+            self.id,
+            context,
         )
 
     def run(self, context):
@@ -32,8 +41,10 @@ class CustomerProductModule(AnalysisModule):
             context.column_profiles
         )
 
-        customer_column = resolver.customer()
-        product_column = resolver.product()
+        customer_column = resolver.customer_key()
+        customer_label_column = resolver.customer_label()
+        product_column = resolver.product_key()
+        product_label_column = resolver.product_label()
         sales_column = resolver.sales()
         profit_column = resolver.profit()
 
@@ -51,6 +62,17 @@ class CustomerProductModule(AnalysisModule):
                     "could not be identified."
                 ),
             )
+
+        customer_labels = build_entity_label_map(
+            context.dataframe,
+            customer_column,
+            customer_label_column,
+        )
+        product_labels = build_entity_label_map(
+            context.dataframe,
+            product_column,
+            product_label_column,
+        )
 
         dashboard = AnalysisDashboard(
             id=self.id,
@@ -143,14 +165,26 @@ class CustomerProductModule(AnalysisModule):
             top_combinations.copy()
         )
 
+        top_combinations = apply_entity_labels(
+            top_combinations,
+            key_column=customer_column,
+            label_map=customer_labels,
+        )
+        top_combinations = apply_entity_labels(
+            top_combinations,
+            key_column=product_column,
+            label_map=product_labels,
+        )
+
         top_combinations["customer_product"] = (
-            top_combinations[
-                customer_column
-            ].astype(str)
-            + " / "
-            + top_combinations[
-                product_column
-            ].astype(str)
+            top_combinations.apply(
+                lambda row: labeled_entity_pair(
+                    row[customer_column],
+                    row[product_column],
+                    sep=" / ",
+                ),
+                axis=1,
+            )
         )
 
         builder.dataset(
@@ -179,6 +213,12 @@ class CustomerProductModule(AnalysisModule):
             .reset_index()
         )
 
+        customer_product_counts = apply_entity_labels(
+            customer_product_counts,
+            key_column=customer_column,
+            label_map=customer_labels,
+        )
+
         builder.dataset(
             "customer_product_counts",
             customer_product_counts,
@@ -203,6 +243,12 @@ class CustomerProductModule(AnalysisModule):
                 ),
             )
             .reset_index()
+        )
+
+        product_customer_counts = apply_entity_labels(
+            product_customer_counts,
+            key_column=product_column,
+            label_map=product_labels,
         )
 
         builder.dataset(
@@ -310,15 +356,27 @@ class CustomerProductModule(AnalysisModule):
             profit_column,
         )
 
-        insights = InsightEngine(
+        source_columns = [
+            col for col in [
+                customer_column,
+                product_column,
+                sales_column,
+                profit_column,
+            ]
+            if col
+        ]
+
+        insights, findings = InsightEngine(
             RULES
-        ).evaluate(
-            facts
+        ).evaluate_with_findings(
+            facts,
+            analysis_type=self.id,
+            source_columns=source_columns,
+            relevant_dimensions=["customer", "product"],
         )
 
-        dashboard.insights.extend(
-            insights
-        )
+        dashboard.insights.extend(insights)
+        dashboard.candidate_findings.extend(findings)
 
         # --------------------------------------------------
         # Recommended actions

@@ -13,6 +13,7 @@ from app.core.analysis_context import AnalysisContext
 from app.core.responsibilities import (
     AI_ALLOWED_RESPONSIBILITIES,
     DETERMINISTIC_RESPONSIBILITIES,
+    INSIGHT_EXPLANATION_CONSTRAINTS,
     NARRATIVE_PROMPT_FACT_KEYS,
     assert_ai_not_calculation_engine,
     is_ai_allowed_responsibility,
@@ -42,10 +43,44 @@ def test_deterministic_responsibilities_cover_acceptance_criteria():
         "confidence_calculations",
     }
     assert required <= DETERMINISTIC_RESPONSIBILITIES
+    assert "structured_evidence" in DETERMINISTIC_RESPONSIBILITIES
     assert "narrative_generation" in AI_ALLOWED_RESPONSIBILITIES
     assert "ambiguous_column_semantics" in AI_ALLOWED_RESPONSIBILITIES
+    assert "insight_potential_drivers" in AI_ALLOWED_RESPONSIBILITIES
+    assert "insight_recommendation" in AI_ALLOWED_RESPONSIBILITIES
+    assert "insight_explanation" in AI_ALLOWED_RESPONSIBILITIES
+    assert "executive_brief" in AI_ALLOWED_RESPONSIBILITIES
+    assert "promoted_insights" in NARRATIVE_PROMPT_FACT_KEYS
+    assert "validated_findings" in NARRATIVE_PROMPT_FACT_KEYS
+    assert "candidate_findings" in NARRATIVE_PROMPT_FACT_KEYS
 
-    for name in required:
+    assert INSIGHT_EXPLANATION_CONSTRAINTS["may_invent_numbers"] is False
+    assert INSIGHT_EXPLANATION_CONSTRAINTS["may_receive_raw_dataset"] is False
+    assert (
+        INSIGHT_EXPLANATION_CONSTRAINTS["preferred_driver_preamble"]
+        == "Potential drivers include"
+    )
+    assert "structured_insight" in INSIGHT_EXPLANATION_CONSTRAINTS["allowed_inputs"]
+
+    # Evidence (facts) stays deterministic; explanation is AI-allowed.
+    assert is_deterministic_responsibility("structured_evidence")
+    assert is_ai_allowed_responsibility("insight_explanation")
+    assert not is_ai_allowed_responsibility("structured_evidence")
+    assert not is_deterministic_responsibility("insight_explanation")
+
+    # Analysis primitive families stay on the deterministic side.
+    primitive_responsibilities = {
+        "period_over_period_change",
+        "concentration",
+        "contribution_share",
+        "growth_decline",
+        "segment_differences",
+        "relationship_correlation",
+        "outlier_detection",
+    }
+    assert primitive_responsibilities <= DETERMINISTIC_RESPONSIBILITIES
+
+    for name in required | primitive_responsibilities:
         assert is_deterministic_responsibility(name)
         assert not is_ai_allowed_responsibility(name)
 

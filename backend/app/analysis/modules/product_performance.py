@@ -1,7 +1,11 @@
 from ..base import AnalysisModule
 from ..builder import AnalysisBuilder
 from ..models import AnalysisDashboard
-from ..column_resolver import ColumnResolver
+from ..column_resolver import (
+    ColumnResolver,
+    apply_entity_labels,
+    build_entity_label_map,
+)
 from ..dataset_builder import DatasetBuilder
 
 from ..insights.engine import InsightEngine
@@ -21,9 +25,13 @@ class ProductPerformanceModule(AnalysisModule):
 
     def supports(self, context):
 
-        return (
-            context.classification.get("type")
-            == "Sales & Revenue"
+        from app.analysis.candidates import (
+            analysis_supported,
+        )
+
+        return analysis_supported(
+            self.id,
+            context,
         )
 
     def run(self, context):
@@ -32,7 +40,8 @@ class ProductPerformanceModule(AnalysisModule):
             context.column_profiles
         )
 
-        product_column = resolver.product()
+        product_column = resolver.product_key()
+        product_label_column = resolver.product_label()
 
         sales_column = resolver.sales()
 
@@ -48,6 +57,12 @@ class ProductPerformanceModule(AnalysisModule):
                     "could not be identified."
                 ),
             )
+
+        product_labels = build_entity_label_map(
+            context.dataframe,
+            product_column,
+            product_label_column,
+        )
 
         dashboard = AnalysisDashboard(
             id=self.id,
@@ -102,6 +117,12 @@ class ProductPerformanceModule(AnalysisModule):
         else:
 
             product_summary["margin"] = 0
+
+        product_summary = apply_entity_labels(
+            product_summary,
+            key_column=product_column,
+            label_map=product_labels,
+        )
 
         builder.dataset(
             "product_summary",
@@ -178,11 +199,26 @@ class ProductPerformanceModule(AnalysisModule):
             profit_column,
         )
 
-        dashboard.insights = InsightEngine(
+        source_columns = [
+            col for col in [
+                product_column,
+                sales_column,
+                profit_column,
+            ]
+            if col
+        ]
+
+        insights, findings = InsightEngine(
             RULES
-        ).evaluate(
-            facts
+        ).evaluate_with_findings(
+            facts,
+            analysis_type=self.id,
+            source_columns=source_columns,
+            relevant_dimensions=["product"],
         )
+
+        dashboard.insights = insights
+        dashboard.candidate_findings = findings
 
         builder.action(
             "Review the highest-revenue products."

@@ -12,6 +12,8 @@ from .schemas import (
     ConceptIdentificationResponse,
     DetectCapabilitiesRequest,
     CapabilityDetectionResponse,
+    GenerateAnalysisCandidatesRequest,
+    GenerateAnalysisCandidatesResponse,
     ClassifyDatasetRequest,
     ClassifyDatasetResponse,
     DetermineGrainRequest,
@@ -43,6 +45,10 @@ from app.datasets.concept_identification import (
 
 from app.datasets.capability_detection import (
     detect_analytical_capabilities,
+)
+
+from app.analysis.candidates import (
+    generate_analytical_candidates,
 )
 
 from app.datasets.dataset_classification import (
@@ -186,6 +192,35 @@ def detect_capabilities(
             for concept
             in request.concepts
         ]
+    )
+
+
+@router.post(
+    "/generate-analysis-candidates",
+    response_model=GenerateAnalysisCandidatesResponse,
+)
+def generate_analysis_candidates(
+    request: GenerateAnalysisCandidatesRequest,
+):
+    """
+    Propose applicable analyses from semantic capabilities
+    and dataset archetype — without hardcoding a sales suite.
+    """
+
+    archetype = request.dataset_archetype
+
+    if archetype is None and request.primary_archetype:
+        archetype = {
+            "primary": request.primary_archetype,
+        }
+
+    return generate_analytical_candidates(
+        capabilities=[
+            capability.model_dump()
+            for capability
+            in request.capabilities
+        ],
+        dataset_archetype=archetype,
     )
 
 

@@ -11,6 +11,7 @@ SCHEMA_STATEMENTS = [
         name TEXT NOT NULL,
         description TEXT NOT NULL,
         business_purpose TEXT,
+        product_type TEXT NOT NULL DEFAULT 'user_created',
         source_dataset TEXT,
         status TEXT NOT NULL DEFAULT 'draft',
         coverage DOUBLE PRECISION DEFAULT 0,
@@ -63,6 +64,12 @@ SCHEMA_STATEMENTS = [
     """
     ALTER TABLE data_products
     ADD COLUMN IF NOT EXISTS health JSONB
+    """,
+
+    """
+    ALTER TABLE data_products
+    ADD COLUMN IF NOT EXISTS product_type TEXT
+    NOT NULL DEFAULT 'user_created'
     """,
 
     """

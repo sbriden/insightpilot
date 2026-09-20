@@ -1,7 +1,12 @@
 from ..base import AnalysisModule
 from ..builder import AnalysisBuilder
 from ..models import AnalysisDashboard
-from ..column_resolver import ColumnResolver
+from ..column_resolver import (
+    ColumnResolver,
+    apply_entity_labels,
+    build_entity_label_map,
+    format_entity_label,
+)
 from ..dataset_builder import DatasetBuilder
 
 
@@ -18,9 +23,13 @@ class CustomerGrowthModule(AnalysisModule):
 
     def supports(self, context):
 
-        return (
-            context.classification.get("type")
-            == "Sales & Revenue"
+        from app.analysis.candidates import (
+            analysis_supported,
+        )
+
+        return analysis_supported(
+            self.id,
+            context,
         )
 
     def run(self, context):
@@ -29,8 +38,9 @@ class CustomerGrowthModule(AnalysisModule):
             context.column_profiles
         )
 
-        customer_column = resolver.customer()
-        product_column = resolver.product()
+        customer_column = resolver.customer_key()
+        customer_label_column = resolver.customer_label()
+        product_column = resolver.product_key()
         sales_column = resolver.sales()
         profit_column = resolver.profit()
 
@@ -48,6 +58,12 @@ class CustomerGrowthModule(AnalysisModule):
                     "columns could not be identified."
                 ),
             )
+
+        customer_labels = build_entity_label_map(
+            context.dataframe,
+            customer_column,
+            customer_label_column,
+        )
 
         dashboard = AnalysisDashboard(
             id=self.id,
@@ -251,6 +267,12 @@ class CustomerGrowthModule(AnalysisModule):
             .copy()
         )
 
+        top_opportunities = apply_entity_labels(
+            top_opportunities,
+            key_column=customer_column,
+            label_map=customer_labels,
+        )
+
         top_opportunities["label"] = (
             top_opportunities[
                 customer_column
@@ -291,6 +313,7 @@ class CustomerGrowthModule(AnalysisModule):
         self.build_visualizations(
             builder,
             customer_column,
+            customer_labels,
         )
 
         # --------------------------------------------------
@@ -301,6 +324,7 @@ class CustomerGrowthModule(AnalysisModule):
             builder,
             opportunities,
             customer_column,
+            customer_labels,
         )
 
         # --------------------------------------------------
@@ -393,6 +417,7 @@ class CustomerGrowthModule(AnalysisModule):
         self,
         builder,
         customer_column,
+        customer_labels=None,
     ):
 
         builder.visualization(
@@ -422,6 +447,7 @@ class CustomerGrowthModule(AnalysisModule):
         builder,
         opportunities,
         customer_column,
+        customer_labels=None,
     ):
 
         if opportunities.empty:
@@ -450,15 +476,36 @@ class CustomerGrowthModule(AnalysisModule):
             ]
         )
 
+        evidence = (
+            f"{len(opportunities):,} customers have "
+            "identifiable product expansion potential, "
+            f"representing approximately "
+            f"${total_potential:,.0f} in estimated "
+            "revenue potential."
+        )
+
         builder.insight(
             "medium",
-            (
-                f"{len(opportunities):,} customers have "
-                "identifiable product expansion potential, "
-                f"representing approximately "
-                f"${total_potential:,.0f} in estimated "
-                "revenue potential."
-            ),
+            evidence,
+        )
+
+        builder.candidate_finding(
+            metric="growth_opportunity_count",
+            observed_value=int(len(opportunities)),
+            baseline=0,
+            comparison="vs_threshold",
+            magnitude=float(len(opportunities)),
+            magnitude_unit="count",
+            evidence=evidence,
+            confidence=0.85,
+            relevant_dimensions=["customer"],
+            source_columns=[
+                col for col in [customer_column]
+                if col
+            ],
+            rule_id="growth_opportunities",
+            severity="medium",
+            title="Customer Growth Opportunities",
         )
 
         if not high_priority.empty:
@@ -467,17 +514,43 @@ class CustomerGrowthModule(AnalysisModule):
                 high_priority.iloc[0]
             )
 
-            customer_name = (
-                top_customer[
-                    customer_column
-                ]
+            customer_name = format_entity_label(
+                top_customer[customer_column],
+                customer_labels,
+            )
+
+            top_evidence = (
+                f"{customer_name} has a strong combination "
+                "of customer value and product expansion "
+                "potential."
             )
 
             builder.insight(
                 "high",
-                (
-                    f"{customer_name} has a strong combination "
-                    "of customer value and product expansion "
-                    "potential."
+                top_evidence,
+            )
+
+            builder.candidate_finding(
+                metric="growth_score",
+                observed_value=float(
+                    top_customer["growth_score"]
+                ),
+                baseline=0.70,
+                comparison="vs_threshold",
+                magnitude=float(
+                    top_customer["growth_score"] - 0.70
+                ),
+                magnitude_unit="ratio",
+                evidence=top_evidence,
+                confidence=0.8,
+                relevant_dimensions=["customer"],
+                source_columns=[
+                    col for col in [customer_column]
+                    if col
+                ],
+                rule_id="top_growth_customer",
+                severity="high",
+                title=(
+                    f"Top Growth Opportunity: {customer_name}"
                 ),
             )

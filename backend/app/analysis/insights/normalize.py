@@ -125,8 +125,6 @@ def normalize_insight_record(
             )
             or ""
         ).strip()
-        or message
-        or what_happened
     )
 
     category = (
@@ -169,5 +167,5 @@ def normalize_insight_record(
             title or what_happened,
 
         "message":
-            message or why_it_matters,
+            message or why_it_matters or what_happened,
     }

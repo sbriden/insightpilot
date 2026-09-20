@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS data_products (
 
     business_purpose TEXT,
 
+    product_type TEXT NOT NULL DEFAULT 'user_created',
+
     source_dataset TEXT,
 
     status TEXT NOT NULL DEFAULT 'draft',
@@ -52,6 +54,9 @@ ADD COLUMN IF NOT EXISTS previous_product_id TEXT;
 
 ALTER TABLE data_products
 ADD COLUMN IF NOT EXISTS change_summary JSONB;
+
+ALTER TABLE data_products
+ADD COLUMN IF NOT EXISTS product_type TEXT NOT NULL DEFAULT 'user_created';
 
 CREATE INDEX IF NOT EXISTS
 idx_data_products_dataset_identity_version

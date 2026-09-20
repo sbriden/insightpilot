@@ -27,6 +27,15 @@ RULES = [
             "Target under-penetrated products in "
             "existing customer campaigns."
         ),
+        metric="low_penetration_product_rate",
+        observed=lambda f: f["low_penetration_product_pct"],
+        baseline=0.25,
+        comparison="vs_threshold",
+        magnitude=lambda f: (
+            f["low_penetration_product_pct"] - 0.25
+        ),
+        magnitude_unit="ratio",
+        dimensions=["customer", "product"],
     ),
 
     InsightRule(
@@ -48,6 +57,15 @@ RULES = [
             "Maintain current mix and look for "
             "incremental expansion opportunities."
         ),
+        metric="low_penetration_product_rate",
+        observed=lambda f: f["low_penetration_product_pct"],
+        baseline=0.10,
+        comparison="vs_threshold",
+        magnitude=lambda f: (
+            f["low_penetration_product_pct"] - 0.10
+        ),
+        magnitude_unit="ratio",
+        dimensions=["customer", "product"],
     ),
 
     InsightRule(
@@ -72,6 +90,13 @@ RULES = [
             "Review pricing and fulfillment economics "
             "for unprofitable combinations."
         ),
+        metric="negative_combination_count",
+        observed=lambda f: f["negative_combinations"],
+        baseline=0,
+        comparison="vs_threshold",
+        magnitude=lambda f: float(f["negative_combinations"]),
+        magnitude_unit="count",
+        dimensions=["customer", "product"],
     ),
 
     InsightRule(
@@ -95,6 +120,15 @@ RULES = [
             "Prioritize remediation for the highest-loss "
             "customer/product pairings."
         ),
+        metric="negative_combination_rate",
+        observed=lambda f: f["negative_combination_pct"],
+        baseline=0.20,
+        comparison="vs_threshold",
+        magnitude=lambda f: (
+            f["negative_combination_pct"] - 0.20
+        ),
+        magnitude_unit="ratio",
+        dimensions=["customer", "product"],
     ),
 
 ]

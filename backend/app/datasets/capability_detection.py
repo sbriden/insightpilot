@@ -19,11 +19,19 @@ ENTITY_CONCEPTS = {
     "Employee",
     "Supplier",
     "Transaction/Order",
+    "Player",
+    "Team",
+    "Game",
 }
 
 MEASURE_CONCEPTS = {
     "Revenue",
     "Quantity",
+    "FantasyPoints",
+    "Targets",
+    "Carries",
+    "Routes",
+    "SignalStrength",
 }
 
 
@@ -832,6 +840,117 @@ def _evaluate_relationship_analysis(
     )
 
 
+def _evaluate_player_analysis(
+    inventory: SemanticInventory,
+) -> _EvaluationResult:
+    player_found, player_conf, player_matches = (
+        inventory.has_concept("Player")
+    )
+    measure_found = False
+    measure_conf = 0.0
+    measure_matches: list[dict] = []
+    for concept in (
+        "FantasyPoints",
+        "Targets",
+        "Carries",
+        "Routes",
+        "SignalStrength",
+        "Revenue",
+        "Quantity",
+    ):
+        found, conf, matches = inventory.has_concept(concept)
+        if found and conf >= measure_conf:
+            measure_found = True
+            measure_conf = conf
+            measure_matches = matches
+
+    if not measure_found:
+        found_role, role_conf, role_matches = inventory.has_role(
+            "measure"
+        )
+        if found_role:
+            measure_found = True
+            measure_conf = role_conf
+            measure_matches = role_matches
+
+    if player_found and measure_found:
+        return _EvaluationResult(
+            supported=True,
+            confidence=_combine_confidence(
+                player_conf,
+                measure_conf,
+            ),
+            matched_columns=player_matches + measure_matches,
+            explanation=(
+                "Supported because the dataset identifies players "
+                f"({_format_columns(player_matches)}) with measures "
+                f"({_format_columns(measure_matches)})."
+            ),
+        )
+
+    return _EvaluationResult(
+        supported=False,
+        confidence=0.0,
+        matched_columns=player_matches + measure_matches,
+        explanation=(
+            "Player analysis requires a player entity and at least "
+            "one performance or opportunity measure."
+        ),
+    )
+
+
+def _evaluate_fantasy_signal_analysis(
+    inventory: SemanticInventory,
+) -> _EvaluationResult:
+    player_found, player_conf, player_matches = (
+        inventory.has_concept("Player")
+    )
+    signal_found, signal_conf, signal_matches = (
+        inventory.has_concept("SignalType")
+    )
+    strength_found, strength_conf, strength_matches = (
+        inventory.has_concept("SignalStrength")
+    )
+    if not strength_found:
+        found_role, role_conf, role_matches = inventory.has_role(
+            "measure"
+        )
+        if found_role:
+            strength_found = True
+            strength_conf = role_conf
+            strength_matches = role_matches
+
+    if player_found and signal_found:
+        return _EvaluationResult(
+            supported=True,
+            confidence=_combine_confidence(
+                player_conf,
+                signal_conf,
+                strength_conf if strength_found else player_conf,
+            ),
+            matched_columns=(
+                player_matches
+                + signal_matches
+                + strength_matches
+            ),
+            explanation=(
+                "Supported because the dataset includes players "
+                f"({_format_columns(player_matches)}) and fantasy "
+                f"signal types ({_format_columns(signal_matches)})."
+            ),
+        )
+
+    return _EvaluationResult(
+        supported=False,
+        confidence=0.0,
+        matched_columns=player_matches + signal_matches,
+        explanation=(
+            "Fantasy signal analysis requires player identity and "
+            "a signal type column."
+        ),
+    )
+
+
 CAPABILITY_DEFINITIONS: list[CapabilityDefinition] = [
     CapabilityDefinition(
         capability="time_series_analysis",
@@ -916,6 +1035,18 @@ CAPABILITY_DEFINITIONS: list[CapabilityDefinition] = [
         label="Relationship analysis",
         required_concepts=["Customer", "Product"],
         evaluate=_evaluate_relationship_analysis,
+    ),
+    CapabilityDefinition(
+        capability="player_analysis",
+        label="Player analysis",
+        required_concepts=["Player"],
+        evaluate=_evaluate_player_analysis,
+    ),
+    CapabilityDefinition(
+        capability="fantasy_signal_analysis",
+        label="Fantasy signal analysis",
+        required_concepts=["Player", "SignalType"],
+        evaluate=_evaluate_fantasy_signal_analysis,
     ),
 ]
 

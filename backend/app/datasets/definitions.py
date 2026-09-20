@@ -180,4 +180,39 @@ DATASET_TYPES = [
         product_ids=[],
     ),
 
+    DatasetTypeDefinition(
+        id="fantasy_football",
+        name="Fantasy Football",
+        description=(
+            "Player, team, week, and fantasy signal "
+            "data for actionable fantasy insights."
+        ),
+        keywords=[
+            "fantasy",
+            "football",
+            "nfl",
+            "player",
+            "signal",
+            "target",
+            "ppr",
+            "waiver",
+            "nflverse",
+        ],
+        example_fields=[
+            "player_id",
+            "season",
+            "week",
+            "signal_type",
+            "signal_strength",
+            "confidence",
+            "fantasy_points",
+            "targets",
+            "position",
+            "team_id",
+        ],
+        product_ids=[
+            "fantasy_football",
+        ],
+    ),
+
 ]

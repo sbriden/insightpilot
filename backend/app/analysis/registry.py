@@ -34,6 +34,10 @@ from .modules.opportunity_summary import (
     OpportunitySummaryModule,
 )
 
+from .modules.fantasy_signals import (
+    FantasySignalsModule,
+)
+
 
 MODULES = [
 
@@ -56,5 +60,7 @@ MODULES = [
     ProfitImprovementModule(),
 
     OpportunitySummaryModule(),
+
+    FantasySignalsModule(),
 
 ]

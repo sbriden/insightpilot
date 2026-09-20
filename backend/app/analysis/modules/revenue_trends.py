@@ -22,9 +22,13 @@ class RevenueTrendsModule(AnalysisModule):
 
     def supports(self, context):
 
-        return (
-            context.classification.get("type")
-            == "Sales & Revenue"
+        from app.analysis.candidates import (
+            analysis_supported,
+        )
+
+        return analysis_supported(
+            self.id,
+            context,
         )
 
     def run(self, context):
@@ -369,11 +373,25 @@ class RevenueTrendsModule(AnalysisModule):
             y="revenue",
         )
 
-        dashboard.insights = InsightEngine(
+        source_columns = [
+            col for col in [
+                date_column,
+                sales_column,
+            ]
+            if col
+        ]
+
+        insights, findings = InsightEngine(
             RULES
-        ).evaluate(
-            facts
+        ).evaluate_with_findings(
+            facts,
+            analysis_type=self.id,
+            source_columns=source_columns,
+            relevant_dimensions=["date"],
         )
+
+        dashboard.insights = insights
+        dashboard.candidate_findings = findings
 
         builder.action(
             "Investigate significant changes in monthly revenue."

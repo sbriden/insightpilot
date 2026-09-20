@@ -1,7 +1,7 @@
 import {
     ResponsiveContainer,
-    BarChart,
-    Bar,
+    ScatterChart,
+    Scatter,
     XAxis,
     YAxis,
     CartesianGrid,
@@ -13,7 +13,7 @@ type Props = {
     visualization: any;
 };
 
-export default function BarChartView({
+export default function ScatterChartView({
     data,
     visualization,
 }: Props) {

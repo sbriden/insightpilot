@@ -1,6 +1,18 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Literal, Optional, Dict
+
+
+# Origin of a data product in the catalog / on a persisted instance.
+# user_created — built from a user's dataset (e.g. upload sales → Customer Intelligence)
+# native       — defined and maintained by InsightPilot (e.g. Fantasy Football)
+ProductType = Literal["user_created", "native"]
+
+PRODUCT_TYPE_USER_CREATED: ProductType = "user_created"
+PRODUCT_TYPE_NATIVE: ProductType = "native"
+
+# Legacy persisted value before native rename.
+_LEGACY_PRE_CANNED = "pre_canned"
 
 
 @dataclass
@@ -25,8 +37,11 @@ class FieldOpportunity:
 @dataclass
 class DataProductDefinition:
     """
-    Defines a reusable data product that InsightPilot
-    can create from a compatible dataset.
+    Catalog template for a reusable data product.
+
+    product_type distinguishes user-created products
+    (from a user's dataset) from native products
+    maintained by InsightPilot.
     """
 
     id: str
@@ -36,6 +51,10 @@ class DataProductDefinition:
     description: str
 
     business_purpose: str = ""
+
+    product_type: ProductType = (
+        PRODUCT_TYPE_USER_CREATED
+    )
 
     dataset_types: List[str] = field(
         default_factory=list
@@ -65,8 +84,10 @@ class DataProductDefinition:
 @dataclass
 class DataProduct:
     """
-    Represents an actual data product generated
-    from an uploaded dataset.
+    A materialized data product instance.
+
+    May be user-created (from an uploaded dataset) or
+    native (InsightPilot-maintained), per product_type.
     """
 
     id: str
@@ -76,6 +97,10 @@ class DataProduct:
     description: str
 
     business_purpose: str = ""
+
+    product_type: ProductType = (
+        PRODUCT_TYPE_USER_CREATED
+    )
 
     source_dataset: str = ""
 
@@ -100,6 +125,23 @@ class DataProduct:
     )
 
     insights: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+
+    # Aggregated from dashboards; also nested inside
+    # dashboards JSONB for persistence without a new column.
+    candidate_findings: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+
+    # Validated subset of candidates (structural gate).
+    validated_findings: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+
+    # Insights from insight-eligible validated findings only.
+    # Rebuilt on read from dashboards (same pattern as findings).
+    promoted_insights: List[Dict[str, Any]] = field(
         default_factory=list
     )
 

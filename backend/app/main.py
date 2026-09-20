@@ -7,6 +7,10 @@ from . import models
 from .routers import health
 from .routers import upload
 
+from app.sources.router import (
+    router as sources_router,
+)
+
 from app.products.router import (
     router as data_products_router,
 )
@@ -23,6 +27,10 @@ from app.datasets.schema import (
     ensure_datasets_schema,
 )
 
+from app.canonical.schema import (
+    ensure_canonical_schema,
+)
+
 load_dotenv()
 
 
@@ -30,6 +38,7 @@ load_dotenv()
 Base.metadata.create_all(bind=engine)
 ensure_data_products_schema()
 ensure_datasets_schema()
+ensure_canonical_schema()
 
 
 app = FastAPI(
@@ -79,4 +88,10 @@ app.include_router(
 
 app.include_router(
     dataset_types_router
+)
+
+app.include_router(
+    sources_router,
+    prefix="/api/sources",
+    tags=["Sources"],
 )

@@ -26,6 +26,13 @@ RULES = [
             "Review pricing, discounts, and service costs "
             "for loss-making customer accounts."
         ),
+        metric="negative_customer_count",
+        observed=lambda f: f["negative_customers"],
+        baseline=0,
+        comparison="vs_threshold",
+        magnitude=lambda f: float(f["negative_customers"]),
+        magnitude_unit="count",
+        dimensions=["customer"],
     ),
 
     InsightRule(
@@ -45,6 +52,13 @@ RULES = [
             "Escalate account economics review and define "
             "remediation plans for unprofitable segments."
         ),
+        metric="negative_customer_rate",
+        observed=lambda f: f["negative_customer_pct"],
+        baseline=0.20,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["negative_customer_pct"] - 0.20,
+        magnitude_unit="ratio",
+        dimensions=["customer"],
     ),
 
     InsightRule(
@@ -64,6 +78,13 @@ RULES = [
             "Identify low-margin accounts and test pricing "
             "or cost-to-serve improvements."
         ),
+        metric="low_margin_customer_rate",
+        observed=lambda f: f["low_margin_customer_pct"],
+        baseline=0.20,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["low_margin_customer_pct"] - 0.20,
+        magnitude_unit="ratio",
+        dimensions=["customer"],
     ),
 
     InsightRule(
@@ -84,6 +105,13 @@ RULES = [
             "Monitor top-account retention and pursue "
             "diversification in the customer base."
         ),
+        metric="top10_revenue_share",
+        observed=lambda f: f["top10_revenue_share"],
+        baseline=0.50,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["top10_revenue_share"] - 0.50,
+        magnitude_unit="ratio",
+        dimensions=["customer"],
     ),
 
     InsightRule(
@@ -104,6 +132,13 @@ RULES = [
             "Continue monitoring concentration while "
             "supporting balanced growth across accounts."
         ),
+        metric="top10_revenue_share",
+        observed=lambda f: f["top10_revenue_share"],
+        baseline=0.25,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["top10_revenue_share"] - 0.25,
+        magnitude_unit="ratio",
+        dimensions=["customer"],
     ),
 
 ]

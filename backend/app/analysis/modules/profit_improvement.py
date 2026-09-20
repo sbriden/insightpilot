@@ -1,7 +1,12 @@
 from ..base import AnalysisModule
 from ..builder import AnalysisBuilder
 from ..models import AnalysisDashboard
-from ..column_resolver import ColumnResolver
+from ..column_resolver import (
+    ColumnResolver,
+    apply_entity_labels,
+    build_entity_label_map,
+    format_entity_label,
+)
 from ..dataset_builder import DatasetBuilder
 
 
@@ -18,9 +23,13 @@ class ProfitImprovementModule(AnalysisModule):
 
     def supports(self, context):
 
-        return (
-            context.classification.get("type")
-            == "Sales & Revenue"
+        from app.analysis.candidates import (
+            analysis_supported,
+        )
+
+        return analysis_supported(
+            self.id,
+            context,
         )
 
     def run(self, context):
@@ -29,7 +38,8 @@ class ProfitImprovementModule(AnalysisModule):
             context.column_profiles
         )
 
-        product_column = resolver.product()
+        product_column = resolver.product_key()
+        product_label_column = resolver.product_label()
         sales_column = resolver.sales()
         profit_column = resolver.profit()
 
@@ -47,6 +57,12 @@ class ProfitImprovementModule(AnalysisModule):
                     "could not be identified."
                 ),
             )
+
+        product_labels = build_entity_label_map(
+            context.dataframe,
+            product_column,
+            product_label_column,
+        )
 
         dashboard = AnalysisDashboard(
             id=self.id,
@@ -241,10 +257,23 @@ class ProfitImprovementModule(AnalysisModule):
             .copy()
         )
 
+        top_opportunities = apply_entity_labels(
+            top_opportunities,
+            key_column=product_column,
+            label_map=product_labels,
+        )
+
         top_opportunities["label"] = (
             top_opportunities[
                 product_column
             ].astype(str)
+        )
+
+        # Also label the analysis dataset for charts.
+        product_summary_display = apply_entity_labels(
+            product_summary,
+            key_column=product_column,
+            label_map=product_labels,
         )
 
         # --------------------------------------------------
@@ -253,7 +282,7 @@ class ProfitImprovementModule(AnalysisModule):
 
         builder.dataset(
             "profit_improvement_analysis",
-            product_summary.to_dict(
+            product_summary_display.to_dict(
                 orient="records"
             ),
         )
@@ -292,6 +321,7 @@ class ProfitImprovementModule(AnalysisModule):
             builder,
             opportunities,
             product_column,
+            product_labels,
         )
 
         # --------------------------------------------------
@@ -420,6 +450,7 @@ class ProfitImprovementModule(AnalysisModule):
         builder,
         opportunities,
         product_column,
+        product_labels=None,
     ):
 
         if opportunities.empty:
@@ -440,16 +471,37 @@ class ProfitImprovementModule(AnalysisModule):
             ].sum()
         )
 
+        evidence = (
+            f"{len(opportunities):,} products have "
+            "profit improvement potential, representing "
+            f"approximately ${total_opportunity:,.0f} "
+            "in estimated additional profit."
+        )
+
         builder.insight(
             "medium",
-            (
-                f"{len(opportunities):,} products have "
-                "profit improvement potential, representing "
-                f"approximately ${total_opportunity:,.0f} "
-                "in estimated additional profit."
-            ),
+            evidence,
             title="Profit Improvement Potential",
             category="Profit Improvement",
+        )
+
+        builder.candidate_finding(
+            metric="profit_opportunity_count",
+            observed_value=int(len(opportunities)),
+            baseline=0,
+            comparison="vs_threshold",
+            magnitude=float(total_opportunity),
+            magnitude_unit="currency",
+            evidence=evidence,
+            confidence=0.85,
+            relevant_dimensions=["product"],
+            source_columns=[
+                col for col in [product_column]
+                if col
+            ],
+            rule_id="profit_improvement_opportunities",
+            severity="medium",
+            title="Profit Improvement Potential",
         )
 
         high_priority = (
@@ -466,20 +518,44 @@ class ProfitImprovementModule(AnalysisModule):
                 high_priority.iloc[0]
             )
 
-            product_name = (
-                top_product[
-                    product_column
-                ]
+            product_name = format_entity_label(
+                top_product[product_column],
+                product_labels,
+            )
+
+            top_evidence = (
+                f"{product_name} represents the strongest "
+                "profit improvement opportunity based on "
+                "revenue, margin gap, and estimated "
+                "profit potential."
             )
 
             builder.insight(
                 "high",
-                (
-                    f"{product_name} represents the strongest "
-                    "profit improvement opportunity based on "
-                    "revenue, margin gap, and estimated "
-                    "profit potential."
-                ),
+                top_evidence,
                 title=f"Top Opportunity: {product_name}",
                 category="Profit Improvement",
+            )
+
+            builder.candidate_finding(
+                metric="margin_gap",
+                observed_value=float(
+                    top_product["margin_gap"]
+                ),
+                baseline=0.0,
+                comparison="vs_benchmark",
+                magnitude=float(
+                    top_product["margin_gap"]
+                ),
+                magnitude_unit="ratio",
+                evidence=top_evidence,
+                confidence=0.8,
+                relevant_dimensions=["product"],
+                source_columns=[
+                    col for col in [product_column]
+                    if col
+                ],
+                rule_id="top_profit_improvement",
+                severity="high",
+                title=f"Top Opportunity: {product_name}",
             )

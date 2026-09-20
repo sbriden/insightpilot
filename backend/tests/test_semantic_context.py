@@ -254,6 +254,14 @@ def test_analyze_dataframe_attaches_semantic_layer():
     assert "alternatives" in context.dataset_archetype
 
     api = context.to_api_response()
+    assert "analytical_candidates" in api
+    assert isinstance(api["analytical_candidates"], list)
+    # Sales-like fixture should propose sales-domain candidates.
+    assert api["analytical_candidates"]
+    assert all(
+        item["domain"] == "sales"
+        for item in api["analytical_candidates"]
+    )
     understanding = api["semantic_understanding"]
     assert set(understanding.keys()) == REQUIRED_SEMANTIC_UNDERSTANDING_KEYS
     assert isinstance(understanding["detected_concepts"], list)
@@ -264,3 +272,25 @@ def test_analyze_dataframe_attaches_semantic_layer():
 
     # Legacy classification remains for existing modules.
     assert "type" in context.classification
+
+    # Candidate findings are attached after dashboards and are
+    # available to brief/products without changing brief shape.
+    assert isinstance(context.candidate_findings, list)
+    assert "candidate_findings" in api
+    assert isinstance(api["candidate_findings"], list)
+    for finding in api["candidate_findings"]:
+        assert "metric" in finding
+        assert "evidence" in finding
+        assert "provenance" in finding
+
+    assert context.executive_brief is not None
+    assert "overview" in context.executive_brief
+    assert "key_findings" in context.executive_brief
+
+    # Dashboards still carry nested findings for persistence.
+    for dashboard in context.analysis_dashboards:
+        assert "candidate_findings" in dashboard
+        assert isinstance(
+            dashboard["candidate_findings"],
+            list,
+        )

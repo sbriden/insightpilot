@@ -6,7 +6,11 @@ from ..builder import AnalysisBuilder
 
 from ..models import AnalysisDashboard
 
-from ..column_resolver import ColumnResolver
+from ..column_resolver import (
+    ColumnResolver,
+    apply_entity_labels,
+    build_entity_label_map,
+)
 
 from ..dataset_builder import DatasetBuilder
 
@@ -25,9 +29,13 @@ class ProfitabilityModule(AnalysisModule):
 
     def supports(self, context):
 
-        return (
-            context.classification["type"]
-            == "Sales & Revenue"
+        from app.analysis.candidates import (
+            analysis_supported,
+        )
+
+        return analysis_supported(
+            self.id,
+            context,
         )
 
     def run(self, context):
@@ -60,9 +68,22 @@ class ProfitabilityModule(AnalysisModule):
         sales = resolver.sales()
         profit = resolver.profit()
 
-        customer = resolver.customer()
+        customer = resolver.customer_key()
+        customer_label = resolver.customer_label()
         category = resolver.category()
-        product = resolver.product()
+        product = resolver.product_key()
+        product_label = resolver.product_label()
+
+        customer_labels = build_entity_label_map(
+            context.dataframe,
+            customer,
+            customer_label,
+        )
+        product_labels = build_entity_label_map(
+            context.dataframe,
+            product,
+            product_label,
+        )
 
         # ------------------------------------------------------------
         # Normalize invalid resolver results
@@ -271,14 +292,22 @@ class ProfitabilityModule(AnalysisModule):
 
             builder.dataset(
                 "loss_customers",
-                loss_customers,
+                apply_entity_labels(
+                    loss_customers,
+                    key_column=customer,
+                    label_map=customer_labels,
+                ),
             )
 
         if not loss_products.empty:
 
             builder.dataset(
                 "loss_products",
-                loss_products,
+                apply_entity_labels(
+                    loss_products,
+                    key_column=product,
+                    label_map=product_labels,
+                ),
             )
 
         # ------------------------------------------------------------
@@ -410,14 +439,35 @@ class ProfitabilityModule(AnalysisModule):
         # Insights
         # ------------------------------------------------------------
 
-        engine = InsightEngine(
+        source_columns = [
+            col for col in [
+                sales,
+                profit,
+                customer,
+                category,
+                product,
+            ]
+            if col
+        ]
+
+        insights, findings = InsightEngine(
             RULES
+        ).evaluate_with_findings(
+            facts,
+            analysis_type=self.id,
+            source_columns=source_columns,
+            relevant_dimensions=[
+                dim
+                for dim, col in [
+                    ("customer", customer),
+                    ("product", product),
+                    ("category", category),
+                ]
+                if col
+            ],
         )
 
-        dashboard.insights = (
-            engine.evaluate(
-                facts
-            )
-        )
+        dashboard.insights = insights
+        dashboard.candidate_findings = findings
 
         return builder.build()

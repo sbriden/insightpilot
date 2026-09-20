@@ -235,6 +235,33 @@ class AnalysisBuilder:
             )
         )
 
+    def candidate_finding(
+        self,
+        **kwargs,
+    ):
+        """Attach a structured candidate finding to the dashboard."""
+
+        from app.analysis.insights.findings import (
+            make_candidate_finding,
+        )
+
+        finding = make_candidate_finding(
+            analysis_type=kwargs.pop(
+                "analysis_type",
+                self.dashboard.id,
+            ),
+            **kwargs,
+        )
+
+        if finding is None:
+            return None
+
+        self.dashboard.candidate_findings.append(
+            finding
+        )
+
+        return finding
+
     def info(
         self,
         message,

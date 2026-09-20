@@ -17,8 +17,12 @@ from .models import (
 )
 
 from .catalog import (
+    expand_to_module_ids,
     get_product_definition,
     get_product_definitions,
+    product_analysis_description,
+    product_analysis_title,
+    resolve_product_type,
 )
 
 from .identity import (
@@ -45,6 +49,18 @@ from .data_quality_changes import (
 
 from app.analysis.insights.normalize import (
     normalize_insight_record,
+)
+from app.analysis.insights.findings import (
+    collect_candidate_findings_from_dashboards,
+)
+from app.analysis.insights.insight import (
+    collect_promoted_insights_from_dashboards,
+)
+from app.analysis.insights.traceability import (
+    stamp_insights_dataset_traceability,
+)
+from app.analysis.insights.validation import (
+    collect_validated_findings_from_dashboards,
 )
 
 from .executive_summary import (
@@ -166,13 +182,25 @@ def _extract_insights(
 
             raw_insight_id = (
                 insight.get("id")
-                or insight.get("title")
+                or insight.get("rule_id")
                 or f"insight_{index}"
             )
 
             insight_id = (
                 f"{dashboard_id}:{raw_insight_id}"
             )
+
+            # Titles are not unique (modules often fall
+            # back to the dashboard title). Guarantee a
+            # stable unique id per emitted insight.
+            if any(
+                existing.id == insight_id
+                for existing in insights
+            ):
+                insight_id = (
+                    f"{dashboard_id}:{raw_insight_id}"
+                    f":{index}"
+                )
 
             normalized = normalize_insight_record(
                 insight,
@@ -212,6 +240,138 @@ def _extract_insights(
     return insights
 
 
+def _extract_candidate_findings(
+    dashboards: list[dict],
+) -> list[dict]:
+    """
+    Lift candidate findings from selected dashboards.
+
+    Persistence keeps findings inside dashboards JSONB;
+    this top-level list is the product API convenience surface.
+    """
+
+    return collect_candidate_findings_from_dashboards(
+        dashboards,
+        scope_by_dashboard=True,
+    )
+
+
+def _extract_promoted_insights(
+    dashboards: list[dict],
+) -> list[dict]:
+    """
+    Promote validated findings into consistent business Insights.
+
+    Persistence keeps findings inside dashboards JSONB; this
+    top-level list is the product API convenience surface.
+    Narrative recommended_action may populate interpretive
+    recommendation — potential_drivers stay empty unless supplied.
+    """
+
+    return collect_promoted_insights_from_dashboards(
+        dashboards,
+        scope_by_dashboard=True,
+    )
+
+
+def _consolidated_promoted_insights(
+    cached: list[dict] | None,
+    dashboards: list[dict],
+) -> list[dict]:
+    """
+    Prefer a fresh promote+consolidate from dashboards.
+
+    Falls back to consolidating a cached list so older product
+    payloads still drop cross-module duplicates (e.g. the same
+    Loss-Making Products insight from Product Performance and
+    Profitability).
+    """
+
+    from app.analysis.insights.redundancy import (
+        consolidate_redundant_insights,
+    )
+    from app.analysis.insights.scoring import (
+        sort_insights_by_score,
+    )
+
+    if dashboards:
+        return _extract_promoted_insights(dashboards)
+
+    if not cached:
+        return []
+
+    return sort_insights_by_score(
+        consolidate_redundant_insights(cached)
+    )
+
+
+def _build_insight_initial_results(
+    promoted_insights: list[dict] | None,
+    *,
+    product_name: str | None = None,
+    business_purpose: str | None = None,
+) -> dict:
+    """Alpha Initial Results Contract for the product Insights surface."""
+
+    from app.services.ai import enrich_insights_with_ai
+    from app.analysis.insights.initial_results import (
+        build_initial_results,
+    )
+
+    results = build_initial_results(promoted_insights or [])
+    _, results, _ = enrich_insights_with_ai(
+        promoted_insights=promoted_insights or [],
+        initial_results=results,
+        product_name=product_name,
+        business_purpose=business_purpose,
+        allow_provider=True,
+    )
+    return results
+
+
+def _with_insight_explanations(
+    promoted_insights: list[dict] | None,
+    *,
+    product_name: str | None = None,
+    business_purpose: str | None = None,
+    allow_provider: bool = True,
+) -> tuple[list[dict], dict, dict]:
+    """
+    Stamp explanations + executive brief onto recommended Insights.
+
+    Returns ``(promoted_insights, initial_results, ai_status)``.
+    """
+
+    from app.analysis.insights.initial_results import (
+        build_initial_results,
+    )
+    from app.services.ai import enrich_insights_with_ai
+
+    results = build_initial_results(promoted_insights or [])
+    return enrich_insights_with_ai(
+        promoted_insights=promoted_insights or [],
+        initial_results=results,
+        product_name=product_name,
+        business_purpose=business_purpose,
+        allow_provider=allow_provider,
+    )
+
+def _extract_validated_findings(
+    dashboards: list[dict],
+) -> list[dict]:
+    """
+    Lift validated findings from selected dashboards.
+
+    Validated findings are a subset of candidates. Insight
+    promotion is a further subset (insight_eligible only).
+    """
+
+    return collect_validated_findings_from_dashboards(
+        dashboards,
+        scope_by_dashboard=True,
+    )
+
+
 def _determine_status(
     coverage: float,
     can_analyze: bool,
@@ -237,6 +397,43 @@ def _serialize_product(
     product: DataProduct,
 ) -> dict:
 
+    promoted_insights = _consolidated_promoted_insights(
+        product.promoted_insights,
+        product.dashboards or [],
+    )
+
+    from app.analysis.insights.ai_cache import (
+        apply_insight_ai_cache_to_product,
+        cache_has_usable_overlays,
+        get_insight_ai_cache,
+    )
+
+    cached = get_insight_ai_cache(product.metadata)
+    if cache_has_usable_overlays(cached):
+        hydrated = apply_insight_ai_cache_to_product(
+            {
+                "name": product.name,
+                "business_purpose": product.business_purpose,
+                "metadata": product.metadata or {},
+                "promoted_insights": promoted_insights,
+            },
+            generate_if_missing=False,
+        )
+        promoted_insights = hydrated.get("promoted_insights") or promoted_insights
+        insight_initial_results = hydrated.get("insight_initial_results") or {}
+        ai_status = hydrated.get("ai_status")
+    else:
+        # Detail serialize without a cache: deterministic overlays only.
+        # Do not call the AI provider on every read.
+        promoted_insights, insight_initial_results, ai_status = (
+            _with_insight_explanations(
+                promoted_insights,
+                product_name=product.name,
+                business_purpose=product.business_purpose,
+                allow_provider=False,
+            )
+        )
+
     return {
         "id": product.id,
 
@@ -246,6 +443,11 @@ def _serialize_product(
 
         "business_purpose": (
             product.business_purpose
+        ),
+
+        "product_type": resolve_product_type(
+            product.definition_id,
+            product.product_type,
         ),
 
         "source_dataset": (
@@ -322,6 +524,39 @@ def _serialize_product(
             for insight
             in product.insights
         ],
+
+        # Additive: derived from dashboards; not a DB column.
+        "candidate_findings": (
+            product.candidate_findings
+            or _extract_candidate_findings(
+                product.dashboards or []
+            )
+        ),
+
+        # Additive: validated subset; not a DB column.
+        "validated_findings": (
+            product.validated_findings
+            or _extract_validated_findings(
+                product.dashboards or []
+            )
+        ),
+
+        # Additive: Insights from eligible validated findings.
+        # Always re-consolidate so cross-module redundancy fixes
+        # apply even when an older promoted_insights list is cached.
+        "promoted_insights": promoted_insights,
+
+        # Alpha Initial Results Contract — recommended surface set.
+        "insight_initial_results": insight_initial_results,
+
+        # Concise leadership brief derived from explained Insights.
+        "executive_brief": (
+            insight_initial_results.get("executive_brief")
+            if isinstance(insight_initial_results, dict)
+            else None
+        ),
+
+        "ai_status": ai_status,
 
         "dashboards": (
             product.dashboards
@@ -561,42 +796,62 @@ def generate_data_products(
             definition.analyses or []
         )
 
-        selected_dashboards = [
-            dashboard
-            for dashboard in dashboards
-            if dashboard.get("id")
-            in analysis_ids
-        ]
+        module_ids = expand_to_module_ids(
+            analysis_ids
+        )
 
-        dashboard_by_id = {
+        module_dashboards = {
             dashboard.get("id"): dashboard
-            for dashboard
-            in selected_dashboards
+            for dashboard in dashboards
+            if dashboard.get("id") in module_ids
         }
 
+        selected_dashboards = []
         analyses = []
 
         for analysis_id in analysis_ids:
 
-            dashboard = dashboard_by_id.get(
+            title = product_analysis_title(
                 analysis_id
             )
+            description = (
+                product_analysis_description(
+                    analysis_id
+                )
+            )
 
-            if dashboard:
+            module_dashboard = None
+            for module_id in expand_to_module_ids(
+                [analysis_id]
+            ):
+                module_dashboard = (
+                    module_dashboards.get(module_id)
+                )
+                if module_dashboard is not None:
+                    break
+
+            if module_dashboard is not None:
+
+                remapped = {
+                    **module_dashboard,
+                    "id": analysis_id,
+                    "title": title,
+                }
+                if description:
+                    remapped["summary"] = description
+
+                selected_dashboards.append(remapped)
 
                 analyses.append(
                     DataProductAnalysis(
                         id=analysis_id,
-
-                        title=_dashboard_title(
-                            dashboard
-                        ),
-
+                        title=title,
                         description=(
-                            _dashboard_description(
-                                dashboard
+                            description
+                            or _dashboard_description(
+                                module_dashboard
                             )
-                            or dashboard.get(
+                            or module_dashboard.get(
                                 "summary",
                                 "",
                             )
@@ -609,13 +864,10 @@ def generate_data_products(
                 analyses.append(
                     DataProductAnalysis(
                         id=analysis_id,
-
-                        title=_analysis_title(
-                            analysis_id
-                        ),
-
+                        title=title,
                         description=(
-                            "Not available for "
+                            description
+                            or "Not available for "
                             "this dataset."
                         ),
                     )
@@ -627,6 +879,24 @@ def generate_data_products(
 
         insights = _extract_insights(
             selected_dashboards
+        )
+
+        candidate_findings = (
+            _extract_candidate_findings(
+                selected_dashboards
+            )
+        )
+
+        validated_findings = (
+            _extract_validated_findings(
+                selected_dashboards
+            )
+        )
+
+        promoted_insights = (
+            _extract_promoted_insights(
+                selected_dashboards
+            )
         )
 
         coverage, required_coverage, can_analyze = (
@@ -771,6 +1041,47 @@ def generate_data_products(
 
         version = previous_version + 1
 
+        promoted_insights = stamp_insights_dataset_traceability(
+            promoted_insights,
+            dataset_id=dataset_identity,
+            dataset_version=version,
+            dataset_identity=dataset_identity,
+            dataset_label="uploaded_dataset",
+            analyzed_at=(
+                context.created_at
+                if getattr(context, "created_at", None)
+                else batch_created_at
+            ),
+        )
+        promoted_insights, insight_initial_results, ai_status = (
+            _with_insight_explanations(
+                promoted_insights,
+                product_name=definition.name,
+                business_purpose=definition.business_purpose,
+                allow_provider=True,
+            )
+        )
+
+        from app.analysis.insights.ai_cache import (
+            build_insight_ai_cache,
+            stamp_metadata_with_ai_cache,
+        )
+
+        insight_ai_cache = build_insight_ai_cache(
+            promoted_insights=promoted_insights,
+            executive_brief=(
+                insight_initial_results.get("executive_brief")
+                if isinstance(insight_initial_results, dict)
+                else None
+            ),
+            status=ai_status,
+            recommended_insight_ids=(
+                insight_initial_results.get("recommended_insight_ids")
+                if isinstance(insight_initial_results, dict)
+                else None
+            ),
+        )
+
         executive_summary = (
             build_product_executive_summary(
                 product_name=definition.name,
@@ -790,6 +1101,8 @@ def generate_data_products(
                 metrics=metrics,
 
                 insights=insights,
+
+                promoted_insights=promoted_insights,
 
                 change_summary=change_summary,
             )
@@ -860,6 +1173,11 @@ def generate_data_products(
                 definition.business_purpose
             ),
 
+            product_type=resolve_product_type(
+                definition.id,
+                definition.product_type,
+            ),
+
             source_dataset=(
                 "uploaded_dataset"
             ),
@@ -884,6 +1202,18 @@ def generate_data_products(
 
             insights=insights,
 
+            candidate_findings=(
+                candidate_findings
+            ),
+
+            validated_findings=(
+                validated_findings
+            ),
+
+            promoted_insights=(
+                promoted_insights
+            ),
+
             dashboards=selected_dashboards,
 
             change_summary=change_summary,
@@ -892,7 +1222,8 @@ def generate_data_products(
 
             health=health,
 
-            metadata={
+            metadata=stamp_metadata_with_ai_cache(
+                {
                 "analysis_count": len(
                     selected_dashboards
                 ),
@@ -907,6 +1238,18 @@ def generate_data_products(
 
                 "insight_count": len(
                     insights
+                ),
+
+                "candidate_finding_count": len(
+                    candidate_findings
+                ),
+
+                "validated_finding_count": len(
+                    validated_findings
+                ),
+
+                "promoted_insight_count": len(
+                    promoted_insights
                 ),
 
                 "completed_analysis_ids": [
@@ -1002,7 +1345,9 @@ def generate_data_products(
                 "data_quality_snapshot": (
                     current_snapshot
                 ),
-            },
+                },
+                insight_ai_cache,
+            ),
 
             created_at=batch_created_at,
 

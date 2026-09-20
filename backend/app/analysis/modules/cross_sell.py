@@ -1,7 +1,12 @@
 from ..base import AnalysisModule
 from ..builder import AnalysisBuilder
 from ..models import AnalysisDashboard
-from ..column_resolver import ColumnResolver
+from ..column_resolver import (
+    ColumnResolver,
+    apply_entity_labels,
+    build_entity_label_map,
+    labeled_entity_pair,
+)
 from ..dataset_builder import DatasetBuilder
 
 from ..insights.engine import InsightEngine
@@ -22,9 +27,13 @@ class CrossSellModule(AnalysisModule):
 
     def supports(self, context):
 
-        return (
-            context.classification.get("type")
-            == "Sales & Revenue"
+        from app.analysis.candidates import (
+            analysis_supported,
+        )
+
+        return analysis_supported(
+            self.id,
+            context,
         )
 
     def run(self, context):
@@ -33,8 +42,9 @@ class CrossSellModule(AnalysisModule):
             context.column_profiles
         )
 
-        customer_column = resolver.customer()
-        product_column = resolver.product()
+        customer_column = resolver.customer_key()
+        product_column = resolver.product_key()
+        product_label_column = resolver.product_label()
         sales_column = resolver.sales()
 
         if (
@@ -51,6 +61,12 @@ class CrossSellModule(AnalysisModule):
                     "columns could not be identified."
                 ),
             )
+
+        product_labels = build_entity_label_map(
+            context.dataframe,
+            product_column,
+            product_label_column,
+        )
 
         dashboard = AnalysisDashboard(
             id=self.id,
@@ -230,20 +246,26 @@ class CrossSellModule(AnalysisModule):
 
         top_opportunities[
             "product_pair"
-        ] = (
-            top_opportunities[
-                "product_a"
-            ].astype(str)
-            + " → "
-            + top_opportunities[
-                "product_b"
-            ].astype(str)
+        ] = top_opportunities.apply(
+            lambda row: labeled_entity_pair(
+                row["product_a"],
+                row["product_b"],
+                left_map=product_labels,
+                right_map=product_labels,
+            ),
+            axis=1,
         )
 
         top_opportunities["label"] = (
-            top_opportunities["product_a"].astype(str)
-            + " → "
-            + top_opportunities["product_b"].astype(str)
+            top_opportunities["product_pair"]
+        )
+
+        # Prefer labeled product ids in detail columns too.
+        top_opportunities = apply_entity_labels(
+            top_opportunities,
+            key_column=product_column,
+            label_map=product_labels,
+            columns=["product_a", "product_b"],
         )
 
         builder.dataset(
@@ -276,15 +298,26 @@ class CrossSellModule(AnalysisModule):
             opportunities,
         )
 
-        insights = InsightEngine(
+        source_columns = [
+            col for col in [
+                customer_column,
+                product_column,
+                sales_column,
+            ]
+            if col
+        ]
+
+        insights, findings = InsightEngine(
             RULES
-        ).evaluate(
-            facts
+        ).evaluate_with_findings(
+            facts,
+            analysis_type=self.id,
+            source_columns=source_columns,
+            relevant_dimensions=["customer", "product"],
         )
 
-        dashboard.insights.extend(
-            insights
-        )
+        dashboard.insights.extend(insights)
+        dashboard.candidate_findings.extend(findings)
 
         # --------------------------------------------------
         # Actions

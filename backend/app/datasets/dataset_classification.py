@@ -10,6 +10,7 @@ with columns like 'Account', 'Invoice Date', 'Invoice Amount', and
 none of those columns are named 'revenue' or 'customer'.
 
 Supported archetypes (in priority order when confidence is tied):
+    fantasy_sports      – Fantasy Sports
     sales_revenue       – Sales / Revenue
     customer            – Customer / Subscription
     operations          – Operations
@@ -34,6 +35,7 @@ ArchetypeId = Literal[
     "operations",
     "finance",
     "workforce",
+    "fantasy_sports",
 ]
 
 ARCHETYPE_LABELS: dict[ArchetypeId, str] = {
@@ -42,6 +44,7 @@ ARCHETYPE_LABELS: dict[ArchetypeId, str] = {
     "operations": "Operations",
     "finance": "Finance",
     "workforce": "Workforce",
+    "fantasy_sports": "Fantasy Sports",
 }
 
 
@@ -438,11 +441,104 @@ def _score_workforce(inv: SemanticInventory) -> _Score:
     )
 
 
+def _score_fantasy_sports(inv: SemanticInventory) -> _Score:
+    """
+    Fantasy sports datasets typically have:
+      - Player entities
+      - Fantasy / usage measures (points, targets, carries)
+      - Season / week timing
+      - Optional signal type / strength columns
+    """
+
+    signals: list[float] = []
+    supporting: list[str] = []
+
+    has_player, player_conf, player_matches = inv.has_concept(
+        "Player"
+    )
+    if has_player:
+        signals.append(player_conf * 1.2)
+        supporting.extend(_concept_names(player_matches))
+
+    measure_hit = False
+    for concept, weight in (
+        ("FantasyPoints", 1.0),
+        ("Targets", 0.9),
+        ("Carries", 0.85),
+        ("Routes", 0.85),
+        ("SignalStrength", 0.95),
+    ):
+        found, conf, matches = inv.has_concept(concept)
+        if found:
+            measure_hit = True
+            signals.append(conf * weight)
+            supporting.extend(_concept_names(matches))
+
+    has_signal, signal_conf, signal_matches = inv.has_concept(
+        "SignalType"
+    )
+    if has_signal:
+        signals.append(signal_conf * 1.1)
+        supporting.extend(_concept_names(signal_matches))
+
+    has_season, season_conf, season_matches = inv.has_concept(
+        "Season"
+    )
+    has_week, week_conf, week_matches = inv.has_concept("Week")
+    if has_season:
+        signals.append(season_conf * 0.7)
+        supporting.extend(_concept_names(season_matches))
+    if has_week:
+        signals.append(week_conf * 0.7)
+        supporting.extend(_concept_names(week_matches))
+
+    has_team, team_conf, team_matches = inv.has_concept("Team")
+    if has_team:
+        signals.append(team_conf * 0.5)
+        supporting.extend(_concept_names(team_matches))
+
+    has_pos, pos_conf, pos_matches = inv.has_concept("Position")
+    if has_pos:
+        signals.append(pos_conf * 0.5)
+        supporting.extend(_concept_names(pos_matches))
+
+    if not has_player:
+        return _Score("fantasy_sports", 0.0)
+
+    if not measure_hit and not has_signal:
+        return _Score("fantasy_sports", 0.0)
+
+    score = _avg(*signals) if signals else 0.0
+
+    return _Score(
+        archetype="fantasy_sports",
+        score=score,
+        supporting_concepts=list(dict.fromkeys(supporting)),
+        explanation=(
+            "Dataset shows fantasy sports characteristics: "
+            + ", ".join(
+                f
+                for f in [
+                    "player entities" if has_player else "",
+                    "fantasy/usage measures" if measure_hit else "",
+                    "fantasy signals" if has_signal else "",
+                    "season/week timing"
+                    if has_season or has_week
+                    else "",
+                ]
+                if f
+            )
+            + "."
+        ),
+    )
+
+
 # ──────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────
 
 _SCORERS = [
+    _score_fantasy_sports,
     _score_sales_revenue,
     _score_customer,
     _score_operations,

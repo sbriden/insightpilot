@@ -16,9 +16,13 @@ class OpportunitySummaryModule(AnalysisModule):
 
     def supports(self, context):
 
-        return (
-            context.classification.get("type")
-            == "Sales & Revenue"
+        from app.analysis.candidates import (
+            analysis_supported,
+        )
+
+        return analysis_supported(
+            self.id,
+            context,
         )
 
     def run(self, context):
@@ -430,14 +434,34 @@ class OpportunitySummaryModule(AnalysisModule):
 
         top = opportunities[0]
 
+        top_evidence = (
+            f"{top['label']} represents the largest "
+            f"identified {top['type'].lower()} opportunity "
+            f"at approximately "
+            f"${top['potential']:,.0f}."
+        )
+
         builder.insight(
             "high",
-            (
-                f"{top['label']} represents the largest "
-                f"identified {top['type'].lower()} opportunity "
-                f"at approximately "
-                f"${top['potential']:,.0f}."
-            ),
+            top_evidence,
+        )
+
+        builder.candidate_finding(
+            metric="top_opportunity_potential",
+            observed_value=float(top["potential"]),
+            baseline=0,
+            comparison="absolute",
+            magnitude=float(top["potential"]),
+            magnitude_unit="currency",
+            evidence=top_evidence,
+            confidence=0.8,
+            relevant_dimensions=[
+                str(top.get("type") or "opportunity")
+            ],
+            source_columns=[],
+            rule_id="top_opportunity",
+            severity="high",
+            title=f"Top Opportunity: {top['label']}",
         )
 
         opportunity_types = {}
@@ -461,11 +485,35 @@ class OpportunitySummaryModule(AnalysisModule):
                 key=opportunity_types.get,
             )
 
+            type_evidence = (
+                f"{largest_type} represents the largest "
+                "source of identified opportunity across "
+                "the current analysis."
+            )
+
             builder.insight(
                 "medium",
-                (
-                    f"{largest_type} represents the largest "
-                    "source of identified opportunity across "
-                    "the current analysis."
+                type_evidence,
+            )
+
+            builder.candidate_finding(
+                metric="opportunity_type_potential",
+                observed_value=float(
+                    opportunity_types[largest_type]
+                ),
+                baseline=0,
+                comparison="absolute",
+                magnitude=float(
+                    opportunity_types[largest_type]
+                ),
+                magnitude_unit="currency",
+                evidence=type_evidence,
+                confidence=0.75,
+                relevant_dimensions=[str(largest_type)],
+                source_columns=[],
+                rule_id="largest_opportunity_type",
+                severity="medium",
+                title=(
+                    f"Largest Opportunity Source: {largest_type}"
                 ),
             )

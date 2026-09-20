@@ -26,6 +26,13 @@ RULES = [
             "Review pricing, discounts, and cost structure "
             "for loss-making products."
         ),
+        metric="negative_product_count",
+        observed=lambda f: f["negative_products"],
+        baseline=0,
+        comparison="vs_threshold",
+        magnitude=lambda f: float(f["negative_products"]),
+        magnitude_unit="count",
+        dimensions=["product"],
     ),
 
     InsightRule(
@@ -45,6 +52,13 @@ RULES = [
             "Escalate portfolio review for products with "
             "sustained negative economics."
         ),
+        metric="negative_product_rate",
+        observed=lambda f: f["negative_product_pct"],
+        baseline=0.20,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["negative_product_pct"] - 0.20,
+        magnitude_unit="ratio",
+        dimensions=["product"],
     ),
 
     InsightRule(
@@ -65,6 +79,13 @@ RULES = [
             "Identify low-margin SKUs and test price "
             "or cost improvements."
         ),
+        metric="low_margin_product_rate",
+        observed=lambda f: f["low_margin_product_pct"],
+        baseline=0.20,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["low_margin_product_pct"] - 0.20,
+        magnitude_unit="ratio",
+        dimensions=["product"],
     ),
 
     InsightRule(
@@ -85,6 +106,13 @@ RULES = [
             "Reduce reliance on top products by "
             "investing in broader portfolio growth."
         ),
+        metric="top10_revenue_share",
+        observed=lambda f: f["top10_revenue_share"],
+        baseline=0.50,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["top10_revenue_share"] - 0.50,
+        magnitude_unit="ratio",
+        dimensions=["product"],
     ),
 
     InsightRule(
@@ -105,6 +133,13 @@ RULES = [
             "Maintain portfolio balance while tracking "
             "emerging concentration trends."
         ),
+        metric="top10_revenue_share",
+        observed=lambda f: f["top10_revenue_share"],
+        baseline=0.25,
+        comparison="vs_threshold",
+        magnitude=lambda f: f["top10_revenue_share"] - 0.25,
+        magnitude_unit="ratio",
+        dimensions=["product"],
     ),
 
 ]

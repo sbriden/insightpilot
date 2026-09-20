@@ -330,48 +330,75 @@ def _build_what_we_found(
 
 def _build_what_matters(
     insights: list[Any],
+    *,
+    promoted_insights: list[Any] | None = None,
 ) -> list[dict[str, str]]:
 
-    prioritized = _sort_insights(
-        insights
+    from app.analysis.insights.initial_results import (
+        build_initial_results,
     )
 
+    recommended = (
+        build_initial_results(promoted_insights or []).get(
+            "recommended_insights"
+        )
+        or []
+    )
+
+    source = recommended if recommended else _sort_insights(insights)
     items: list[dict[str, str]] = []
 
-    for insight in prioritized:
+    for insight in source:
 
-        priority = _normalize_priority(
-            _insight_field(
-                insight,
-                "priority",
+        if recommended:
+            priority = _normalize_priority(
+                _insight_field(insight, "importance")
+                or _insight_field(insight, "tier")
+                or _insight_field(insight, "priority")
             )
-            or _insight_field(
-                insight,
-                "severity",
+            headline = _insight_field(insight, "title") or ""
+            detail = _insight_field(insight, "finding") or ""
+            category = (
+                _insight_field(insight, "category") or "Analysis"
             )
-        )
-
-        headline = (
-            _insight_field(
-                insight,
-                "what_happened",
+        else:
+            priority = _normalize_priority(
+                _insight_field(
+                    insight,
+                    "priority",
+                )
+                or _insight_field(
+                    insight,
+                    "severity",
+                )
             )
-            or _insight_field(
-                insight,
-                "title",
+            headline = (
+                _insight_field(
+                    insight,
+                    "what_happened",
+                )
+                or _insight_field(
+                    insight,
+                    "title",
+                )
             )
-        )
-
-        detail = (
-            _insight_field(
-                insight,
-                "why_it_matters",
+            detail = (
+                _insight_field(
+                    insight,
+                    "why_it_matters",
+                )
+                or _insight_field(
+                    insight,
+                    "message",
+                )
             )
-            or _insight_field(
-                insight,
-                "message",
+            category = (
+                _insight_field(
+                    insight,
+                    "category",
+                )
+                or "Analysis"
             )
-        )
 
         if (
             detail
@@ -386,17 +413,8 @@ def _build_what_matters(
         items.append(
             {
                 "priority": priority,
-
-                "category": (
-                    _insight_field(
-                        insight,
-                        "category",
-                    )
-                    or "Analysis"
-                ),
-
+                "category": category,
                 "headline": headline,
-
                 "detail": detail,
             }
         )
@@ -497,6 +515,7 @@ def build_product_executive_summary(
     dashboards: list[dict] | None = None,
     metrics: list[Any] | None = None,
     insights: list[Any] | None = None,
+    promoted_insights: list[Any] | None = None,
     change_summary: dict | None = None,
 ) -> dict[str, Any]:
 
@@ -504,6 +523,7 @@ def build_product_executive_summary(
     dashboards = dashboards or []
     metrics = metrics or []
     insights = insights or []
+    promoted_insights = promoted_insights or []
 
     return {
         "what_we_found": _build_what_we_found(
@@ -517,7 +537,8 @@ def build_product_executive_summary(
         ),
 
         "what_matters": _build_what_matters(
-            insights
+            insights,
+            promoted_insights=promoted_insights,
         ),
 
         "what_to_do_next": _build_what_to_do_next(

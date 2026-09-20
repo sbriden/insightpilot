@@ -2,11 +2,16 @@ import pandas as pd
 
 from ..base import AnalysisModule
 from ..builder import AnalysisBuilder
-from ..column_resolver import ColumnResolver
+from ..column_resolver import (
+    ColumnResolver,
+    apply_entity_labels,
+    build_entity_label_map,
+)
 from ..dataset_builder import DatasetBuilder
 from ..models import AnalysisDashboard
 from ..insights.engine import InsightEngine
 from ..insights.customer_concentration import RULES
+from ..primitives import concentration_summary
 
 
 class CustomerConcentrationModule(AnalysisModule):
@@ -17,9 +22,13 @@ class CustomerConcentrationModule(AnalysisModule):
 
     def supports(self, context):
 
-        return (
-            context.classification.get("type")
-            == "Sales & Revenue"
+        from app.analysis.candidates import (
+            analysis_supported,
+        )
+
+        return analysis_supported(
+            self.id,
+            context,
         )
 
     def run(self, context):
@@ -28,7 +37,8 @@ class CustomerConcentrationModule(AnalysisModule):
             context.column_profiles
         )
 
-        customer_column = resolver.customer()
+        customer_column = resolver.customer_key()
+        customer_label_column = resolver.customer_label()
         sales_column = resolver.sales()
         profit_column = resolver.profit()
 
@@ -42,6 +52,12 @@ class CustomerConcentrationModule(AnalysisModule):
                     "could not be identified."
                 ),
             )
+
+        customer_labels = build_entity_label_map(
+            context.dataframe,
+            customer_column,
+            customer_label_column,
+        )
 
         datasets = DatasetBuilder(
             context.dataframe
@@ -86,6 +102,12 @@ class CustomerConcentrationModule(AnalysisModule):
             sort_by="revenue",
         )
 
+        customer_summary = apply_entity_labels(
+            customer_summary,
+            key_column=customer_column,
+            label_map=customer_labels,
+        )
+
         dashboard = AnalysisDashboard(
             id=self.id,
             title=self.title,
@@ -124,12 +146,26 @@ class CustomerConcentrationModule(AnalysisModule):
             customer_summary
         )
 
+        source_columns = [
+            col for col in [
+                customer_column,
+                sales_column,
+                profit_column,
+            ]
+            if col
+        ]
 
-        dashboard.insights = InsightEngine(
+        insights, findings = InsightEngine(
             RULES
-        ).evaluate(
-            facts
+        ).evaluate_with_findings(
+            facts,
+            analysis_type=self.id,
+            source_columns=source_columns,
+            relevant_dimensions=["customer"],
         )
+
+        dashboard.insights = insights
+        dashboard.candidate_findings = findings
 
         self.build_actions(
             builder
@@ -164,13 +200,16 @@ class CustomerConcentrationModule(AnalysisModule):
             customer_summary.iloc[0]
         )
 
-        top10_share = (
-            customer_summary
-            .head(10)["revenue"]
-            .sum() / total_revenue
-            if total_revenue
-            else 0
+        concentration = concentration_summary(
+            customer_summary,
+            "revenue",
+            n=10,
+            already_sorted=True,
         )
+
+        top10_share = concentration[
+            "top_n_share"
+        ]
 
         builder.integer_metric(
             id="customers",
@@ -239,44 +278,31 @@ class CustomerConcentrationModule(AnalysisModule):
         customer_summary,
     ):
 
-        total_revenue = (
-            customer_summary["revenue"].sum()
-        )
-
-        top10_revenue = (
-            customer_summary
-            .head(10)["revenue"]
-            .sum()
-        )
-
-        top_customer_revenue = (
-            customer_summary.iloc[0]["revenue"]
-        )
-
-        top10_share = (
-            top10_revenue / total_revenue
-            if total_revenue
-            else 0
-        )
-
-        top_customer_share = (
-            top_customer_revenue / total_revenue
-            if total_revenue
-            else 0
+        concentration = concentration_summary(
+            customer_summary,
+            "revenue",
+            n=10,
+            already_sorted=True,
         )
 
         return {
             "total_customers":
-                len(customer_summary),
+                concentration["entity_count"],
 
             "top10_share":
-                top10_share,
+                concentration["top_n_share"],
+
+            "top10_revenue":
+                concentration["top_n_value"],
+
+            "total_revenue":
+                concentration["total"],
 
             "top_customer_revenue":
-                top_customer_revenue,
+                concentration["top_1_value"],
 
             "top_customer_share":
-                top_customer_share,
+                concentration["top_1_share"],
         }
 
     def build_actions(

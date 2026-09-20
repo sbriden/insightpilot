@@ -1,0 +1,1 @@
+"""InsightPilot canonical dimensional model."""
