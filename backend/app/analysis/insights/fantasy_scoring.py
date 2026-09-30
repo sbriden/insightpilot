@@ -12,11 +12,22 @@ from typing import Any
 from app.canonical.analytics.common import normalize_float
 
 
+def normalize_scoring(scoring: str | None = "ppr") -> str:
+    """Map aliases to ``ppr`` | ``half_ppr`` | ``standard``."""
+
+    key = str(scoring or "ppr").strip().lower().replace("-", "_")
+    if key in {"standard", "non_ppr", "nonppr", "std"}:
+        return "standard"
+    if key in {"half", "half_ppr", "halfppr"}:
+        return "half_ppr"
+    return "ppr"
+
+
 def _reception_points(scoring: str | None) -> float:
-    key = str(scoring or "ppr").strip().lower()
-    if key in {"standard", "non_ppr", "non-ppr"}:
+    key = normalize_scoring(scoring)
+    if key == "standard":
         return 0.0
-    if key in {"half", "half_ppr", "half-ppr"}:
+    if key == "half_ppr":
         return 0.5
     return 1.0
 

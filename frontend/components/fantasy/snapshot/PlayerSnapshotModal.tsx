@@ -35,6 +35,7 @@ interface Props {
   error: string | null;
   onClose: () => void;
   onSelectPlayer?: (playerId: string) => void;
+  initialTab?: SnapshotTabId;
 }
 
 export default function PlayerSnapshotModal({
@@ -43,9 +44,10 @@ export default function PlayerSnapshotModal({
   error,
   onClose,
   onSelectPlayer,
+  initialTab = "snapshot",
 }: Props) {
   const [tab, setTab] =
-    useState<SnapshotTabId>("snapshot");
+    useState<SnapshotTabId>(initialTab);
   const [compareId, setCompareId] = useState<
     string | null
   >(null);
@@ -69,8 +71,8 @@ export default function PlayerSnapshotModal({
     setCompareOwnership(null);
     setCompareSnapshot(null);
     setCompareError(null);
-    setTab("snapshot");
-  }, [active?.player_id]);
+    setTab(initialTab);
+  }, [active?.player_id, initialTab]);
 
   useEffect(() => {
     if (!compareId) {

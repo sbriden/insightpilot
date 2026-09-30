@@ -32,8 +32,8 @@ export default function PlayerTabs({
 }: Props) {
   return (
     <div
-      className="flex gap-1 overflow-x-auto border-b"
-      style={{ borderColor: snapshotTokens.divider }}
+      className="flex flex-wrap gap-1 border-b pb-2"
+      style={{ borderColor: snapshotTokens.border }}
       role="tablist"
       aria-label="Player sections"
     >
@@ -51,15 +51,14 @@ export default function PlayerTabs({
                 onChange(tab.id);
               }
             }}
-            className="shrink-0 border-b-[2.5px] px-3 py-2.5 text-sm transition disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-md px-3 py-1.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
             style={{
-              borderColor: selected
-                ? snapshotTokens.blue
+              background: selected
+                ? snapshotTokens.blueLight
                 : "transparent",
               color: selected
                 ? snapshotTokens.blue
                 : snapshotTokens.textSecondary,
-              fontWeight: selected ? 600 : 500,
             }}
           >
             {tab.label}

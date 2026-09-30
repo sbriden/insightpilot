@@ -104,6 +104,85 @@ class DimGameTests(unittest.TestCase):
         self.assertIsNone(scheduled["home_score"])
         self.assertIsNone(scheduled["away_score"])
 
+    def test_sync_dim_game_scores_updates_stale_finals(self):
+        from app.canonical.dim_game import sync_dim_game_scores
+        from app.canonical.ids import game_resolution_key
+
+        schedules = pd.DataFrame(
+            [
+                {
+                    "game_id": "2026_03_PHI_CHI",
+                    "season": 2026,
+                    "week": 3,
+                    "game_type": "REG",
+                    "gameday": "2026-09-28",
+                    "home_team": "CHI",
+                    "away_team": "PHI",
+                    "home_score": 27,
+                    "away_score": 7,
+                },
+                {
+                    "game_id": "2026_03_OTHER",
+                    "season": 2026,
+                    "week": 3,
+                    "game_type": "REG",
+                    "gameday": "2026-09-27",
+                    "home_team": "KC",
+                    "away_team": "DEN",
+                    "home_score": None,
+                    "away_score": None,
+                },
+            ]
+        )
+        game_id = make_game_id(
+            game_resolution_key(
+                nflverse_game_id="2026_03_PHI_CHI",
+                season=2026,
+                week=3,
+                home_team="CHI",
+                away_team="PHI",
+            )
+        )
+
+        class _Result:
+            rowcount = 1
+
+        executed: list[dict] = []
+
+        class _Connection:
+            def execute(self, _statement, payload):
+                executed.append(dict(payload))
+                return _Result()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class _Engine:
+            def begin(self):
+                return _Connection()
+
+        with (
+            patch(
+                "app.canonical.dim_game._load_schedules",
+                return_value=schedules,
+            ),
+            patch(
+                "app.canonical.dim_game.engine",
+                _Engine(),
+            ),
+        ):
+            updated = sync_dim_game_scores([2026], week=3)
+
+        self.assertEqual(updated, 1)
+        self.assertEqual(len(executed), 1)
+        self.assertEqual(executed[0]["game_id"], game_id)
+        self.assertEqual(executed[0]["home_score"], 27)
+        self.assertEqual(executed[0]["away_score"], 7)
+        self.assertEqual(executed[0]["game_status"], "Final")
+
 
 if __name__ == "__main__":
     unittest.main()

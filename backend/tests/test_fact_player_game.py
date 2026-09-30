@@ -170,6 +170,125 @@ class FactPlayerGameTests(unittest.TestCase):
             12.0,
         )
 
+    def test_active_snap_zero_production_included(self):
+        """Offensive snaps without box stats count as a 0-point game."""
+
+        scored_gsis = "00-0033858"
+        inactive_gsis = "00-0099999"
+        game_w1 = "2026_01_GB_MIN"
+        game_w2 = "2026_02_GB_NYJ"
+        player_id = make_player_id(
+            player_resolution_key(gsis_id=scored_gsis)
+        )
+        inactive_player_id = make_player_id(
+            player_resolution_key(gsis_id=inactive_gsis)
+        )
+        game1 = make_game_id(
+            game_resolution_key(nflverse_game_id=game_w1)
+        )
+        game2 = make_game_id(
+            game_resolution_key(nflverse_game_id=game_w2)
+        )
+
+        stats = pd.DataFrame(
+            [
+                {
+                    "player_id": scored_gsis,
+                    "game_id": game_w1,
+                    "season": 2026,
+                    "week": 1,
+                    "season_type": "REG",
+                    "team": "GB",
+                    "targets": 3,
+                    "receptions": 2,
+                    "receiving_yards": 50,
+                    "receiving_tds": 0,
+                }
+            ]
+        )
+        snaps = pd.DataFrame(
+            [
+                {
+                    "game_id": game_w1,
+                    "season": 2026,
+                    "week": 1,
+                    "game_type": "REG",
+                    "team": "GB",
+                    "pfr_player_id": "SmitJo01",
+                    "position": "TE",
+                    "offense_snaps": 32,
+                },
+                {
+                    # Active week 2 with no box-score row.
+                    "game_id": game_w2,
+                    "season": 2026,
+                    "week": 2,
+                    "game_type": "REG",
+                    "team": "GB",
+                    "pfr_player_id": "SmitJo01",
+                    "position": "TE",
+                    "offense_snaps": 13,
+                },
+                {
+                    # Inactive: no offensive snaps → omitted.
+                    "game_id": game_w2,
+                    "season": 2026,
+                    "week": 2,
+                    "game_type": "REG",
+                    "team": "GB",
+                    "pfr_player_id": "Inact01",
+                    "position": "TE",
+                    "offense_snaps": 0,
+                },
+            ]
+        )
+
+        with (
+            patch(
+                "app.canonical.fact_player_game.upsert_fact_player_game"
+            ),
+            patch(
+                "app.canonical.fact_player_game.get_dim_player",
+            ),
+        ):
+            fact = build_fact_player_game(
+                [2026],
+                persist=True,
+                source_frames={
+                    "player_stats": stats,
+                    "snap_counts": snaps,
+                    "pfr_to_gsis": {
+                        "SmitJo01": scored_gsis,
+                        "Inact01": inactive_gsis,
+                    },
+                },
+                player_id_lookup={
+                    scored_gsis: player_id,
+                    inactive_gsis: inactive_player_id,
+                },
+                game_id_lookup={
+                    game_w1: game1,
+                    game_w2: game2,
+                },
+            )
+
+        self.assertEqual(len(fact), 2)
+        weeks = sorted(int(v) for v in fact["week"].tolist())
+        self.assertEqual(weeks, [1, 2])
+        week2 = fact[fact["week"] == 2].iloc[0]
+        self.assertEqual(int(week2["targets"] or 0), 0)
+        self.assertEqual(int(week2["receptions"] or 0), 0)
+        self.assertEqual(int(week2["receiving_yards"] or 0), 0)
+        source_ids = json.loads(week2["source_ids"])
+        self.assertEqual(
+            source_ids.get("participation"),
+            "snap_counts",
+        )
+        # Inactive player never appears.
+        self.assertFalse(
+            (fact["player_id"] == inactive_player_id).any()
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

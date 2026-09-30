@@ -55,7 +55,7 @@ def _score_volume(
 
 
 def _receiving_opportunity(row: dict[str, Any]) -> float | None:
-    return weighted_mean(
+    rate_score = weighted_mean(
         [
             score_from_rate(row.get("target_share")),
             score_from_rate(row.get("route_participation_rate")),
@@ -63,15 +63,44 @@ def _receiving_opportunity(row: dict[str, Any]) -> float | None:
         ],
         weights=[0.45, 0.35, 0.20],
     )
+    if rate_score is not None:
+        return rate_score
+    # Rates can lag early in a week; fall back to volume.
+    return weighted_mean(
+        [
+            _score_volume(row.get("routes_run"), per_unit=2.5),
+            _score_volume(
+                row.get("red_zone_targets"),
+                per_unit=25.0,
+            ),
+        ],
+        weights=[0.75, 0.25],
+    )
 
 
 def _rushing_opportunity(row: dict[str, Any]) -> float | None:
-    return weighted_mean(
+    rate_score = weighted_mean(
         [
             score_from_rate(row.get("rush_share")),
             score_from_rate(row.get("touch_share")),
         ],
         weights=[0.6, 0.4],
+    )
+    if rate_score is not None:
+        return rate_score
+    return weighted_mean(
+        [
+            _score_volume(row.get("touches"), per_unit=5.0),
+            _score_volume(
+                row.get("goal_line_carries"),
+                per_unit=30.0,
+            ),
+            _score_volume(
+                row.get("inside_5_carries"),
+                per_unit=25.0,
+            ),
+        ],
+        weights=[0.70, 0.20, 0.10],
     )
 
 
@@ -127,7 +156,7 @@ def _skill_opportunity_score(
     rushing: float | None,
     red_zone: float | None,
 ) -> float | None:
-    return weighted_mean(
+    score = weighted_mean(
         [
             score_from_rate(row.get("offensive_snap_share")),
             receiving,
@@ -135,6 +164,17 @@ def _skill_opportunity_score(
             red_zone,
         ],
         weights=[0.25, 0.35, 0.25, 0.15],
+    )
+    if score is not None:
+        return score
+    # Incomplete share denominators → null rates; use snaps/touches.
+    return weighted_mean(
+        [
+            _score_volume(row.get("snap_count"), per_unit=1.5),
+            _score_volume(row.get("touches"), per_unit=5.0),
+            _score_volume(row.get("routes_run"), per_unit=2.5),
+        ],
+        weights=[0.40, 0.35, 0.25],
     )
 
 
@@ -149,7 +189,7 @@ def _qb_opportunity_score(
     emphasizes dropbacks, designed rushes / scrambles, and snaps.
     """
 
-    return weighted_mean(
+    score = weighted_mean(
         [
             score_from_rate(row.get("offensive_snap_share")),
             _qb_passing_opportunity(row),
@@ -157,6 +197,19 @@ def _qb_opportunity_score(
             red_zone,
         ],
         weights=[0.15, 0.45, 0.25, 0.15],
+    )
+    if score is not None:
+        return score
+    return weighted_mean(
+        [
+            _score_volume(row.get("dropbacks"), per_unit=2.5),
+            _score_volume(row.get("snap_count"), per_unit=1.5),
+            _score_volume(
+                row.get("designed_rush_attempts"),
+                per_unit=12.5,
+            ),
+        ],
+        weights=[0.55, 0.30, 0.15],
     )
 
 

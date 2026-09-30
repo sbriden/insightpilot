@@ -39,6 +39,31 @@ SLATE_KINDS: dict[str, dict[str, str]] = {
 _SUNDAY_NIGHT_HOUR = 20
 
 
+def list_dfs_weeks(
+    *,
+    season: int | None = None,
+) -> dict[str, Any]:
+    """Weeks with REG games for the season, plus the default week."""
+
+    resolved_season = _resolve_season(season)
+    weeks = _weeks_with_games(resolved_season)
+    current = _resolve_week(None, season=resolved_season)
+    if current not in weeks and weeks:
+        # Prefer the latest scheduled week when current is ahead
+        # of published games, else keep nflverse current week.
+        if current > max(weeks):
+            current = max(weeks)
+        else:
+            weeks = sorted({*weeks, current})
+    elif not weeks:
+        weeks = [current]
+    return {
+        "season": resolved_season,
+        "weeks": weeks,
+        "current_week": current,
+    }
+
+
 def list_dfs_slates(
     *,
     season: int | None = None,
@@ -46,7 +71,10 @@ def list_dfs_slates(
     contest_type: str | None = "classic",
 ) -> list[dict[str, Any]]:
     resolved_season = _resolve_season(season)
-    resolved_week = _resolve_week(week, season=resolved_season)
+    resolved_week = _resolve_week(
+        week,
+        season=resolved_season,
+    )
     format_key = normalize_contest_type(contest_type)
     windows = _slate_windows_for_week(
         season=resolved_season,
@@ -77,10 +105,7 @@ def list_dfs_slates(
                     kind,
                 ),
                 "sport": "NFL",
-                "label": (
-                    f"{meta['label']} — "
-                    f"Week {resolved_week}"
-                ),
+                "label": meta["label"],
                 "season": resolved_season,
                 "week": resolved_week,
                 "kind": kind,
@@ -100,8 +125,13 @@ def build_dfs_slate(
     site: str = "draftkings",
     season: int | None = None,
     contest_type: str | None = None,
+    scoring: str | None = "ppr",
     limit: int = 250,
 ) -> dict[str, Any]:
+    # DFS projections stay on full PPR. Scoring format switches
+    # live on Player Overview only.
+    scoring_key = "ppr"
+    _ = scoring  # accepted for API compatibility; ignored
     resolved_season = _resolve_season(season)
     parsed = _parse_slate_id(slate_id, resolved_season)
     format_key = normalize_contest_type(
@@ -170,8 +200,30 @@ def build_dfs_slate(
 
     raw_players = list_fantasy_players(
         season=season_value,
+        scoring=scoring_key,
         limit=fetch_limit,
     )
+    week_context = _load_week_context_maps(
+        season=season_value,
+        week=int(week_value),
+    )
+    try:
+        from app.analysis.insights.dfs.projection_baselines import (
+            load_player_projection_baselines,
+        )
+
+        baseline_by_player = load_player_projection_baselines(
+            season=season_value,
+            scoring=scoring_key,
+            player_ids=[
+                str(player.get("player_id") or "")
+                for player in raw_players
+                if player.get("player_id")
+            ],
+        )
+    except Exception:
+        baseline_by_player = {}
+
     players = [
         _to_dfs_player(
             player,
@@ -179,6 +231,10 @@ def build_dfs_slate(
             opponents=opponents,
             contest_type=format_key,
             salary_map=salary_map,
+            week_context=week_context,
+            baseline=baseline_by_player.get(
+                str(player.get("player_id") or "")
+            ),
         )
         for player in raw_players
         if _eligible_position(
@@ -192,8 +248,7 @@ def build_dfs_slate(
         players = [
             player
             for player in players
-            if str(player.get("team") or "").strip().upper()
-            in team_filter
+            if _team_abbr(player.get("team")) in team_filter
         ]
     elif kind not in {"main"}:
         # Primetime / showdown windows with no games stay empty
@@ -207,7 +262,26 @@ def build_dfs_slate(
         )
     )
     if limit and len(players) > int(limit):
-        players = players[: int(limit)]
+        # Never drop uploaded-salary players — backups priced on
+        # the DK/FD file must remain searchable / force-includable.
+        uploaded = [
+            player
+            for player in players
+            if player.get("salary_source") == "uploaded"
+        ]
+        rest = [
+            player
+            for player in players
+            if player.get("salary_source") != "uploaded"
+        ]
+        room = max(0, int(limit) - len(uploaded))
+        players = uploaded + rest[:room]
+        players.sort(
+            key=lambda item: (
+                -(float(item.get("projection") or 0.0)),
+                str(item.get("name") or ""),
+            )
+        )
 
     # Always assign DFS projected ownership (never season-long
     # player-overview ownership — those scales are unrelated).
@@ -224,26 +298,26 @@ def build_dfs_slate(
     )
     now = datetime.now(timezone.utc).isoformat()
     salaries_updated_at = salary_updated_at or now
+    note = (
+        "PPR InsightPilot calibrated projections "
+        "(sample-size regression + opportunity/distribution "
+        "guardrails) × weekly matchup/environment"
+        + (
+            "; upload a DK/FD salary CSV for real prices"
+            if salary_hits == 0
+            else ""
+        )
+        + (
+            " (showdown)."
+            if format_key == "showdown"
+            else f" ({start_label.lower()})."
+        )
+    )
     if salary_hits > 0:
         note = (
             f"Using {salary_hits} uploaded "
             f"{site_config['name']} {format_key} salaries "
-            f"for week {int(week_value)}"
-            + (
-                " (showdown)."
-                if format_key == "showdown"
-                else f" ({start_label.lower()})."
-            )
-        )
-    else:
-        note = (
-            "Synthetic salaries from InsightPilot projections "
-            "(upload a DK/FD salary CSV for real prices)"
-            + (
-                " for a single-game showdown."
-                if format_key == "showdown"
-                else f", filtered to {start_label.lower()}."
-            )
+            f"for week {int(week_value)}. {note}"
         )
 
     return {
@@ -254,6 +328,7 @@ def build_dfs_slate(
         "week": int(week_value),
         "kind": kind,
         "contest_type": format_key,
+        "scoring": scoring_key,
         "start_label": start_label,
         "site": site_config["id"],
         "site_name": site_config["name"],
@@ -305,10 +380,46 @@ def _resolve_week(
 
         current_season = int(nfl.get_current_season())
         if int(season) == current_season:
-            return max(1, int(nfl.get_current_week()))
+            current_week = max(1, int(nfl.get_current_week()))
+            scheduled = _weeks_with_games(int(season))
+            if scheduled and current_week not in scheduled:
+                # nflverse can report a week before games land;
+                # prefer the latest week that has REG games.
+                if current_week > max(scheduled):
+                    return max(scheduled)
+            return current_week
     except Exception:
         pass
+    scheduled = _weeks_with_games(int(season))
+    if scheduled:
+        return max(scheduled)
     return 1
+
+
+def _weeks_with_games(season: int) -> list[int]:
+    """REG weeks present in the nflverse schedule for a season."""
+
+    try:
+        import nflreadpy as nfl
+
+        schedules = nfl.load_schedules([int(season)])
+        if hasattr(schedules, "to_pandas"):
+            schedules = schedules.to_pandas()
+    except Exception:
+        return []
+
+    if schedules is None or getattr(schedules, "empty", True):
+        return []
+
+    weeks: set[int] = set()
+    for row in schedules.to_dict(orient="records"):
+        if not _is_reg_game(row):
+            continue
+        try:
+            weeks.add(int(row.get("week")))
+        except (TypeError, ValueError):
+            continue
+    return sorted(weeks)
 
 
 def _slate_id(season: int, week: int, kind: str) -> str:
@@ -672,8 +783,9 @@ def _gametime_hour(value: Any) -> int | None:
 
 
 def _team_abbr(value: Any) -> str | None:
-    text = str(value or "").strip().upper()
-    return text or None
+    from app.canonical.ids import canonicalize_team_abbreviation
+
+    return canonicalize_team_abbreviation(value)
 
 
 def _eligible_position(
@@ -719,6 +831,9 @@ def _to_dfs_player(
     opponents: dict[str, str] | None = None,
     contest_type: str = "classic",
     salary_map: dict[str, int] | None = None,
+    week_context: dict[str, Any] | None = None,
+    matchup_context: dict[str, Any] | None = None,
+    baseline: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     player_id = str(player.get("player_id") or "").strip()
     if not player_id:
@@ -729,48 +844,132 @@ def _to_dfs_player(
     if position == "K" and contest_type != "showdown":
         return None
 
-    projection = _num(player.get("fppg"))
-    if projection is None:
-        projection = _num(player.get("fantasy_points"))
-    if projection is None:
-        # Keep zero-projection players out of the primary pool.
-        games = player.get("games")
-        if not games:
-            return None
-        projection = 0.0
+    raw_projection = _num(player.get("fppg"))
+    if raw_projection is None:
+        # Prefer per-game rate; season totals inflate projections.
+        games = _num(player.get("games"))
+        total = _num(player.get("fantasy_points"))
+        if total is not None and games and games > 0:
+            raw_projection = float(total) / float(games)
+        elif total is not None:
+            raw_projection = float(total)
+    try:
+        depth_order = (
+            int(player.get("depth_order"))
+            if player.get("depth_order") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        depth_order = None
 
     uploaded_salary = None
     if salary_map:
         uploaded_salary = salary_map.get(player_id)
+
+    if raw_projection is None:
+        # Keep DFS-relevant players even with no logged FPPG:
+        # Active depth-chart players (incl. QB3 like Case Keenum)
+        # and anyone priced on an uploaded salary file.
+        games = player.get("games")
+        status_key = str(player.get("status") or "Active").strip().lower()
+        active_roster = status_key in {"active", "a", ""}
+        if uploaded_salary is not None or (
+            depth_order is not None and active_roster
+        ):
+            raw_projection = 0.0
+        elif not games:
+            return None
+        else:
+            raw_projection = 0.0
+
+    current_games = int(_num(player.get("games")) or 0)
+    baseline_row = baseline or {}
+    from app.analysis.insights.dfs.projection_calibration import (
+        calibrate_projection,
+    )
+
+    calibrated = calibrate_projection(
+        raw_projection=float(raw_projection),
+        position=position,
+        current_season_games=current_games,
+        historical_baseline=_num(
+            baseline_row.get("historical_baseline")
+        ),
+        historical_games=int(
+            baseline_row.get("historical_games") or 0
+        ),
+        historical_p90=_num(baseline_row.get("historical_p90")),
+        opportunity_score=_num(player.get("opportunity_score")),
+        depth_order=depth_order,
+        roster_status=(
+            str(player.get("status"))
+            if player.get("status") is not None
+            else None
+        ),
+    )
+    # Optimizer / analyzer consume calibrated median before
+    # weekly matchup scaling.
+    base_projection = float(calibrated.insightpilot_projection)
+
+    team = _team_abbr(player.get("team"))
+    opponent = None
+    if team and opponents:
+        opponent = opponents.get(team)
+
+    if matchup_context is None and week_context is not None:
+        matchup_context = _resolve_player_week_context(
+            player_id=player_id,
+            opponent=opponent,
+            week_context=week_context,
+        )
+
+    adjusted = _opponent_adjusted_projection(
+        base=float(base_projection),
+        position=position,
+        context=matchup_context,
+        has_opponent=bool(opponent),
+    )
+    projection = float(adjusted["projection"])
+    matchup_score = adjusted.get("matchup_score")
+    environment_score = adjusted.get("environment_score")
+    matchup_factor = adjusted.get("adjustment_factor")
+
     if uploaded_salary is not None:
         salary = int(uploaded_salary)
         salary_source = "uploaded"
     else:
+        # Keep synthetic salaries on calibrated baseline so
+        # matchup edge shows up in projection/value, not price.
         salary = _synthetic_salary(
             position=position,
-            projection=float(projection),
+            projection=float(base_projection),
             site=site,
             contest_type=contest_type,
         )
         salary_source = "synthetic"
-    # Season-long ownership from player overview is intentionally
-    # ignored — DFS projected ownership is assigned at the slate level.
 
     value = None
-    if salary and salary > 0 and projection is not None:
+    if salary and salary > 0:
         value = round(float(projection) / (salary / 1000.0), 2)
 
-    floor = round(float(projection) * 0.65, 1)
-    ceiling = round(float(projection) * 1.45, 1)
-    matchup = _matchup_from_assessment(
-        player.get("overall_assessment")
+    # Prefer calibration range, then apply matchup factor so
+    # floor/ceiling move with the weekly outlook.
+    range_factor = float(matchup_factor) if matchup_factor else 1.0
+    floor = round(
+        float(calibrated.projection_floor) * range_factor,
+        1,
     )
+    ceiling = round(
+        float(calibrated.projection_ceiling) * range_factor,
+        1,
+    )
+    if matchup_score is not None:
+        matchup = _matchup_label_from_score(float(matchup_score))
+    else:
+        matchup = _matchup_from_assessment(
+            player.get("overall_assessment")
+        )
     signals = _signals_for_player(player, value=value)
-
-    team = str(player.get("team") or "").strip().upper() or None
-    opponent = None
-    if team and opponents:
-        opponent = opponents.get(team)
 
     eligible = _eligible_slots(position, contest_type=contest_type)
 
@@ -785,6 +984,25 @@ def _to_dfs_player(
         "salary": salary,
         "salary_source": salary_source,
         "projection": round(float(projection), 1),
+        "raw_projection": calibrated.raw_projection,
+        "insightpilot_projection": round(float(projection), 1),
+        "base_projection": round(float(base_projection), 1),
+        "projection_adjustment": calibrated.projection_adjustment,
+        "projection_adjustment_reason": (
+            calibrated.projection_adjustment_reason
+        ),
+        "projection_confidence": calibrated.projection_confidence,
+        "sample_size_confidence": (
+            calibrated.sample_size_confidence
+        ),
+        "current_season_games": calibrated.current_season_games,
+        "historical_games": calibrated.historical_games,
+        "historical_baseline": calibrated.historical_baseline,
+        "matchup_adjustment_factor": (
+            round(float(matchup_factor), 3)
+            if matchup_factor is not None
+            else None
+        ),
         "floor": floor,
         "ceiling": ceiling,
         "projected_ownership": None,
@@ -792,6 +1010,8 @@ def _to_dfs_player(
         "value": value,
         "matchup_rating": matchup,
         "matchup_label": matchup,
+        "matchup_score": matchup_score,
+        "environment_score": environment_score,
         "opportunity_rating": _num(
             player.get("opportunity_score")
         ),
@@ -799,7 +1019,12 @@ def _to_dfs_player(
         "risk_level": _risk_from_assessment(
             player.get("overall_assessment")
         ),
-        "volatility": "moderate",
+        "volatility": (
+            "high"
+            if calibrated.projection_confidence
+            in {"Very Low", "Low"}
+            else "moderate"
+        ),
         "status": player.get("status") or "Active",
         "injury_status": player.get("injury_status"),
         "injury_type": player.get("injury_type"),
@@ -812,7 +1037,317 @@ def _to_dfs_player(
             player.get("is_team_defense")
             or position == "DEF"
         ),
+        "calibration_flags": list(calibrated.flags),
     }
+
+
+def _load_week_context_maps(
+    *,
+    season: int,
+    week: int,
+) -> dict[str, Any]:
+    """
+    Weekly projection context:
+      by_player  — environment (+ stored matchup when available)
+      by_opponent — prospective matchup scores from latest
+                    defensive priors, keyed by team abbr
+    """
+
+    by_player: dict[str, dict[str, Any]] = {}
+    by_opponent: dict[str, dict[str, Any]] = {}
+
+    try:
+        from app.canonical.analytics.player_matchup import (
+            get_player_matchup,
+        )
+
+        matchups = get_player_matchup(
+            [int(season)],
+            force_refresh=False,
+            persist=False,
+        )
+        if matchups is not None and not matchups.empty:
+            week_frame = matchups[
+                (matchups["season"].astype(int) == int(season))
+                & (matchups["week"].astype(int) == int(week))
+            ]
+            for row in week_frame.to_dict(orient="records"):
+                player_id = str(row.get("player_id") or "").strip()
+                if not player_id:
+                    continue
+                # Skip empty / NaN matchup rows (common for
+                # upcoming weeks that lack defense game facts).
+                if _num(row.get("matchup_score")) is None and (
+                    _num(row.get("pass_matchup_score")) is None
+                    and _num(row.get("rush_matchup_score"))
+                    is None
+                    and _num(row.get("receiving_matchup_score"))
+                    is None
+                ):
+                    continue
+                by_player.setdefault(player_id, {})[
+                    "matchup"
+                ] = row
+    except Exception:
+        pass
+
+    try:
+        from app.canonical.analytics.player_environment import (
+            get_player_environment,
+        )
+
+        environments = get_player_environment(
+            [int(season)],
+            force_refresh=False,
+            persist=False,
+        )
+        if environments is not None and not environments.empty:
+            week_frame = environments[
+                (
+                    environments["season"].astype(int)
+                    == int(season)
+                )
+                & (environments["week"].astype(int) == int(week))
+            ]
+            for row in week_frame.to_dict(orient="records"):
+                player_id = str(row.get("player_id") or "").strip()
+                if not player_id:
+                    continue
+                by_player.setdefault(player_id, {})[
+                    "environment"
+                ] = row
+    except Exception:
+        pass
+
+    by_opponent = _opponent_matchup_priors(season=int(season))
+
+    return {
+        "by_player": by_player,
+        "by_opponent": by_opponent,
+    }
+
+
+def _opponent_matchup_priors(
+    *,
+    season: int,
+) -> dict[str, dict[str, Any]]:
+    """team abbr → matchup score dict from season-to-date defense."""
+
+    try:
+        import pandas as pd
+        from app.analysis.insights.player_matchups import (
+            _score_matchup_from_priors,
+        )
+        from app.canonical.dim_team import get_dim_team
+        from app.canonical.fact_defensive_game import (
+            get_fact_defensive_game,
+        )
+    except Exception:
+        return {}
+
+    try:
+        defense = get_fact_defensive_game(
+            [int(season)],
+            force_refresh=False,
+            persist=False,
+        )
+    except Exception:
+        return {}
+    if defense is None or defense.empty:
+        return {}
+
+    metric_cols = [
+        "pass_epa_allowed",
+        "rush_epa_allowed",
+        "pass_yards_allowed",
+        "rush_yards_allowed",
+        "receiving_yards_allowed",
+        "targets_allowed",
+        "pressure_rate",
+        "sack_rate",
+    ]
+    working = defense.copy()
+    for column in metric_cols:
+        if column not in working.columns:
+            working[column] = None
+        working[column] = pd.to_numeric(
+            working[column],
+            errors="coerce",
+        )
+
+    # Season-to-date averages — usable for upcoming weeks when
+    # shift()-based priors are empty (early season / unplayed week).
+    grouped = working.groupby("defensive_team_id", sort=False)
+    means = grouped[metric_cols].mean(numeric_only=True)
+    if means.empty:
+        return {}
+
+    team_abbr_by_id: dict[str, str] = {}
+    try:
+        teams = get_dim_team(force_refresh=False, persist=False)
+        if teams is not None and not teams.empty:
+            for row in teams.to_dict(orient="records"):
+                team_id = str(row.get("team_id") or "").strip()
+                abbr = _team_abbr(row.get("team_abbreviation"))
+                if team_id and abbr:
+                    team_abbr_by_id[team_id] = abbr
+    except Exception:
+        pass
+
+    by_opponent: dict[str, dict[str, Any]] = {}
+    for team_id, row in means.iterrows():
+        abbr = team_abbr_by_id.get(str(team_id))
+        if not abbr:
+            continue
+        prior_row = {
+            f"prior_{column}": (
+                float(row[column])
+                if row[column] == row[column]
+                else None
+            )
+            for column in metric_cols
+        }
+        scores = _score_matchup_from_priors(prior_row)
+        if all(value is None for value in scores.values()):
+            continue
+        by_opponent[abbr] = {
+            "matchup_score": scores.get("matchup_score"),
+            "pass_matchup_score": scores.get(
+                "pass_matchup_score"
+            ),
+            "rush_matchup_score": scores.get(
+                "rush_matchup_score"
+            ),
+            "receiving_matchup_score": scores.get(
+                "receiving_matchup_score"
+            ),
+            "opponent_team_id": str(team_id),
+            "source": "season_defense_avg",
+        }
+    return by_opponent
+
+
+def _resolve_player_week_context(
+    *,
+    player_id: str,
+    opponent: str | None,
+    week_context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not week_context:
+        return None
+    by_player = week_context.get("by_player") or {}
+    by_opponent = week_context.get("by_opponent") or {}
+    context = dict(by_player.get(str(player_id) or "") or {})
+
+    stored = context.get("matchup")
+    usable = (
+        stored is not None
+        and (
+            _num(stored.get("matchup_score")) is not None
+            or _num(stored.get("pass_matchup_score")) is not None
+            or _num(stored.get("rush_matchup_score")) is not None
+            or _num(stored.get("receiving_matchup_score"))
+            is not None
+        )
+    )
+    if not usable and opponent:
+        opp_key = _team_abbr(opponent)
+        opp_matchup = by_opponent.get(opp_key) if opp_key else None
+        if opp_matchup:
+            context["matchup"] = opp_matchup
+
+    return context or None
+
+
+def _position_matchup_score(
+    position: str,
+    matchup: dict[str, Any] | None,
+) -> float | None:
+    if not matchup:
+        return None
+    overall = _num(matchup.get("matchup_score"))
+    pass_score = _num(matchup.get("pass_matchup_score"))
+    rush_score = _num(matchup.get("rush_matchup_score"))
+    recv_score = _num(matchup.get("receiving_matchup_score"))
+    if position == "QB":
+        return pass_score if pass_score is not None else overall
+    if position == "RB":
+        parts = [
+            value
+            for value in (rush_score, recv_score)
+            if value is not None
+        ]
+        if not parts:
+            return overall
+        if rush_score is None:
+            return recv_score
+        if recv_score is None:
+            return rush_score
+        return (0.65 * rush_score) + (0.35 * recv_score)
+    if position in {"WR", "TE"}:
+        return recv_score if recv_score is not None else overall
+    if position == "DEF":
+        # Soft matchups for offenses are harder for defenses.
+        if overall is None:
+            return None
+        return 100.0 - float(overall)
+    return overall
+
+
+def _opponent_adjusted_projection(
+    *,
+    base: float,
+    position: str,
+    context: dict[str, Any] | None,
+    has_opponent: bool,
+) -> dict[str, Any]:
+    """
+    Scale season FPPG by weekly opponent matchup / environment.
+
+    matchup_score 50 ≈ neutral → factor 1.0
+    30 → 0.90, 70 → 1.10 (clamped ~0.80–1.20)
+    """
+
+    matchup_row = (context or {}).get("matchup")
+    env_row = (context or {}).get("environment")
+    matchup_score = _position_matchup_score(position, matchup_row)
+    environment_score = _num(
+        (env_row or {}).get("game_environment_score")
+    )
+
+    factor = 1.0
+    if has_opponent and matchup_score is not None:
+        factor *= 0.75 + (0.50 * (float(matchup_score) / 100.0))
+    if has_opponent and environment_score is not None:
+        factor *= 0.95 + (
+            0.10 * (float(environment_score) / 100.0)
+        )
+    factor = max(0.80, min(1.20, float(factor)))
+    projection = float(base) * factor
+    return {
+        "projection": projection,
+        "matchup_score": (
+            round(float(matchup_score), 1)
+            if matchup_score is not None
+            else None
+        ),
+        "environment_score": (
+            round(float(environment_score), 1)
+            if environment_score is not None
+            else None
+        ),
+        "adjustment_factor": factor if has_opponent else None,
+    }
+
+
+def _matchup_label_from_score(score: float) -> str:
+    if score >= 65:
+        return "Very Favorable"
+    if score >= 55:
+        return "Favorable"
+    if score >= 45:
+        return "Neutral"
+    return "Difficult"
 
 
 def _eligible_slots(

@@ -286,6 +286,104 @@ def _snap_frame(
     )
 
 
+def _snap_only_skill_spine(
+    snap_counts: pd.DataFrame,
+    *,
+    pfr_to_gsis: dict[str, str],
+    existing: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Skill players with offensive snaps but no box-score stats row.
+
+    These are active zero-production weeks. Inactive players
+    (no offensive snaps) are not invented.
+    """
+
+    if snap_counts is None or snap_counts.empty:
+        return pd.DataFrame()
+
+    working = snap_counts.copy()
+    working["pfr_player_id"] = working.get(
+        "pfr_player_id",
+        pd.Series(dtype="object"),
+    ).map(_normalize_text)
+    working["gsis_id"] = working["pfr_player_id"].map(pfr_to_gsis)
+    working["nflverse_game_id"] = working.get(
+        "game_id",
+        pd.Series(dtype="object"),
+    ).map(_normalize_text)
+    working["offense_snaps"] = pd.to_numeric(
+        working.get("offense_snaps"),
+        errors="coerce",
+    ).fillna(0)
+    working["position"] = (
+        working.get("position", pd.Series(dtype="object"))
+        .map(_normalize_text)
+        .astype("string")
+        .str.upper()
+    )
+
+    working = working[
+        working["gsis_id"].notna()
+        & working["nflverse_game_id"].notna()
+        & (working["offense_snaps"] > 0)
+        & working["position"].isin(SKILL_POSITIONS)
+    ].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    if not existing.empty:
+        existing_keys = {
+            f"{_normalize_text(gsis)}|{_normalize_text(game)}"
+            for gsis, game in zip(
+                existing["gsis_id"].tolist(),
+                existing["nflverse_game_id"].tolist(),
+            )
+            if _normalize_text(gsis) and _normalize_text(game)
+        }
+        working["_key"] = (
+            working["gsis_id"].map(_normalize_text).astype(str)
+            + "|"
+            + working["nflverse_game_id"]
+            .map(_normalize_text)
+            .astype(str)
+        )
+        working = working[
+            ~working["_key"].isin(existing_keys)
+        ].drop(columns=["_key"])
+    if working.empty:
+        return pd.DataFrame()
+
+    working = working.drop_duplicates(
+        subset=["gsis_id", "nflverse_game_id"],
+        keep="last",
+    )
+    # Shape like nflverse weekly stats spine fields used downstream.
+    out = pd.DataFrame(
+        {
+            "player_id": working["gsis_id"],
+            "game_id": working["nflverse_game_id"],
+            "gsis_id": working["gsis_id"],
+            "nflverse_game_id": working["nflverse_game_id"],
+            "season": working.get("season"),
+            "week": working.get("week"),
+            "season_type": working.get(
+                "game_type",
+                working.get("season_type"),
+            ),
+            "team": working.get("team"),
+            "position": working["position"],
+            "carries": 0,
+            "receptions": 0,
+            "targets": 0,
+            "target_share": None,
+            "receiving_air_yards": None,
+            "air_yards_share": None,
+        }
+    )
+    return out.reset_index(drop=True)
+
+
 def _aggregate_pbp_usage(
     pbp: pd.DataFrame,
 ) -> pd.DataFrame:
@@ -758,7 +856,8 @@ def build_fact_player_usage(
     pbp_usage = _aggregate_pbp_usage(pbp)
     route_usage = _aggregate_routes(participation, pbp)
 
-    # Spine: skill-position weekly rows.
+    # Spine: skill-position weekly rows from box-score stats,
+    # plus snap-active players missing from stats (active zeros).
     spine = stats.copy()
     if "position" in spine.columns:
         spine = spine[
@@ -767,11 +866,6 @@ def build_fact_player_usage(
             .str.upper()
             .isin(SKILL_POSITIONS)
         ].copy()
-    if spine.empty:
-        raise ValueError(
-            "Unable to build fact_player_usage: no skill-position "
-            "player×game rows."
-        )
 
     spine["gsis_id"] = spine["player_id"].map(_normalize_text)
     spine["nflverse_game_id"] = spine["game_id"].map(
@@ -781,6 +875,24 @@ def build_fact_player_usage(
         spine["gsis_id"].notna()
         & spine["nflverse_game_id"].notna()
     ].copy()
+
+    snap_only = _snap_only_skill_spine(
+        snap_counts,
+        pfr_to_gsis=pfr_to_gsis,
+        existing=spine,
+    )
+    if not snap_only.empty:
+        spine = pd.concat(
+            [spine, snap_only],
+            ignore_index=True,
+            sort=False,
+        )
+
+    if spine.empty:
+        raise ValueError(
+            "Unable to build fact_player_usage: no skill-position "
+            "player×game rows."
+        )
 
     spine = spine.merge(
         snaps,

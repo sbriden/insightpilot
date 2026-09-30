@@ -214,6 +214,9 @@ export async function previewNflverseDataset(
 }
 
 
+export type FantasyScoringFormat = "ppr" | "half_ppr" | "standard";
+
+
 export interface FantasyPlayerSearchHit {
   player_id: string;
   name: string;
@@ -227,6 +230,8 @@ export interface FantasyPlayerSearchHit {
   fantasy_points?: number | null;
   games?: number | null;
   fppg?: number | null;
+  projection?: number | null;
+  scoring?: FantasyScoringFormat | string | null;
   production_score?: number | null;
   opportunity_score?: number | null;
   fantasy_value_score?: number | null;
@@ -356,10 +361,12 @@ export async function listFantasyPlayers(
     position?: string;
     team?: string;
     limit?: number;
+    scoring?: FantasyScoringFormat | string;
   } = {}
 ): Promise<{
   players: FantasyPlayerSearchHit[];
   count: number;
+  scoring?: FantasyScoringFormat | string;
 }> {
 
   const params = new URLSearchParams();
@@ -374,6 +381,9 @@ export async function listFantasyPlayers(
   }
   if (options.limit != null) {
     params.set("limit", String(options.limit));
+  }
+  if (options.scoring) {
+    params.set("scoring", String(options.scoring));
   }
 
   const query =
@@ -523,9 +533,6 @@ export async function searchFantasyPlayers(
   return handleResponse(response);
 
 }
-
-
-export type FantasyScoringFormat = "ppr" | "half_ppr" | "standard";
 
 
 export interface FantasyStatsMetric {
@@ -1158,7 +1165,19 @@ export interface DfsPlayer {
   team?: string | null;
   opponent?: string | null;
   salary: number;
+  salary_source?: string | null;
   projection: number;
+  raw_projection?: number | null;
+  insightpilot_projection?: number | null;
+  base_projection?: number | null;
+  projection_adjustment?: number | null;
+  projection_adjustment_reason?: string | null;
+  projection_confidence?: string | null;
+  sample_size_confidence?: string | null;
+  current_season_games?: number | null;
+  historical_games?: number | null;
+  historical_baseline?: number | null;
+  matchup_adjustment_factor?: number | null;
   floor?: number | null;
   ceiling?: number | null;
   projected_ownership?: number | null;
@@ -1166,6 +1185,8 @@ export interface DfsPlayer {
   value?: number | null;
   matchup_rating?: string | null;
   matchup_label?: string | null;
+  matchup_score?: number | null;
+  environment_score?: number | null;
   primary_signal?: DfsSignal | null;
   signals?: DfsSignal[];
   status?: string | null;
@@ -1211,6 +1232,53 @@ export interface DfsLineup {
   insights?: DfsLineupInsight[];
   signals?: DfsSignal[];
   edge_summary?: string | null;
+  correlation?: DfsLineupCorrelation | null;
+  lineup_correlation_score?: number | null;
+}
+
+export interface DfsCorrelationPair {
+  player_id: string;
+  correlated_player_id: string;
+  player_name?: string | null;
+  correlated_player_name?: string | null;
+  correlation_type?: string;
+  correlation_score: number;
+  confidence?: string | null;
+  confidence_score?: number | null;
+  correlation_reason?: string | null;
+  source?: string | null;
+  rule_id?: string | null;
+}
+
+export interface DfsLineupCorrelation {
+  lineup_correlation_score?: number;
+  positive_correlation?: number;
+  negative_correlation?: number;
+  concentration_penalty?: number;
+  soft_constraint_penalty?: number;
+  pair_count?: number;
+  pairs?: DfsCorrelationPair[];
+  positive_pairs?: DfsCorrelationPair[];
+  negative_pairs?: DfsCorrelationPair[];
+}
+
+export interface DfsPortfolioCorrelationExposure {
+  player_id: string;
+  correlated_player_id: string;
+  player_name?: string | null;
+  correlated_player_name?: string | null;
+  correlation_score: number;
+  correlation_reason?: string | null;
+  lineups: number;
+  exposure: number;
+  exposure_pct: number;
+}
+
+export interface DfsPortfolioCorrelationSummary {
+  lineup_count?: number;
+  positive_correlation_exposure?: DfsPortfolioCorrelationExposure[];
+  negative_correlation_exposure?: DfsPortfolioCorrelationExposure[];
+  narrative?: string | null;
 }
 
 export interface DfsSlate {
@@ -1221,6 +1289,7 @@ export interface DfsSlate {
   week?: number | null;
   kind?: string | null;
   contest_type?: DfsContestType | string;
+  scoring?: FantasyScoringFormat | string;
   site: string;
   site_name: string;
   salary_cap: number;
@@ -1251,6 +1320,220 @@ export interface DfsOptimizeResult {
   };
 }
 
+export type DfsPortfolioStrategy =
+  | "max_projection"
+  | "balanced"
+  | "tournament"
+  | "contrarian"
+  | "cash"
+  | "gpp"
+  | "custom";
+
+export interface DfsPortfolioExposureRow {
+  player_id: string;
+  name?: string | null;
+  position?: string | null;
+  team?: string | null;
+  opponent?: string | null;
+  projection?: number | null;
+  ceiling?: number | null;
+  floor?: number | null;
+  projected_ownership?: number | null;
+  salary?: number | null;
+  lineups: number;
+  lineup_count: number;
+  generated_lineup_count?: number;
+  exposure: number;
+  exposure_pct: number;
+  captain_lineups?: number;
+  captain_exposure?: number;
+  captain_exposure_pct?: number;
+  min_exposure?: number | null;
+  max_exposure?: number | null;
+  max_allowed_exposure?: number | null;
+  max_allowed_lineups?: number | null;
+  remaining_capacity?: number | null;
+  min_captain_exposure?: number | null;
+  max_captain_exposure?: number | null;
+  locked?: boolean;
+  excluded?: boolean;
+}
+
+export interface DfsPortfolioSignal {
+  id: string;
+  type: string;
+  severity?: string;
+  explanation?: string;
+  action?: string;
+  player_id?: string;
+  exposure?: number;
+  similarity?: number;
+  unique_players?: number;
+  threshold?: number;
+}
+
+export interface DfsPortfolioSummary {
+  portfolio_id: string;
+  slate_id: string;
+  site: string;
+  contest_type: string;
+  strategy: string;
+  risk?: string;
+  lineup_count: number;
+  requested_lineup_count?: number;
+  max_lineup_similarity?: number;
+  default_max_exposure?: number;
+  unique_players: number;
+  average_projection: number;
+  average_ceiling: number;
+  average_floor?: number;
+  average_ownership: number;
+  average_salary: number;
+  average_salary_remaining?: number;
+  best_projection?: number;
+  lowest_projection?: number;
+  unique_lineups?: number;
+  min_unique_players?: number;
+  average_lineup_similarity: number;
+  diversity_label: string;
+  constraints?: Record<string, unknown>;
+}
+
+export interface DfsPortfolioLineup extends DfsLineup {
+  portfolio_index?: number;
+  similarity?: number | null;
+  player_ids?: string[];
+  game_script_id?: string | null;
+  game_script_label?: string | null;
+  game_script_code?: string | null;
+  game_script_weight?: number | null;
+  game_script_implication?: string | null;
+  game_script_raw_probability?: number | null;
+}
+
+export interface DfsGameScriptAllocation {
+  script_id: string;
+  label?: string | null;
+  code?: string | null;
+  weight: number;
+  lineup_count: number;
+  target_lineup_count?: number | null;
+  raw_probability?: number | null;
+  implication?: string | null;
+  favorite?: string | null;
+  underdog?: string | null;
+}
+
+export interface DfsPortfolioGameScripts {
+  favorite?: string | null;
+  underdog?: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
+  projected_total?: number | null;
+  market_total?: number | null;
+  market_spread?: number | null;
+  allocations: DfsGameScriptAllocation[];
+  note?: string | null;
+}
+
+export interface DfsPortfolioResult {
+  portfolio: DfsPortfolioSummary & {
+    game_scripts?: DfsPortfolioGameScripts | null;
+  };
+  lineups: DfsPortfolioLineup[];
+  exposure: { players: DfsPortfolioExposureRow[] };
+  similarity: {
+    average: number;
+    most_similar_pairs: Array<{
+      lineup_a?: string;
+      lineup_b?: string;
+      index_a?: number;
+      index_b?: number;
+      similarity: number;
+      shared_players: number;
+      roster_size: number;
+    }>;
+  };
+  correlation?: DfsPortfolioCorrelationSummary | null;
+  core?: Array<{
+    player_id: string;
+    name?: string | null;
+    position?: string | null;
+    exposure: number;
+    exposure_pct: number;
+    lineups: number;
+  }>;
+  differentiators?: Array<{
+    player_id: string;
+    name?: string | null;
+    position?: string | null;
+    exposure: number;
+    exposure_pct: number;
+    lineups: number;
+  }>;
+  signals: DfsPortfolioSignal[];
+  alerts: DfsPortfolioSignal[];
+  player_diagnostics?: Array<{
+    player_id: string;
+    name?: string | null;
+    position?: string | null;
+    projection?: number | null;
+    exposure: number;
+    exposure_pct: number;
+    lineups: number;
+    max_exposure: number;
+    max_allowed_lineups: number;
+    remaining_capacity: number;
+    candidate_lineups_with_player: number;
+    reasons: string[];
+    why_not_more: string;
+  }>;
+  game_scripts?: DfsPortfolioGameScripts | null;
+  optimization_metadata?: Record<string, unknown>;
+  slate?: {
+    slate_id: string;
+    label?: string;
+    freshness?: DfsSlate["freshness"];
+  };
+}
+
+export async function generateDfsPortfolio(payload: {
+  slate_id: string;
+  site?: DfsSiteId;
+  contest_type?: DfsContestType | string;
+  scoring?: FantasyScoringFormat | string;
+  lineup_count?: number;
+  strategy?: DfsPortfolioStrategy | string;
+  risk?: DfsRisk | string;
+  max_lineup_similarity?: number | null;
+  min_unique_players?: number | null;
+  default_max_exposure?: number | null;
+  default_max_captain_exposure?: number | null;
+  player_exposure?: {
+    min?: Record<string, number>;
+    max?: Record<string, number>;
+    target?: Record<string, number>;
+    captain_min?: Record<string, number>;
+    captain_max?: Record<string, number>;
+    lock?: string[];
+    exclude?: string[];
+  };
+  locked_players?: string[];
+  excluded_players?: string[];
+  season?: number | null;
+  seed?: number | null;
+}): Promise<DfsPortfolioResult> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/sources/nflverse/dfs/portfolio`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+  return handleResponse(response);
+}
+
 
 export async function listDfsSites(): Promise<{
   sites: Array<{
@@ -1269,9 +1552,32 @@ export async function listDfsSites(): Promise<{
 }
 
 
+export async function listDfsWeeks(
+  season?: number | null
+): Promise<{
+  season: number;
+  weeks: number[];
+  current_week: number;
+}> {
+  const params = new URLSearchParams();
+  if (season != null) {
+    params.set("season", String(season));
+  }
+  const query = params.toString()
+    ? `?${params.toString()}`
+    : "";
+  const response = await fetch(
+    `${API_BASE_URL}/api/sources/nflverse/dfs/weeks${query}`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+
 export async function listDfsSlates(
   season?: number | null,
-  contestType?: DfsContestType | string | null
+  contestType?: DfsContestType | string | null,
+  week?: number | null
 ): Promise<{
   slates: Array<{
     slate_id: string;
@@ -1290,6 +1596,9 @@ export async function listDfsSlates(
   const params = new URLSearchParams();
   if (season != null) {
     params.set("season", String(season));
+  }
+  if (week != null) {
+    params.set("week", String(week));
   }
   if (contestType) {
     params.set("contest_type", String(contestType));
@@ -1311,6 +1620,7 @@ export async function getDfsSlate(
     site?: DfsSiteId;
     season?: number | null;
     contest_type?: DfsContestType | string;
+    scoring?: FantasyScoringFormat | string;
     limit?: number;
   } = {}
 ): Promise<{ slate: DfsSlate }> {
@@ -1323,6 +1633,9 @@ export async function getDfsSlate(
   }
   if (options.contest_type) {
     params.set("contest_type", String(options.contest_type));
+  }
+  if (options.scoring) {
+    params.set("scoring", String(options.scoring));
   }
   if (options.limit != null) {
     params.set("limit", String(options.limit));
@@ -1343,6 +1656,7 @@ export async function optimizeDfsLineup(
     slate_id: string;
     site?: DfsSiteId;
     contest_type?: DfsContestType | string;
+    scoring?: FantasyScoringFormat | string;
     risk?: DfsRisk | string;
     strategy?: string;
     locked_players?: string[];
@@ -2259,4 +2573,695 @@ export async function calculateDataCoverage(
 
   return response.json();
 
+}
+
+/* ------------------------------------------------------------------ */
+/* Sports Betting                                                      */
+/* ------------------------------------------------------------------ */
+
+export type BettingMarketType =
+  | "spread"
+  | "total"
+  | "moneyline"
+  | string;
+
+export type BettingConfidence = "High" | "Moderate" | "Low" | string;
+
+export interface BettingSignal {
+  signal_id: string;
+  event_id: string;
+  market_id?: string | null;
+  signal_type: string;
+  label: string;
+  direction?: string | null;
+  confidence?: BettingConfidence | null;
+  explanation?: string | null;
+  event_label?: string | null;
+}
+
+export interface BettingMarket {
+  market_id: string;
+  event_id: string;
+  event_label?: string | null;
+  start_time?: string | null;
+  sport?: string;
+  league?: string;
+  home_team?: string | null;
+  away_team?: string | null;
+  market_type: BettingMarketType;
+  selection: string;
+  line?: number | null;
+  price?: number | null;
+  model_probability?: number | null;
+  market_probability?: number | null;
+  model_fair_price?: number | null;
+  model_projection?: number | null;
+  market_implied_projection?: number | null;
+  edge?: number | null;
+  edge_probability?: number | null;
+  expected_value?: number | null;
+  confidence?: BettingConfidence | null;
+  confidence_explanation?: string | null;
+  direction?: string | null;
+  primary_signal?: string | null;
+  opportunity?: string | null;
+  status?: string | null;
+  source?: string | null;
+}
+
+export interface BettingInjuryNote {
+  player_id: string;
+  player_name: string;
+  team?: string | null;
+  team_id?: string | null;
+  position?: string | null;
+  depth_order?: number | null;
+  depth_label?: string | null;
+  game_status?: string | null;
+  practice_status?: string | null;
+  injury_type?: string | null;
+  is_starter?: boolean;
+  projection_impact_pts?: number | null;
+  is_expected_to_play?: boolean | null;
+}
+
+export interface BettingGameScript {
+  script_id: string;
+  label: string;
+  summary?: string | null;
+  probability: number;
+  explanation?: string | null;
+  drivers?: string[];
+  favorite?: string | null;
+  underdog?: string | null;
+}
+
+export interface BettingEvent {
+  event_id: string;
+  sport?: string;
+  league?: string;
+  season?: number | null;
+  week?: number | null;
+  start_time?: string | null;
+  status?: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
+  home_team_name?: string | null;
+  away_team_name?: string | null;
+  label: string;
+  market_spread?: number | null;
+  market_total?: number | null;
+  market_home_score?: number | null;
+  market_away_score?: number | null;
+  projected_home_score?: number | null;
+  projected_away_score?: number | null;
+  projected_total?: number | null;
+  model_spread?: number | null;
+  game_scripts?: BettingGameScript[];
+  injury_adjustment_home?: number | null;
+  injury_adjustment_away?: number | null;
+  injuries?: BettingInjuryNote[];
+  model_drivers?: string[];
+  injury_report_week?: number | null;
+  primary_signal?: BettingSignal | null;
+  market_ids?: string[];
+  market_timestamp?: string | null;
+  source?: string | null;
+}
+
+export interface BettingSlate {
+  sport: string;
+  league: string;
+  season: number;
+  week: number;
+  slate_id: string;
+  label: string;
+  game_count: number;
+  market_count: number;
+  model_coverage_pct: number;
+  markets_with_edge: number;
+  average_confidence: BettingConfidence;
+  events: BettingEvent[];
+  markets: BettingMarket[];
+  signals: BettingSignal[];
+  source?: string | null;
+  source_note?: string | null;
+  generated_at?: string | null;
+  injury_report_week?: number | null;
+}
+
+export async function listBettingWeeks(
+  season?: number | null
+): Promise<{
+  sport: string;
+  league: string;
+  season: number;
+  weeks: number[];
+  current_week: number | null;
+}> {
+  const params = new URLSearchParams();
+  if (season != null) {
+    params.set("season", String(season));
+  }
+  params.set("sport", "NFL");
+  const query = `?${params.toString()}`;
+  const response = await fetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/weeks${query}`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+export async function getBettingSlate(options?: {
+  season?: number | null;
+  week?: number | null;
+}): Promise<BettingSlate> {
+  const params = new URLSearchParams();
+  params.set("sport", "NFL");
+  if (options?.season != null) {
+    params.set("season", String(options.season));
+  }
+  if (options?.week != null) {
+    params.set("week", String(options.week));
+  }
+  const response = await fetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/slate?${params.toString()}`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+export interface BettingModelResultRow {
+  market_id?: string;
+  event_id?: string;
+  event_label?: string | null;
+  market_type?: string | null;
+  selection?: string | null;
+  line?: number | null;
+  result?: string | null;
+  model_correct?: boolean | null;
+  model_probability?: number | null;
+  edge?: number | null;
+  confidence?: string | null;
+  home_score?: number | null;
+  away_score?: number | null;
+  actual_total?: number | null;
+  actual_spread?: number | null;
+  model_total?: number | null;
+  model_spread?: number | null;
+  total_error?: number | null;
+  spread_error?: number | null;
+  closing_line?: number | null;
+  home_team?: string | null;
+  away_team?: string | null;
+  projection_captured_at?: string | null;
+}
+
+export interface BettingModelResultsSummary {
+  total_markets: number;
+  decided: number;
+  model_correct: number;
+  model_incorrect: number;
+  push: number;
+  hit_rate?: number | null;
+  average_total_error?: number | null;
+  average_spread_error?: number | null;
+  average_abs_total_error?: number | null;
+  average_abs_spread_error?: number | null;
+  by_market: Array<{
+    key: string;
+    bets: number;
+    decided: number;
+    correct: number;
+    hit_rate?: number | null;
+    average_edge?: number | null;
+  }>;
+  by_confidence: Array<{
+    key: string;
+    bets: number;
+    decided: number;
+    correct: number;
+    hit_rate?: number | null;
+    average_edge?: number | null;
+  }>;
+  calibration: Array<{
+    bucket: string;
+    bets: number;
+    predicted_midpoint: number;
+    actual_win_rate?: number | null;
+  }>;
+  settled_markets: BettingModelResultRow[];
+  games_settled: number;
+  performance_trend?: BettingPerformanceTrendPoint[];
+  trend_summary?: BettingPerformanceTrendSummary | null;
+  note?: string | null;
+}
+
+export interface BettingPerformanceTrendPoint {
+  season: number;
+  week: number;
+  label: string;
+  markets: number;
+  decided: number;
+  correct: number;
+  hit_rate?: number | null;
+  cumulative_hit_rate?: number | null;
+  hit_rate_delta?: number | null;
+  games_settled: number;
+  average_total_error?: number | null;
+  average_abs_spread_error?: number | null;
+}
+
+export interface BettingPerformanceTrendSummary {
+  weeks: number;
+  latest_week?: number | null;
+  latest_hit_rate?: number | null;
+  season_hit_rate?: number | null;
+  hit_rate_delta?: number | null;
+  first_week?: number | null;
+  direction?: "improving" | "declining" | "flat" | string | null;
+}
+
+export interface BettingCalibrationFeedback {
+  sample_games?: number;
+  total_bias?: number;
+  spread_bias?: number;
+  raw_mean_total_error?: number | null;
+  raw_mean_spread_error?: number | null;
+  active?: boolean;
+  dampen?: number | null;
+  note?: string | null;
+}
+
+export interface BettingResultsPayload {
+  sport: string;
+  league: string;
+  season: number;
+  week: number;
+  slate_id?: string;
+  label?: string;
+  model_results: BettingModelResultsSummary;
+  calibration_feedback?: BettingCalibrationFeedback | null;
+  generated_at?: string | null;
+}
+
+export async function getBettingResults(options?: {
+  season?: number | null;
+  week?: number | null;
+}): Promise<BettingResultsPayload> {
+  const params = new URLSearchParams();
+  params.set("sport", "NFL");
+  if (options?.season != null) {
+    params.set("season", String(options.season));
+  }
+  if (options?.week != null) {
+    params.set("week", String(options.week));
+  }
+  const response = await fetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/results?${params.toString()}`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+export type BettingPositionStatus =
+  | "open"
+  | "live"
+  | "won"
+  | "lost"
+  | "push"
+  | "void"
+  | "cancelled";
+
+export interface BettingPortfolioPosition {
+  position_id: string;
+  market_id: string;
+  event_id: string;
+  event_label?: string | null;
+  sport?: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
+  market_type?: string | null;
+  selection?: string | null;
+  entry_price?: number | null;
+  entry_line?: number | null;
+  entry_timestamp?: string | null;
+  current_price?: number | null;
+  current_line?: number | null;
+  model_probability?: number | null;
+  market_probability?: number | null;
+  edge?: number | null;
+  expected_value?: number | null;
+  confidence?: BettingConfidence | string | null;
+  exposure: number;
+  status: BettingPositionStatus | string;
+  sportsbook?: string | null;
+  notes?: string | null;
+  closing_price?: number | null;
+  closing_line?: number | null;
+  result?: string | null;
+  clv?: number | null;
+  entry_model_probability?: number | null;
+  price_movement?: number | null;
+  model_change?: number | null;
+  assumption_tags?: string[];
+  bet_type?: "single" | "parlay" | string | null;
+  parlay_size?: "small" | "medium" | "large" | string | null;
+  leg_count?: number | null;
+  legs?: Array<{
+    market_id?: string;
+    event_id?: string;
+    event_label?: string | null;
+    selection?: string | null;
+    market_type?: string | null;
+    price?: number | null;
+    line?: number | null;
+    model_probability?: number | null;
+    confidence?: string | null;
+  }>;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface BettingPortfolioAlert {
+  signal_id: string;
+  title: string;
+  body: string;
+  cta?: string | null;
+}
+
+export interface BettingPortfolioHealthRow {
+  id: string;
+  label: string;
+  value: string;
+  detail?: string | null;
+}
+
+export interface BettingPortfolioExposureRow {
+  positions: number;
+  exposure: number;
+  exposure_pct: number;
+  team?: string;
+  game?: string;
+  event_id?: string;
+  market?: string;
+  sport?: string;
+}
+
+export interface BettingPortfolioCorrelation {
+  left_position_id: string;
+  right_position_id: string;
+  left_selection?: string | null;
+  right_selection?: string | null;
+  score: number;
+  label: string;
+  reasons: string[];
+}
+
+export interface BettingPortfolioAnalytics {
+  summary: {
+    open_positions: number;
+    total_exposure: number;
+    average_model_edge?: number | null;
+    average_confidence?: string | null;
+    games_represented: number;
+    correlation?: string | null;
+  };
+  health: BettingPortfolioHealthRow[];
+  alerts: BettingPortfolioAlert[];
+  exposure: {
+    team: BettingPortfolioExposureRow[];
+    game: BettingPortfolioExposureRow[];
+    sport: BettingPortfolioExposureRow[];
+    market: BettingPortfolioExposureRow[];
+  };
+  correlations: BettingPortfolioCorrelation[];
+  assumptions: Array<{ assumption: string; positions: number }>;
+  model_vs_market: {
+    average_market_probability?: number | null;
+    average_model_probability?: number | null;
+    average_difference?: number | null;
+    average_edge?: number | null;
+  };
+  edge_distribution: Array<{ bucket: string; count: number }>;
+  confidence_distribution: Array<{
+    confidence: string;
+    count: number;
+    pct: number;
+  }>;
+  price_movements: Array<{
+    position_id: string;
+    selection?: string | null;
+    entry_price?: number | null;
+    current_price?: number | null;
+    movement?: number | null;
+  }>;
+  signals?: string[];
+}
+
+export interface BettingPortfolioAnalyzeResult {
+  portfolio_id: string;
+  season?: number | null;
+  week?: number | null;
+  slate_id?: string | null;
+  status_filter?: string;
+  positions: BettingPortfolioPosition[];
+  visible_positions: BettingPortfolioPosition[];
+  analytics: BettingPortfolioAnalytics;
+  results: {
+    total_positions: number;
+    won: number;
+    lost: number;
+    push: number;
+    void?: number;
+    win_rate?: number | null;
+    total_exposure?: number;
+    profit_loss?: number | null;
+    roi_pct?: number | null;
+    average_odds?: number | null;
+    average_model_edge?: number | null;
+    average_clv?: number | null;
+    by_market?: Array<{
+      key: string;
+      bets: number;
+      won: number;
+      lost: number;
+      win_rate?: number | null;
+      exposure: number;
+      profit_loss: number;
+      roi_pct?: number | null;
+      average_edge?: number | null;
+    }>;
+    by_confidence?: Array<{
+      key: string;
+      bets: number;
+      won: number;
+      lost: number;
+      win_rate?: number | null;
+      exposure: number;
+      profit_loss: number;
+      roi_pct?: number | null;
+      average_edge?: number | null;
+    }>;
+    by_bet_type?: Array<{
+      key: string;
+      bets: number;
+      won: number;
+      lost: number;
+      win_rate?: number | null;
+      exposure: number;
+      profit_loss: number;
+      roi_pct?: number | null;
+      average_edge?: number | null;
+    }>;
+    calibration?: Array<{
+      bucket: string;
+      bets: number;
+      predicted_midpoint: number;
+      actual_win_rate?: number | null;
+    }>;
+    settled_positions?: Array<
+      BettingPortfolioPosition & {
+        profit_loss?: number | null;
+        clv_points?: number | null;
+      }
+    >;
+    note?: string | null;
+  };
+  calculated_at?: string | null;
+}
+
+export async function analyzeBettingPortfolio(payload: {
+  positions: BettingPortfolioPosition[];
+  season?: number | null;
+  week?: number | null;
+  status_filter?: string;
+}): Promise<BettingPortfolioAnalyzeResult> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/portfolio/analyze`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    }
+  );
+  return handleResponse(response);
+}
+
+export interface BettingPortfolioGeneration {
+  total_exposure: number;
+  risk_exposure: number;
+  risk: string;
+  allocated_exposure: number;
+  position_count: number;
+  single_count?: number;
+  parlay_count?: number;
+  parlay_size_counts?: {
+    small?: number;
+    medium?: number;
+    large?: number;
+  };
+  target_single_pct?: number;
+  target_parlay_pct?: number;
+  candidates_considered?: number;
+  max_positions?: number;
+  max_per_game?: number;
+  note?: string | null;
+}
+
+export interface BettingPortfolioGenerateResult
+  extends BettingPortfolioAnalyzeResult {
+  generation: BettingPortfolioGeneration;
+}
+
+export async function generateBettingPortfolio(payload: {
+  total_exposure: number;
+  risk_exposure: number;
+  season?: number | null;
+  week?: number | null;
+  risk?: "conservative" | "balanced" | "aggressive" | string;
+  market_types?: string[];
+}): Promise<BettingPortfolioGenerateResult> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/portfolio/generate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    }
+  );
+  return handleResponse(response);
+}
+
+export async function createBettingPortfolioPosition(payload: {
+  market: BettingMarket;
+  exposure?: number;
+  notes?: string | null;
+  sportsbook?: string | null;
+  entry_price?: number | null;
+  entry_line?: number | null;
+}): Promise<BettingPortfolioPosition> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/portfolio/position`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    }
+  );
+  return handleResponse(response);
+}
+
+/* ── Analytical Applications ───────────────────────────────── */
+
+export interface AnalyticalApplicationAnalysis {
+  analysis_key: string;
+  display_order: number;
+  navigation_group?: string | null;
+}
+
+export interface AnalyticalApplication {
+  id: string;
+  name: string;
+  description: string;
+  icon?: string | null;
+  status: string;
+  analyses: AnalyticalApplicationAnalysis[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export async function listAnalyticalApplications(): Promise<
+  AnalyticalApplication[]
+> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/applications`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+export async function getAnalyticalApplication(
+  applicationId: string
+): Promise<AnalyticalApplication> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/applications/${encodeURIComponent(applicationId)}`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+export async function createAnalyticalApplication(payload: {
+  name: string;
+  description?: string;
+  icon?: string | null;
+  analyses: AnalyticalApplicationAnalysis[];
+}): Promise<AnalyticalApplication> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/applications`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    }
+  );
+  return handleResponse(response);
+}
+
+export async function updateAnalyticalApplication(
+  applicationId: string,
+  payload: {
+    name?: string;
+    description?: string;
+    icon?: string | null;
+    analyses?: AnalyticalApplicationAnalysis[];
+  }
+): Promise<AnalyticalApplication> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/applications/${encodeURIComponent(applicationId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    }
+  );
+  return handleResponse(response);
+}
+
+export async function deleteAnalyticalApplication(
+  applicationId: string
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/applications/${encodeURIComponent(applicationId)}`,
+    {
+      method: "DELETE",
+      cache: "no-store",
+    }
+  );
+  await handleResponse(response);
 }

@@ -755,11 +755,22 @@ export default function FantasyFootballProductPage() {
         ?? result.validation?.status
         ?? "succeeded"
       );
-      if (
-        result.status !== "failed_validation"
-        && result.validation?.passed !== false
-      ) {
-        setCache({});
+      // Always drop curated-table cache so Data tabs reload.
+      setCache({});
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent(
+            "insightpilot:fantasy-data-refreshed",
+            {
+              detail: {
+                mode,
+                status: result.status,
+                validation_blocked_derived:
+                  result.validation_blocked_derived,
+              },
+            }
+          )
+        );
       }
     } catch (refreshError) {
       setRefreshMessage(null);

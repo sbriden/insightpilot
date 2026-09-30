@@ -323,6 +323,101 @@ def get_dim_game(
     )
 
 
+def sync_dim_game_scores(
+    seasons: list[int],
+    *,
+    week: int | None = None,
+) -> int:
+    """
+    Pull latest final scores from nflverse schedules into dim_game.
+
+    Lightweight alternative to a full force refresh so Results /
+    settlement can pick up overnight and Monday-night finals without
+    rebuilding the entire game dimension.
+    """
+
+    global _DIM_GAME_CACHE, _DIM_GAME_CACHE_SEASONS, _DIM_GAME_CACHE_WITH_KEYS
+
+    if not seasons:
+        return 0
+    resolved = sorted({int(season) for season in seasons})
+    try:
+        schedules = _load_schedules(resolved)
+    except Exception:
+        return 0
+    if schedules is None or schedules.empty:
+        return 0
+
+    updates: list[dict[str, Any]] = []
+    for row in schedules.to_dict(orient="records"):
+        season = _normalize_int(row.get("season"))
+        game_week = _normalize_int(row.get("week"))
+        if week is not None and game_week != int(week):
+            continue
+        home_score = _normalize_int(row.get("home_score"))
+        away_score = _normalize_int(row.get("away_score"))
+        if home_score is None or away_score is None:
+            continue
+        home_abbr = (
+            (_normalize_text(row.get("home_team")) or "").upper()
+            or None
+        )
+        away_abbr = (
+            (_normalize_text(row.get("away_team")) or "").upper()
+            or None
+        )
+        nflverse_game_id = _normalize_text(row.get("game_id"))
+        try:
+            resolution_key = game_resolution_key(
+                nflverse_game_id=nflverse_game_id,
+                season=season,
+                week=game_week,
+                home_team=home_abbr,
+                away_team=away_abbr,
+            )
+        except ValueError:
+            continue
+        updates.append(
+            {
+                "game_id": make_game_id(resolution_key),
+                "home_score": home_score,
+                "away_score": away_score,
+                "game_status": "Final",
+            }
+        )
+
+    if not updates:
+        return 0
+
+    statement = text(
+        f"""
+        UPDATE {FANTASY_SCHEMA}.dim_game
+        SET
+            home_score = :home_score,
+            away_score = :away_score,
+            game_status = :game_status,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE game_id = :game_id
+          AND (
+            home_score IS DISTINCT FROM :home_score
+            OR away_score IS DISTINCT FROM :away_score
+            OR COALESCE(game_status, '') <> :game_status
+          )
+        """
+    )
+    updated = 0
+    with engine.begin() as connection:
+        for payload in updates:
+            result = connection.execute(statement, payload)
+            updated += int(result.rowcount or 0)
+
+    if updated:
+        _DIM_GAME_CACHE = None
+        _DIM_GAME_CACHE_SEASONS = None
+        _DIM_GAME_CACHE_WITH_KEYS = None
+    return updated
+
+
 def upsert_dim_game(
     dim: pd.DataFrame,
 ) -> None:

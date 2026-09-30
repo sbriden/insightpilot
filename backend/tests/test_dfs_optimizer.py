@@ -7,6 +7,9 @@ from unittest.mock import patch
 
 from app.analysis.insights.dfs.optimize import (
     _fits_slot,
+    _optimize_classic,
+    _optimize_showdown,
+    _same_team_qb_conflict,
     optimize_lineup,
 )
 from app.analysis.insights.dfs.sites import (
@@ -263,6 +266,164 @@ class DfsOptimizeTests(unittest.TestCase):
         }
         self.assertNotIn("wr1", ids)
         self.assertNotIn("rb1", ids)
+
+    def test_same_team_qb_conflict_helper(self):
+        selected = [
+            _fake_player(
+                player_id="qb_a",
+                name="QB A",
+                position="QB",
+                salary=7000,
+                projection=20.0,
+                team="BUF",
+            )
+        ]
+        same = _fake_player(
+            player_id="qb_b",
+            name="QB B",
+            position="QB",
+            salary=5000,
+            projection=15.0,
+            team="BUF",
+        )
+        other = _fake_player(
+            player_id="qb_c",
+            name="QB C",
+            position="QB",
+            salary=5000,
+            projection=15.0,
+            team="MIA",
+        )
+        wr = _fake_player(
+            player_id="wr_a",
+            name="WR A",
+            position="WR",
+            salary=5000,
+            projection=15.0,
+            team="BUF",
+        )
+        self.assertTrue(_same_team_qb_conflict(selected, same))
+        self.assertFalse(_same_team_qb_conflict(selected, other))
+        self.assertFalse(_same_team_qb_conflict(selected, wr))
+
+    def test_showdown_blocks_second_same_team_qb(self):
+        pool = [
+            _fake_player(
+                player_id="cpt_qb",
+                name="Star QB",
+                position="QB",
+                salary=8000,
+                projection=28.0,
+                team="BUF",
+            ),
+            _fake_player(
+                player_id="backup_qb",
+                name="Backup QB",
+                position="QB",
+                salary=4000,
+                projection=26.0,
+                team="BUF",
+            ),
+            _fake_player(
+                player_id="rb1",
+                name="RB",
+                position="RB",
+                salary=6000,
+                projection=18.0,
+                team="DET",
+            ),
+            _fake_player(
+                player_id="wr1",
+                name="WR1",
+                position="WR",
+                salary=5500,
+                projection=16.0,
+                team="DET",
+            ),
+            _fake_player(
+                player_id="wr2",
+                name="WR2",
+                position="WR",
+                salary=5000,
+                projection=14.0,
+                team="BUF",
+            ),
+            _fake_player(
+                player_id="te1",
+                name="TE",
+                position="TE",
+                salary=4500,
+                projection=12.0,
+                team="DET",
+            ),
+            _fake_player(
+                player_id="dst1",
+                name="DST",
+                position="DEF",
+                salary=3000,
+                projection=8.0,
+                team="DET",
+            ),
+        ]
+        for player in pool:
+            player["_opt_score"] = float(player["projection"])
+        selected = _optimize_showdown(
+            pool=pool,
+            salary_cap=50000,
+            captain_multiplier=1.5,
+            locked=set(),
+            max_ownership=None,
+            required_captain_id="cpt_qb",
+        )
+        self.assertEqual(len(selected), 6)
+        qb_ids = [
+            player["player_id"]
+            for player in selected
+            if player.get("position") == "QB"
+        ]
+        self.assertEqual(qb_ids, ["cpt_qb"])
+        self.assertNotIn("backup_qb", qb_ids)
+
+    def test_showdown_required_captain_is_honored(self):
+        pool = [
+            _fake_player(
+                player_id=f"p{index}",
+                name=f"P{index}",
+                position=position,
+                salary=salary,
+                projection=projection,
+                team=team,
+            )
+            for index, (position, salary, projection, team) in enumerate(
+                [
+                    ("QB", 8000, 30.0, "BUF"),
+                    ("RB", 7000, 22.0, "DET"),
+                    ("WR", 6500, 18.0, "DET"),
+                    ("WR", 6000, 16.0, "BUF"),
+                    ("TE", 5000, 12.0, "DET"),
+                    ("DEF", 3000, 8.0, "BUF"),
+                    ("RB", 4500, 10.0, "BUF"),
+                ],
+                start=1,
+            )
+        ]
+        for player in pool:
+            player["_opt_score"] = float(player["projection"])
+        # Force the lower-projected RB as captain.
+        selected = _optimize_showdown(
+            pool=pool,
+            salary_cap=50000,
+            captain_multiplier=1.5,
+            locked=set(),
+            max_ownership=None,
+            required_captain_id="p2",
+        )
+        captain = next(
+            player
+            for player in selected
+            if player["slot"] == "CPT"
+        )
+        self.assertEqual(captain["player_id"], "p2")
 
     @patch(
         "app.analysis.insights.dfs.optimize.build_dfs_slate",

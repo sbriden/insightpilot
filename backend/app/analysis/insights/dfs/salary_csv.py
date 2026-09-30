@@ -55,6 +55,22 @@ _POS_ALIASES = (
     "roster_position",
 )
 
+# Common DFS / colloquial team tokens not present as dim_team abbr.
+_EXTRA_TEAM_ALIASES = {
+    "niners": "SF",
+    "49ers": "SF",
+    "frisco": "SF",
+    "washington": "WAS",
+    "commanders": "WAS",
+    "football team": "WAS",
+    "bolts": "LAC",
+    "chargers": "LAC",
+    "raiders": "LV",
+    "rams": "LA",
+}
+
+_TEAM_ALIAS_CACHE: dict[str, str] | None = None
+
 
 def ingest_dfs_salary_csv(
     content: bytes | str,
@@ -214,7 +230,7 @@ def parse_salary_csv(content: bytes | str) -> list[dict[str, Any]]:
             continue
         team = None
         if "team" in field_map:
-            team = normalize_team_abbreviation(
+            team = _resolve_team_abbreviation(
                 raw.get(field_map["team"])
             )
         position = None
@@ -238,7 +254,7 @@ def match_salary_row(
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     name = str(row.get("name") or "").strip()
-    team = normalize_team_abbreviation(row.get("team"))
+    team = _resolve_team_abbreviation(row.get("team"))
     position = _normalize_position(row.get("position"))
     if not name:
         return None
@@ -268,6 +284,19 @@ def match_salary_row(
             if item.get("team") == team
         ]
     if not pool:
+        # Defense rows often put the nickname in Name ("Packers")
+        # with a non-abbreviation Team value we already failed to
+        # resolve — try resolving the name itself as a team token.
+        if position == "DEF":
+            name_team = _resolve_team_abbreviation(name)
+            if name_team:
+                pool = [
+                    item
+                    for item in candidates
+                    if item.get("team") == name_team
+                    and item.get("position") in {"DEF", "DST"}
+                ]
+    if not pool:
         return None
 
     needle = _normalize_name(name)
@@ -279,6 +308,41 @@ def match_salary_row(
             best_score = score
             best = item
     if best is None or best_score < _MIN_NAME_SCORE:
+        # Exact team-defense match: name resolves to the same
+        # franchise as the candidate (e.g. "Packers" → GB).
+        if position == "DEF" and team:
+            defense = next(
+                (
+                    item
+                    for item in pool
+                    if item.get("position") in {"DEF", "DST"}
+                    and item.get("team") == team
+                    and item.get("is_primary_defense")
+                ),
+                None,
+            )
+            if defense is None:
+                defense = next(
+                    (
+                        item
+                        for item in pool
+                        if item.get("position") in {"DEF", "DST"}
+                        and item.get("team") == team
+                    ),
+                    None,
+                )
+            name_as_team = _resolve_team_abbreviation(name)
+            if defense is not None and (
+                name_as_team == team
+                or _defense_nickname_match(needle, defense)
+            ):
+                return {
+                    "player_id": defense["player_id"],
+                    "matched_name": defense["name"],
+                    "team": defense.get("team"),
+                    "position": defense.get("position"),
+                    "score": 0.95,
+                }
         return None
     # Require a stronger match when team/pos filters were loose.
     if position is None and best_score < _STRONG_NAME_SCORE:
@@ -290,7 +354,6 @@ def match_salary_row(
         "position": best.get("position"),
         "score": round(best_score, 4),
     }
-
 
 def _load_match_candidates() -> list[dict[str, Any]]:
     players = get_dim_player()
@@ -304,6 +367,9 @@ def _load_match_candidates() -> list[dict[str, Any]]:
             )
             if team_id and abbr:
                 team_lookup[team_id] = abbr
+
+    # Warm nickname / full-name → abbr map used while matching.
+    _team_alias_lookup(teams)
 
     candidates: list[dict[str, Any]] = []
     if not players.empty:
@@ -331,35 +397,52 @@ def _load_match_candidates() -> list[dict[str, Any]]:
             )
 
     # Synthetic team defenses used by DFS / overview.
-    for abbr, team_name in _team_defense_names(teams):
-        name = f"{team_name} D/ST"
+    for abbr, team_name, nickname in _team_defense_names(teams):
+        player_id = make_player_id(f"fantasy_dst:{abbr}")
+        primary_name = f"{team_name} D/ST"
         candidates.append(
             {
-                "player_id": make_player_id(
-                    f"fantasy_dst:{abbr}"
-                ),
-                "name": name,
-                "name_key": _normalize_name(name),
+                "player_id": player_id,
+                "name": primary_name,
+                "name_key": _normalize_name(primary_name),
                 "team": abbr,
                 "position": "DEF",
+                "is_primary_defense": True,
+                "nickname_key": _normalize_name(nickname)
+                if nickname
+                else None,
             }
         )
-        # Common CSV variants.
-        for alias in (
+        aliases = {
             f"{abbr} DST",
             f"{abbr} D/ST",
             f"{team_name} DST",
             f"{abbr}",
-        ):
+            team_name,
+        }
+        if nickname:
+            aliases.update(
+                {
+                    nickname,
+                    f"{nickname} DST",
+                    f"{nickname} D/ST",
+                    f"{nickname} DEF",
+                }
+            )
+        for alias in aliases:
+            if not alias or alias == primary_name:
+                continue
             candidates.append(
                 {
-                    "player_id": make_player_id(
-                        f"fantasy_dst:{abbr}"
-                    ),
+                    "player_id": player_id,
                     "name": alias,
                     "name_key": _normalize_name(alias),
                     "team": abbr,
                     "position": "DEF",
+                    "is_primary_defense": False,
+                    "nickname_key": _normalize_name(nickname)
+                    if nickname
+                    else None,
                 }
             )
     return candidates
@@ -367,10 +450,10 @@ def _load_match_candidates() -> list[dict[str, Any]]:
 
 def _team_defense_names(
     teams: pd.DataFrame,
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, str | None]]:
     if teams.empty:
         return []
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str | None]] = []
     for record in teams.to_dict(orient="records"):
         abbr = normalize_team_abbreviation(
             record.get("team_abbreviation")
@@ -381,8 +464,133 @@ def _team_defense_names(
             str(record.get("team_name") or "").strip()
             or abbr
         )
-        out.append((abbr, name))
+        nickname = _team_nickname(name)
+        out.append((abbr, name, nickname))
     return out
+
+
+def _team_nickname(team_name: str) -> str | None:
+    parts = _normalize_name(team_name).split()
+    if not parts:
+        return None
+    # Prefer the franchise nickname (last token): Packers, Bills.
+    nick = parts[-1]
+    if nick in {"dst", "def"}:
+        return None
+    return nick
+
+
+def _team_alias_lookup(
+    teams: pd.DataFrame | None = None,
+) -> dict[str, str]:
+    """
+    Map abbreviations, full names, and nicknames → team abbr.
+
+    Examples: gb→GB, packers→GB, green bay packers→GB.
+    Ambiguous tokens (e.g. \"new york\") are omitted.
+    """
+
+    global _TEAM_ALIAS_CACHE
+    if _TEAM_ALIAS_CACHE is not None and teams is None:
+        return _TEAM_ALIAS_CACHE
+
+    frame = teams
+    if frame is None:
+        frame = get_dim_team()
+
+    counts: dict[str, set[str]] = {}
+    mapping: dict[str, str] = {}
+
+    def _register(token: str | None, abbr: str) -> None:
+        key = _normalize_name(token or "")
+        if not key:
+            return
+        counts.setdefault(key, set()).add(abbr)
+
+    if frame is not None and not frame.empty:
+        for record in frame.to_dict(orient="records"):
+            abbr = normalize_team_abbreviation(
+                record.get("team_abbreviation")
+            )
+            if not abbr:
+                continue
+            abbr = abbr.upper()
+            _register(abbr, abbr)
+            _register(abbr.lower(), abbr)
+            name = str(record.get("team_name") or "").strip()
+            if name:
+                _register(name, abbr)
+                nick = _team_nickname(name)
+                if nick:
+                    _register(nick, abbr)
+                # City / region prefix without nickname when unique.
+                parts = _normalize_name(name).split()
+                if len(parts) >= 2:
+                    _register(" ".join(parts[:-1]), abbr)
+
+    for token, abbr in _EXTRA_TEAM_ALIASES.items():
+        _register(token, abbr.upper())
+
+    for key, abbrs in counts.items():
+        if len(abbrs) == 1:
+            mapping[key] = next(iter(abbrs))
+
+    _TEAM_ALIAS_CACHE = mapping
+    return mapping
+
+
+def _resolve_team_abbreviation(value: Any) -> str | None:
+    """
+    Resolve CSV team tokens to a canonical abbreviation.
+
+    Accepts GB, Packers, Green Bay Packers, Packers DST, etc.
+    """
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    lookup = _team_alias_lookup()
+    key = _normalize_name(raw)
+    if key in lookup:
+        return lookup[key]
+
+    # Retry without DST/DEF suffixes: "Packers DST".
+    stripped = re.sub(
+        r"\b(dst|d/?st|def|defense)\b",
+        "",
+        key,
+    )
+    stripped = _WS_RE.sub(" ", stripped).strip()
+    if stripped and stripped in lookup:
+        return lookup[stripped]
+
+    # Abbreviation / historical alias path (GB, GNB, LAR, …).
+    compact = re.sub(r"[^A-Za-z0-9]", "", raw).upper()
+    if 2 <= len(compact) <= 3:
+        direct = normalize_team_abbreviation(compact)
+        if direct and (
+            direct.lower() in lookup
+            or direct in set(lookup.values())
+        ):
+            return direct
+    return None
+
+
+def _defense_nickname_match(
+    needle: str,
+    defense: dict[str, Any],
+) -> bool:
+    nick = defense.get("nickname_key")
+    if not nick:
+        return False
+    if needle == nick:
+        return True
+    if needle.startswith(f"{nick} ") or needle.endswith(
+        f" {nick}"
+    ):
+        return True
+    return nick in needle.split()
 
 
 def _map_fields(fieldnames: list[str] | None) -> dict[str, str]:

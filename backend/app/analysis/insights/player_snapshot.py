@@ -135,6 +135,156 @@ def overall_assessment_for_player(
     )
 
 
+def _season_production_score(
+    *,
+    position: str | None,
+    fppg: float | None,
+) -> float | None:
+    """Map season FPPG onto the 0–100 production scale."""
+
+    pace = _num(fppg)
+    if pace is None:
+        return None
+    pos = str(position or "").strip().upper()
+    multiplier = 6.0 if pos in {"K", "PK"} else 3.0
+    return max(0.0, min(100.0, float(pace) * multiplier))
+
+
+def _mean_profile_score(
+    profiles: list[dict[str, Any]],
+    field: str,
+) -> float | None:
+    values: list[float] = []
+    for row in profiles:
+        value = _num(row.get(field))
+        if value is not None:
+            values.append(float(value))
+    if not values:
+        return None
+    return sum(values) / float(len(values))
+
+
+def _select_profile_for_snapshot(
+    profiles: list[dict[str, Any]],
+    *,
+    season: int | None,
+    week: int | None,
+) -> dict[str, Any]:
+    """
+    Choose the profile week for signals / matchup context.
+
+    Prefer the latest week with opportunity filled (same rule as
+    the player list) so sparse upcoming weeks do not wipe season
+    context. Fall back to production, then absolute latest week.
+    """
+
+    if not profiles:
+        return {}
+
+    scoped = profiles
+    if season is not None:
+        matched = []
+        for row in profiles:
+            try:
+                if int(row.get("season")) == int(season):
+                    matched.append(row)
+            except (TypeError, ValueError):
+                continue
+        if matched:
+            scoped = matched
+
+    if week is not None:
+        for row in scoped:
+            try:
+                if int(row.get("week")) == int(week):
+                    return row
+            except (TypeError, ValueError):
+                continue
+
+    def sort_key(row: dict[str, Any]) -> tuple:
+        try:
+            week_value = int(row.get("week") or 0)
+        except (TypeError, ValueError):
+            week_value = 0
+        has_opp = 0 if _num(row.get("opportunity_score")) is None else 1
+        has_prod = 0 if _num(row.get("production_score")) is None else 1
+        return (has_opp, has_prod, week_value)
+
+    return max(scoped, key=sort_key)
+
+
+def _seasonize_profile_scores(
+    profile: dict[str, Any],
+    *,
+    position: str | None,
+    season_stats: dict[str, Any] | None,
+    season_profiles: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """
+    Align displayed production / opportunity / value with season
+    fantasy points so Compare and Overview match season totals.
+
+    Single-game profile weeks can otherwise invert rankings when
+    one player had a hot game and the other has missing opportunity
+    on the absolute latest week.
+    """
+
+    out = dict(profile or {})
+    season_fppg = None
+    if isinstance(season_stats, dict):
+        season_fppg = _num(season_stats.get("fppg"))
+
+    season_production = _season_production_score(
+        position=position,
+        fppg=season_fppg,
+    )
+    if season_production is not None:
+        out["production_score"] = season_production
+
+    profiles = list(season_profiles or [])
+    if profiles:
+        avg_opportunity = _mean_profile_score(
+            profiles,
+            "opportunity_score",
+        )
+        if avg_opportunity is not None:
+            out["opportunity_score"] = avg_opportunity
+        elif _num(out.get("opportunity_score")) is None:
+            # Keep null only when no week has opportunity.
+            pass
+        for field in (
+            "efficiency_score",
+            "trend_score",
+            "matchup_score",
+            "environment_score",
+            "risk_score",
+        ):
+            if _num(out.get(field)) is None:
+                avg = _mean_profile_score(profiles, field)
+                if avg is not None:
+                    out[field] = avg
+
+    try:
+        from app.canonical.analytics.player_fantasy_profile import (
+            _fantasy_value_score,
+        )
+    except Exception:
+        return out
+
+    recomputed = _fantasy_value_score(
+        production=_num(out.get("production_score")),
+        opportunity=_num(out.get("opportunity_score")),
+        efficiency=_num(out.get("efficiency_score")),
+        trend=_num(out.get("trend_score")),
+        matchup=_num(out.get("matchup_score")),
+        environment=_num(out.get("environment_score")),
+        risk=_num(out.get("risk_score")),
+    )
+    if recomputed is not None:
+        out["fantasy_value_score"] = recomputed
+    return out
+
+
 def _num(value: Any) -> float | None:
     if value is None:
         return None
@@ -214,14 +364,7 @@ def _depth_chart_for_player(
                       FROM {FANTASY_SCHEMA}.fact_depth_chart
                       WHERE season IS NOT NULL
                     ),
-                    bounds AS (
-                      SELECT
-                        MAX(d.week) AS week,
-                        MAX(d.effective_date) AS effective_date
-                      FROM {FANTASY_SCHEMA}.fact_depth_chart d
-                      INNER JOIN latest_season ls
-                        ON d.season = ls.season
-                    )
+                    {_depth_chart_bounds_cte(schema=FANTASY_SCHEMA)}
                     SELECT
                       d.position AS depth_position,
                       d.depth_order
@@ -309,6 +452,72 @@ def _depth_position_aliases(position: str | None) -> list[str]:
     return [group]
 
 
+def _depth_chart_bounds_cte(
+    *,
+    schema: str,
+    team_predicate: str = "",
+) -> str:
+    """
+    SQL CTEs that pick a depth-chart week with real coverage.
+
+    ``MAX(week)`` alone can land on sparse placeholder / offseason
+    weeks (e.g. week 22 with a few hundred rows) and drop active
+    roster depth for almost everyone. Prefer the most recent week
+    whose row count is at least half of the busiest week (and at
+    least 50 rows), then fall back to the busiest week, then to
+    effective_date matching.
+    """
+
+    team_filter = f"\n        {team_predicate}" if team_predicate else ""
+    return f"""
+                    week_counts AS (
+                      SELECT
+                        d.week,
+                        COUNT(*)::int AS n
+                      FROM {schema}.fact_depth_chart d
+                      INNER JOIN latest_season ls
+                        ON d.season = ls.season
+                      WHERE d.week IS NOT NULL
+                        AND d.depth_order IS NOT NULL
+                        {team_filter}
+                      GROUP BY d.week
+                    ),
+                    bounds AS (
+                      SELECT
+                        COALESCE(
+                          (
+                            SELECT MAX(wc.week)
+                            FROM week_counts wc
+                            WHERE wc.n >= GREATEST(
+                              50,
+                              COALESCE(
+                                (
+                                  SELECT CAST(MAX(n) * 0.5 AS int)
+                                  FROM week_counts
+                                ),
+                                0
+                              )
+                            )
+                          ),
+                          (
+                            SELECT wc.week
+                            FROM week_counts wc
+                            ORDER BY wc.n DESC, wc.week DESC
+                            LIMIT 1
+                          )
+                        ) AS week,
+                        (
+                          SELECT MAX(d.effective_date)
+                          FROM {schema}.fact_depth_chart d
+                          INNER JOIN latest_season ls
+                            ON d.season = ls.season
+                          WHERE 1 = 1
+                            {team_filter}
+                        ) AS effective_date
+                    )
+    """
+
+
 def _team_position_depth_chart(
     *,
     team_id: str | None,
@@ -373,15 +582,10 @@ def _team_position_depth_chart(
                         )
                       ) AS season
                     ),
-                    bounds AS (
-                      SELECT
-                        MAX(d.week) AS week,
-                        MAX(d.effective_date) AS effective_date
-                      FROM {FANTASY_SCHEMA}.fact_depth_chart d
-                      INNER JOIN latest_season ls
-                        ON d.season = ls.season
-                      WHERE d.team_id = :team_id
-                    )
+                    {_depth_chart_bounds_cte(
+                        schema=FANTASY_SCHEMA,
+                        team_predicate="AND d.team_id = :team_id",
+                    )}
                     SELECT DISTINCT ON (d.player_id)
                       d.position,
                       d.depth_order,
@@ -1078,7 +1282,6 @@ def build_player_snapshot(
         reverse=True,
     )
 
-    value_score = _num(profile.get("fantasy_value_score"))
     season_fppg = None
     season_points = None
     season_games = None
@@ -1092,6 +1295,18 @@ def build_player_snapshot(
             )
         except (TypeError, ValueError):
             season_games = None
+
+    # Align production with season FPPG when available so Compare
+    # and Overview do not invert players based on one profile week.
+    if season_fppg is not None:
+        profile = _seasonize_profile_scores(
+            profile,
+            position=position,
+            season_stats=season_stats,
+            season_profiles=None,
+        )
+
+    value_score = _num(profile.get("fantasy_value_score"))
     assessment = overall_assessment_for_player(
         position=position,
         fantasy_value_score=value_score,
@@ -2106,6 +2321,7 @@ def list_fantasy_players(
     team: str | None = None,
     limit: int = 500,
     season: int | None = None,
+    scoring: str | None = "ppr",
 ) -> list[dict[str, Any]]:
     """
     List fantasy roster positions for the overview table.
@@ -2114,6 +2330,12 @@ def list_fantasy_players(
     Defense / Special Teams (DEF) entries.
     """
 
+    from app.analysis.insights.fantasy_scoring import (
+        fantasy_points_sql,
+        normalize_scoring,
+    )
+
+    scoring_key = normalize_scoring(scoring)
     q = str(query or "").strip().lower()
     position_filter = _normalize_list_position(
         str(position or "").strip().upper() or None
@@ -2220,12 +2442,7 @@ def list_fantasy_players(
             )
         """.format(schema=FANTASY_SCHEMA)
 
-    # Standard PPR + distance-based kicker scoring.
-    from app.analysis.insights.fantasy_scoring import (
-        fantasy_points_sql,
-    )
-
-    ppr_expr = fantasy_points_sql("ppr", alias="g")
+    points_expr = fantasy_points_sql(scoring_key, alias="g")
 
     try:
         with engine.connect() as connection:
@@ -2256,12 +2473,12 @@ def list_fantasy_players(
                     LEFT JOIN (
                       SELECT
                         g.player_id,
-                        ROUND(SUM({ppr_expr})::numeric, 1)
+                        ROUND(SUM({points_expr})::numeric, 1)
                           AS fantasy_points,
                         COUNT(*)::int AS games,
                         ROUND(
                           (
-                            SUM({ppr_expr})
+                            SUM({points_expr})
                             / NULLIF(COUNT(*), 0)
                           )::numeric,
                           1
@@ -2283,6 +2500,7 @@ def list_fantasy_players(
                         {profile_season_clause}
                       ORDER BY
                         pf.player_id,
+                        (pf.opportunity_score IS NULL) ASC,
                         pf.week DESC
                     ) prof
                       ON prof.player_id = p.player_id
@@ -2305,14 +2523,7 @@ def list_fantasy_players(
                         FROM {FANTASY_SCHEMA}.fact_depth_chart
                         WHERE season IS NOT NULL
                       ),
-                      bounds AS (
-                        SELECT
-                          MAX(d.week) AS week,
-                          MAX(d.effective_date) AS effective_date
-                        FROM {FANTASY_SCHEMA}.fact_depth_chart d
-                        INNER JOIN latest_season ls
-                          ON d.season = ls.season
-                      ),
+                      {_depth_chart_bounds_cte(schema=FANTASY_SCHEMA)},
                       latest_depth AS (
                         SELECT
                           d.player_id,
@@ -2410,6 +2621,14 @@ def list_fantasy_players(
                       ON inj.player_id = p.player_id
                     WHERE {where_sql}
                     ORDER BY
+                      (depth.depth_order IS NULL) ASC,
+                      CASE
+                        WHEN depth.depth_order IS NOT NULL
+                          AND depth.depth_order <= 2
+                        THEN 0
+                        ELSE 1
+                      END ASC,
+                      depth.depth_order ASC NULLS LAST,
                       pts.fantasy_points DESC NULLS LAST,
                       p.name
                     LIMIT :limit
@@ -2483,6 +2702,8 @@ def list_fantasy_players(
                     else None
                 ),
                 "fppg": _num(row.get("fppg")),
+                "projection": None,
+                "scoring": scoring_key,
                 "production_score": production_score,
                 "opportunity_score": opportunity_score,
                 "fantasy_value_score": value_score,
@@ -2502,6 +2723,12 @@ def list_fantasy_players(
             }
         )
 
+    _attach_list_projections(
+        players,
+        season=season,
+        scoring=scoring_key,
+    )
+
     if include_defenses:
         players.extend(
             _list_team_defenses(
@@ -2513,6 +2740,14 @@ def list_fantasy_players(
         )
         players.sort(
             key=lambda item: (
+                item.get("depth_order") is None,
+                0
+                if (
+                    item.get("depth_order") is not None
+                    and int(item.get("depth_order") or 99) <= 2
+                )
+                else 1,
+                int(item.get("depth_order") or 99),
                 item.get("fantasy_points") is None,
                 -(float(item.get("fantasy_points") or 0.0)),
                 str(item.get("name") or ""),
@@ -2521,6 +2756,149 @@ def list_fantasy_players(
         return players[:resolved_limit]
 
     return players
+
+
+def _attach_list_projections(
+    players: list[dict[str, Any]],
+    *,
+    season: int | None,
+    scoring: str,
+) -> None:
+    """
+    Attach InsightPilot projections for overview.
+
+    Uses the same pipeline as DFS: calibrate season FPPG, then
+    apply current-week opponent matchup / environment scaling.
+    Scoring format only changes reception points (QBs match DFS
+    when overview is on PPR).
+    """
+
+    if not players or season is None:
+        return
+
+    try:
+        from app.analysis.insights.dfs.projection_baselines import (
+            load_player_projection_baselines,
+        )
+        from app.analysis.insights.dfs.projection_calibration import (
+            calibrate_projection,
+        )
+        from app.analysis.insights.dfs.slate import (
+            _load_week_context_maps,
+            _normalize_position,
+            _opponent_adjusted_projection,
+            _resolve_player_week_context,
+            _resolve_week,
+            _slate_windows_for_week,
+            _team_abbr,
+        )
+    except Exception:
+        return
+
+    season_value = int(season)
+    try:
+        baselines = load_player_projection_baselines(
+            season=season_value,
+            player_ids=[
+                str(player.get("player_id") or "")
+                for player in players
+                if player.get("player_id")
+            ],
+            scoring=scoring,
+        )
+    except Exception:
+        baselines = {}
+
+    week_value = _resolve_week(None, season=season_value)
+    week_context = _load_week_context_maps(
+        season=season_value,
+        week=int(week_value),
+    )
+    opponents: dict[str, str] = {}
+    try:
+        windows = _slate_windows_for_week(
+            season=season_value,
+            week=int(week_value),
+        )
+        for bucket in windows.values():
+            for team, opp in (bucket.get("opponents") or {}).items():
+                if team and opp:
+                    opponents[str(team)] = str(opp)
+    except Exception:
+        opponents = {}
+
+    for player in players:
+        raw = _num(player.get("fppg"))
+        if raw is None:
+            games = _num(player.get("games"))
+            total = _num(player.get("fantasy_points"))
+            if total is not None and games and games > 0:
+                raw = float(total) / float(games)
+        try:
+            depth_order = (
+                int(player.get("depth_order"))
+                if player.get("depth_order") is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            depth_order = None
+        # Depth-chart starters / backups with no season sample still
+        # need a projection (seed at 0 so calibration uses priors).
+        if raw is None:
+            if depth_order is not None and depth_order <= 2:
+                raw = 0.0
+            else:
+                continue
+        baseline = baselines.get(
+            str(player.get("player_id") or "")
+        ) or {}
+        position = _normalize_position(player.get("position"))
+        try:
+            calibrated = calibrate_projection(
+                raw_projection=float(raw),
+                position=position,
+                current_season_games=int(
+                    _num(player.get("games")) or 0
+                ),
+                historical_baseline=_num(
+                    baseline.get("historical_baseline")
+                ),
+                historical_games=int(
+                    baseline.get("historical_games") or 0
+                ),
+                historical_p90=_num(baseline.get("historical_p90")),
+                opportunity_score=_num(
+                    player.get("opportunity_score")
+                ),
+                depth_order=depth_order,
+                roster_status=(
+                    str(player.get("status"))
+                    if player.get("status") is not None
+                    else None
+                ),
+            )
+            base = float(calibrated.insightpilot_projection)
+            team = _team_abbr(player.get("team"))
+            opponent = (
+                opponents.get(team) if team else None
+            )
+            context = _resolve_player_week_context(
+                player_id=str(player.get("player_id") or ""),
+                opponent=opponent,
+                week_context=week_context,
+            )
+            adjusted = _opponent_adjusted_projection(
+                base=base,
+                position=position,
+                context=context,
+                has_opponent=bool(opponent),
+            )
+            player["projection"] = round(
+                float(adjusted["projection"]),
+                1,
+            )
+        except Exception:
+            player["projection"] = round(float(raw), 1)
 
 
 def _list_injury_type(value: Any) -> str | None:
@@ -3264,7 +3642,10 @@ def _replacement_candidates(
                         pf.production_score
                       FROM {FANTASY_SCHEMA}.player_fantasy_profile pf
                       WHERE pf.season = :season
-                      ORDER BY pf.player_id, pf.week DESC
+                      ORDER BY
+                        pf.player_id,
+                        (pf.opportunity_score IS NULL) ASC,
+                        pf.week DESC
                     ),
                     ownership AS (
                       SELECT DISTINCT ON (m.player_id)
@@ -3558,21 +3939,25 @@ def get_player_snapshot_by_id(
         else []
     )
 
-    resolved_week = week
-    if resolved_season is None or resolved_week is None:
-        if player_profiles:
-            latest = max(
-                player_profiles,
-                key=lambda row: (
-                    int(row.get("season") or 0),
-                    int(row.get("week") or 0),
-                ),
-            )
-            try:
-                resolved_season = int(latest.get("season"))
-                resolved_week = int(latest.get("week"))
-            except (TypeError, ValueError):
-                pass
+    # Prefer the same profile week rule as the player list:
+    # latest week with opportunity filled, unless the caller
+    # pinned an explicit week.
+    requested_week = week
+    profile = _select_profile_for_snapshot(
+        player_profiles,
+        season=resolved_season,
+        week=requested_week,
+    )
+
+    resolved_week = requested_week
+    if profile:
+        try:
+            if resolved_season is None:
+                resolved_season = int(profile.get("season"))
+            if resolved_week is None:
+                resolved_week = int(profile.get("week"))
+        except (TypeError, ValueError):
+            pass
 
     if resolved_season is None or resolved_week is None:
         if player_signals:
@@ -3584,22 +3969,21 @@ def get_player_snapshot_by_id(
                 ),
             )
             try:
-                resolved_season = int(latest.get("season"))
-                resolved_week = int(latest.get("week"))
+                if resolved_season is None:
+                    resolved_season = int(latest.get("season"))
+                if resolved_week is None:
+                    resolved_week = int(latest.get("week"))
             except (TypeError, ValueError):
                 pass
 
-    profile: dict[str, Any] = {}
+    season_profiles = []
     for row in player_profiles:
+        if resolved_season is None:
+            season_profiles.append(row)
+            continue
         try:
-            if (
-                resolved_season is not None
-                and resolved_week is not None
-                and int(row.get("season")) == int(resolved_season)
-                and int(row.get("week")) == int(resolved_week)
-            ):
-                profile = row
-                break
+            if int(row.get("season")) == int(resolved_season):
+                season_profiles.append(row)
         except (TypeError, ValueError):
             continue
 
@@ -3681,6 +4065,12 @@ def get_player_snapshot_by_id(
         pid,
         position=identity.get("position"),
         season=resolved_season,
+    )
+    profile = _seasonize_profile_scores(
+        profile,
+        position=identity.get("position"),
+        season_stats=season_stats,
+        season_profiles=season_profiles,
     )
     ranks = _ranks_for_player(
         pid,

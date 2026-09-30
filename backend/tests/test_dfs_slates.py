@@ -9,6 +9,7 @@ from app.analysis.insights.dfs.slate import (
     _parse_slate_id,
     _slate_id,
     list_dfs_slates,
+    list_dfs_weeks,
 )
 
 
@@ -100,11 +101,19 @@ class DfsSlateClassifyTests(unittest.TestCase):
 
 
 class DfsSlateListTests(unittest.TestCase):
+    def test_lists_weeks(self):
+        result = list_dfs_weeks(season=2026)
+        self.assertEqual(result["season"], 2026)
+        self.assertIn(2, result["weeks"])
+        self.assertGreaterEqual(result["current_week"], 1)
+
     def test_lists_four_windows(self):
         slates = list_dfs_slates(season=2026, week=2)
         kinds = [item["kind"] for item in slates]
         self.assertEqual(kinds, ["main", "thu", "snf", "mnf"])
         by_kind = {item["kind"]: item for item in slates}
+        self.assertEqual(by_kind["main"]["label"], "Main Slate")
+        self.assertEqual(by_kind["main"]["week"], 2)
         self.assertGreaterEqual(by_kind["main"]["game_count"], 1)
         self.assertEqual(by_kind["thu"]["game_count"], 1)
         self.assertEqual(by_kind["snf"]["game_count"], 1)

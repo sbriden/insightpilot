@@ -193,6 +193,179 @@ def _load_player_stats(
     )
 
 
+def _load_snap_counts(
+    seasons: list[int],
+) -> pd.DataFrame:
+    import nflreadpy as nfl
+
+    return _to_pandas(nfl.load_snap_counts(seasons=seasons))
+
+
+def _pfr_to_gsis_lookup(
+    dim_player: pd.DataFrame | None,
+) -> dict[str, str]:
+    """Map Pro-Football-Reference player ids to GSIS ids."""
+
+    if dim_player is None or dim_player.empty:
+        return {}
+    if "source_ids" not in dim_player.columns:
+        return {}
+
+    lookup: dict[str, str] = {}
+    for raw in dim_player["source_ids"].tolist():
+        source_ids = raw
+        if isinstance(raw, str):
+            try:
+                source_ids = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        if not isinstance(source_ids, dict):
+            continue
+        pfr_id = _normalize_text(source_ids.get("pfr_id"))
+        gsis_id = _normalize_text(source_ids.get("gsis_id"))
+        if pfr_id and gsis_id:
+            lookup[pfr_id] = gsis_id
+    return lookup
+
+
+def _resolve_player_game_ids(
+    *,
+    gsis_id: str,
+    nflverse_game_id: str,
+    player_lookup: dict[str, str],
+    game_lookup: dict[str, str],
+) -> tuple[str, str] | None:
+    player_id = player_lookup.get(gsis_id)
+    if player_id is None:
+        try:
+            player_id = make_player_id(
+                player_resolution_key(gsis_id=gsis_id)
+            )
+        except ValueError:
+            return None
+
+    game_id = game_lookup.get(nflverse_game_id)
+    if game_id is None:
+        try:
+            game_id = make_game_id(
+                game_resolution_key(
+                    nflverse_game_id=nflverse_game_id,
+                )
+            )
+        except ValueError:
+            return None
+    return player_id, game_id
+
+
+def _active_zero_production_records(
+    snap_counts: pd.DataFrame,
+    *,
+    existing_keys: set[tuple[str, str]],
+    player_lookup: dict[str, str],
+    game_lookup: dict[str, str],
+    pfr_to_gsis: dict[str, str],
+) -> list[dict[str, Any]]:
+    """
+    Players who took offensive snaps but have no box-score row.
+
+    nflverse weekly stats omit some active zero-production games.
+    Snap participation is the active/played signal; inactive
+    players (no offensive snaps) stay omitted.
+    """
+
+    if snap_counts is None or snap_counts.empty:
+        return []
+
+    working = snap_counts.copy()
+    working["pfr_player_id"] = working.get(
+        "pfr_player_id",
+        pd.Series(dtype="object"),
+    ).map(_normalize_text)
+    working["gsis_id"] = working["pfr_player_id"].map(pfr_to_gsis)
+    working["nflverse_game_id"] = working.get(
+        "game_id",
+        pd.Series(dtype="object"),
+    ).map(_normalize_text)
+    working["offense_snaps"] = pd.to_numeric(
+        working.get("offense_snaps"),
+        errors="coerce",
+    ).fillna(0)
+
+    working = working[
+        working["gsis_id"].notna()
+        & working["nflverse_game_id"].notna()
+        & (working["offense_snaps"] > 0)
+    ].copy()
+    if working.empty:
+        return []
+
+    working = working.drop_duplicates(
+        subset=["gsis_id", "nflverse_game_id"],
+        keep="last",
+    )
+
+    zero_stat_fields = {
+        target: None for target in _SOURCE_COLUMN_MAP
+    }
+    # Counting stats default to 0 so FPPG treats the week as
+    # an active zero rather than NULL production.
+    for target in _SOURCE_COLUMN_MAP:
+        if target.endswith("_epa") or target == "pass_cpoe":
+            zero_stat_fields[target] = None
+        else:
+            zero_stat_fields[target] = 0
+
+    records: list[dict[str, Any]] = []
+    for row in working.to_dict(orient="records"):
+        gsis_id = _normalize_text(row.get("gsis_id"))
+        nflverse_game_id = _normalize_text(
+            row.get("nflverse_game_id")
+        )
+        if not gsis_id or not nflverse_game_id:
+            continue
+        if (gsis_id, nflverse_game_id) in existing_keys:
+            continue
+
+        resolved = _resolve_player_game_ids(
+            gsis_id=gsis_id,
+            nflverse_game_id=nflverse_game_id,
+            player_lookup=player_lookup,
+            game_lookup=game_lookup,
+        )
+        if resolved is None:
+            continue
+        player_id, game_id = resolved
+
+        team_abbr = (
+            _normalize_text(row.get("team")) or ""
+        ).upper() or None
+        season_type = _season_type(
+            row.get("game_type") or row.get("season_type")
+        )
+
+        record: dict[str, Any] = {
+            "player_id": player_id,
+            "game_id": game_id,
+            "season": _normalize_int(row.get("season")),
+            "week": _normalize_int(row.get("week")),
+            "season_type": season_type,
+            "team_id": (
+                make_team_id(team_abbr)
+                if team_abbr
+                else None
+            ),
+            "source_ids": {
+                "gsis_id": gsis_id,
+                "nflverse_game_id": nflverse_game_id,
+                "participation": "snap_counts",
+            },
+            "resolution_key": f"{gsis_id}:{nflverse_game_id}",
+            **zero_stat_fields,
+        }
+        records.append(record)
+    return records
+
+
 def build_fact_player_game(
     seasons: list[int],
     *,
@@ -203,22 +376,39 @@ def build_fact_player_game(
 ) -> pd.DataFrame:
     """
     Build fact_player_game for the requested seasons.
+
+    Box-score stats are the primary spine. Players who took
+    offensive snaps but are missing from weekly stats are added
+    as active zero-production games so FPPG / projections do not
+    ignore played weeks. Inactive players (no offensive snaps)
+    remain omitted.
     """
 
     if not seasons:
         raise ValueError("At least one season is required.")
 
     resolved_seasons = sorted({int(season) for season in seasons})
-    raw = source_frames or {
-        "player_stats": _load_player_stats(resolved_seasons),
-    }
-    stats = raw.get("player_stats", pd.DataFrame()).copy()
+    raw = source_frames or {}
+    stats = raw.get("player_stats")
+    if stats is None:
+        stats = _load_player_stats(resolved_seasons)
+    else:
+        stats = stats.copy()
     if stats.empty:
         raise ValueError(
             "Unable to build fact_player_game: no player "
             "stats rows were available from nflverse."
         )
 
+    snap_counts = raw.get("snap_counts")
+    if snap_counts is None and source_frames is None:
+        snap_counts = _load_snap_counts(resolved_seasons)
+    elif snap_counts is None:
+        snap_counts = pd.DataFrame()
+    else:
+        snap_counts = snap_counts.copy()
+
+    dim_player = None
     if player_id_lookup is None:
         dim_player = get_dim_player(
             force_refresh=False,
@@ -239,31 +429,22 @@ def build_fact_player_game(
         game_lookup = game_id_lookup
 
     records: list[dict[str, Any]] = []
+    existing_keys: set[tuple[str, str]] = set()
     for row in stats.to_dict(orient="records"):
         gsis_id = _normalize_text(row.get("player_id"))
         nflverse_game_id = _normalize_text(row.get("game_id"))
         if not gsis_id or not nflverse_game_id:
             continue
 
-        player_id = player_lookup.get(gsis_id)
-        if player_id is None:
-            try:
-                player_id = make_player_id(
-                    player_resolution_key(gsis_id=gsis_id)
-                )
-            except ValueError:
-                continue
-
-        game_id = game_lookup.get(nflverse_game_id)
-        if game_id is None:
-            try:
-                game_id = make_game_id(
-                    game_resolution_key(
-                        nflverse_game_id=nflverse_game_id,
-                    )
-                )
-            except ValueError:
-                continue
+        resolved = _resolve_player_game_ids(
+            gsis_id=gsis_id,
+            nflverse_game_id=nflverse_game_id,
+            player_lookup=player_lookup,
+            game_lookup=game_lookup,
+        )
+        if resolved is None:
+            continue
+        player_id, game_id = resolved
 
         team_abbr = (
             _normalize_text(row.get("team")) or ""
@@ -305,6 +486,29 @@ def build_fact_player_game(
                 record[target] = _normalize_int(raw_value)
 
         records.append(record)
+        existing_keys.add((gsis_id, nflverse_game_id))
+
+    if not snap_counts.empty:
+        pfr_to_gsis = raw.get("pfr_to_gsis")
+        if not isinstance(pfr_to_gsis, dict):
+            if dim_player is None:
+                try:
+                    dim_player = get_dim_player(
+                        force_refresh=False,
+                        persist=persist,
+                    )
+                except Exception:
+                    dim_player = None
+            pfr_to_gsis = _pfr_to_gsis_lookup(dim_player)
+        records.extend(
+            _active_zero_production_records(
+                snap_counts,
+                existing_keys=existing_keys,
+                player_lookup=player_lookup,
+                game_lookup=game_lookup,
+                pfr_to_gsis=pfr_to_gsis,
+            )
+        )
 
     if not records:
         raise ValueError(

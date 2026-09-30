@@ -812,6 +812,46 @@ SCHEMA_STATEMENTS = [
     )
     """,
 
+    f"""
+    CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.player_correlation (
+        resolution_key TEXT PRIMARY KEY,
+        player_id TEXT NOT NULL,
+        correlated_player_id TEXT NOT NULL,
+        game_id TEXT,
+        season INTEGER,
+        week INTEGER,
+        correlation_type TEXT NOT NULL,
+        correlation_score DOUBLE PRECISION NOT NULL,
+        correlation_reason TEXT,
+        confidence TEXT,
+        confidence_score DOUBLE PRECISION,
+        source TEXT NOT NULL DEFAULT 'structural',
+        rule_id TEXT,
+        sport TEXT NOT NULL DEFAULT 'nfl',
+        source_ids JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+
+    f"""
+    CREATE INDEX IF NOT EXISTS
+    idx_fantasy_football_player_correlation_season_week
+    ON {FANTASY_SCHEMA}.player_correlation (season, week)
+    """,
+
+    f"""
+    CREATE INDEX IF NOT EXISTS
+    idx_fantasy_football_player_correlation_game_id
+    ON {FANTASY_SCHEMA}.player_correlation (game_id)
+    """,
+
+    f"""
+    CREATE INDEX IF NOT EXISTS
+    idx_fantasy_football_player_correlation_type
+    ON {FANTASY_SCHEMA}.player_correlation (correlation_type)
+    """,
+
     # Move any legacy public.dim_player rows into fantasy_football.
     f"""
     DO $$

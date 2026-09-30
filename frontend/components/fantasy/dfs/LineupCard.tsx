@@ -8,7 +8,11 @@ import {
   setDfsDragData,
 } from "@/components/fantasy/dfs/drag";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
-import type { DfsLineup, DfsLineupPlayer } from "@/services/api";
+import type {
+  DfsCorrelationPair,
+  DfsLineup,
+  DfsLineupPlayer,
+} from "@/services/api";
 
 interface Props {
   lineup: DfsLineup | null;
@@ -59,6 +63,9 @@ export default function LineupCard({
             style={{ color: snapshotTokens.textMuted }}
           >
             {lineup.projected_points.toFixed(1)} pts
+            {lineup.lineup_correlation_score != null
+              ? ` · corr ${lineup.lineup_correlation_score >= 0 ? "+" : ""}${lineup.lineup_correlation_score.toFixed(2)}`
+              : ""}
           </p>
         )}
       </div>
@@ -68,7 +75,7 @@ export default function LineupCard({
         style={{ color: snapshotTokens.textMuted }}
       >
         {activeSlotIndex == null
-          ? "Drag players in, or click a seat then pick from the pool."
+          ? "Drag players in, or click a seat then pick from the pool. Hover a player for correlations."
           : `Selected ${slotLabel(slots[activeSlotIndex], activeSlotIndex, slots)} — drop or pick a player to ${rows[activeSlotIndex]?.player ? "swap" : "fill"}.`}
       </p>
 
@@ -76,6 +83,12 @@ export default function LineupCard({
         {rows.map((row) => {
           const active = activeSlotIndex === row.index;
           const dropTarget = dragOverIndex === row.index;
+          const playerPairs = row.player
+            ? correlationsForPlayer(
+                lineup?.correlation,
+                row.player.player_id
+              )
+            : [];
           return (
             <div
               key={`${row.slot}-${row.index}`}
@@ -127,7 +140,7 @@ export default function LineupCard({
                 }
                 onPlacePlayer(payload.playerId, row.index);
               }}
-              className="flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-2 outline-none transition-colors"
+              className="group relative flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-2 outline-none transition-colors"
               style={{
                 borderColor: dropTarget
                   ? snapshotTokens.blue
@@ -181,6 +194,15 @@ export default function LineupCard({
                     >
                       {row.player.name}
                       {row.player.is_captain ? " · CPT" : ""}
+                      {playerPairs.length > 0 ? (
+                        <span
+                          className="ml-1 text-[10px] font-semibold"
+                          style={{ color: snapshotTokens.blue }}
+                          aria-hidden
+                        >
+                          ↕
+                        </span>
+                      ) : null}
                     </p>
                     <p
                       className="text-[11px]"
@@ -247,6 +269,13 @@ export default function LineupCard({
                   >
                     Remove
                   </button>
+                  {playerPairs.length > 0 ? (
+                    <CorrelationTooltip
+                      playerName={row.player.name}
+                      pairs={playerPairs}
+                      playerId={row.player.player_id}
+                    />
+                  ) : null}
                 </>
               ) : (
                 <p
@@ -297,6 +326,109 @@ export default function LineupCard({
   );
 }
 
+function CorrelationTooltip({
+  playerName,
+  playerId,
+  pairs,
+}: {
+  playerName: string;
+  playerId: string;
+  pairs: DfsCorrelationPair[];
+}) {
+  return (
+    <div
+      className="pointer-events-none absolute left-2 right-2 top-full z-40 mt-1 hidden rounded-lg border bg-white p-2.5 shadow-lg group-hover:block group-focus-within:block"
+      style={{ borderColor: snapshotTokens.border }}
+      role="tooltip"
+    >
+      <p
+        className="text-[10px] font-semibold uppercase tracking-wide"
+        style={{ color: snapshotTokens.textMuted }}
+      >
+        Correlations · {playerName}
+      </p>
+      <ul className="mt-1.5 space-y-1.5">
+        {pairs.slice(0, 5).map((pair) => {
+          const otherId =
+            pair.player_id === playerId
+              ? pair.correlated_player_id
+              : pair.player_id;
+          const otherName =
+            pair.player_id === playerId
+              ? pair.correlated_player_name
+              : pair.player_name;
+          const positive = pair.correlation_score > 0;
+          return (
+            <li
+              key={`${pair.player_id}-${pair.correlated_player_id}-${pair.rule_id ?? ""}`}
+              className="text-xs"
+            >
+              <div className="flex flex-wrap items-baseline gap-x-1.5">
+                <span
+                  className="font-semibold tabular-nums"
+                  style={{
+                    color: positive
+                      ? snapshotTokens.success
+                      : snapshotTokens.warning,
+                  }}
+                >
+                  ↕ {positive ? "+" : ""}
+                  {pair.correlation_score.toFixed(2)}
+                </span>
+                <span style={{ color: snapshotTokens.textPrimary }}>
+                  {otherName || otherId}
+                </span>
+                {pair.confidence ? (
+                  <span
+                    className="text-[10px] uppercase tracking-wide"
+                    style={{ color: snapshotTokens.textMuted }}
+                  >
+                    {pair.confidence}
+                  </span>
+                ) : null}
+              </div>
+              {pair.correlation_reason ? (
+                <p
+                  className="mt-0.5 leading-snug"
+                  style={{ color: snapshotTokens.textSecondary }}
+                >
+                  {positive ? "Positive" : "Negative"}:{" "}
+                  {pair.correlation_reason}
+                </p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function correlationsForPlayer(
+  correlation: DfsLineup["correlation"] | undefined,
+  playerId: string
+): DfsCorrelationPair[] {
+  if (!correlation) {
+    return [];
+  }
+  const all = correlation.pairs?.length
+    ? correlation.pairs
+    : [
+        ...(correlation.positive_pairs ?? []),
+        ...(correlation.negative_pairs ?? []),
+      ];
+  return all
+    .filter(
+      (pair) =>
+        pair.player_id === playerId
+        || pair.correlated_player_id === playerId
+    )
+    .sort(
+      (a, b) =>
+        Math.abs(b.correlation_score) - Math.abs(a.correlation_score)
+    );
+}
+
 function slotLabel(
   slot: string,
   index: number,
@@ -342,7 +474,7 @@ function Row({
         {label}
       </span>
       <span
-        className="font-semibold tabular-nums"
+        className="tabular-nums font-medium"
         style={{ color: snapshotTokens.textPrimary }}
       >
         {value}

@@ -104,6 +104,49 @@ export default function PlayerDetailDrawer({
             />
           </div>
 
+          {(player.raw_projection != null ||
+            player.base_projection != null ||
+            player.projection_adjustment != null ||
+            player.opponent) && (
+            <div
+              className="rounded-lg border px-3 py-2 text-sm"
+              style={{
+                borderColor: snapshotTokens.border,
+                color: snapshotTokens.textSecondary,
+              }}
+            >
+              {player.opponent
+                ? `vs ${player.opponent}`
+                : "No opponent this week"}
+              {player.matchup_label
+                ? ` · ${player.matchup_label}`
+                : ""}
+              {player.raw_projection != null
+                ? ` · raw ${player.raw_projection.toFixed(1)}`
+                : ""}
+              {player.insightpilot_projection != null
+                ? ` → IP ${player.insightpilot_projection.toFixed(1)}`
+                : player.base_projection != null
+                  ? ` → IP ${player.base_projection.toFixed(1)}`
+                  : ""}
+              {player.projection_adjustment != null &&
+              Math.abs(player.projection_adjustment) >= 0.1
+                ? ` (${player.projection_adjustment > 0 ? "+" : ""}${player.projection_adjustment.toFixed(1)})`
+                : ""}
+              {player.projection_confidence
+                ? ` · ${player.projection_confidence} confidence`
+                : ""}
+              {player.environment_score != null
+                ? ` · env ${Math.round(player.environment_score)}`
+                : ""}
+              {player.projection_adjustment_reason ? (
+                <p className="mt-1.5 text-xs leading-snug">
+                  {player.projection_adjustment_reason}
+                </p>
+              ) : null}
+            </div>
+          )}
+
           <div>
             <p
               className="text-[11px] font-semibold uppercase tracking-wide"

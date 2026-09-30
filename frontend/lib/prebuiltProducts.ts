@@ -25,7 +25,9 @@ export interface NativeProduct {
 export type PrebuiltProduct = NativeProduct;
 
 /** @deprecated Prefer product.id with product_type */
-export type PrebuiltProductKind = "fantasy_football";
+export type PrebuiltProductKind =
+  | "fantasy_football"
+  | "sports_betting";
 
 
 export const NATIVE_PRODUCTS: NativeProduct[] = [
@@ -39,6 +41,17 @@ export const NATIVE_PRODUCTS: NativeProduct[] = [
     href: "/products/fantasy-football",
     sourceLabel: "nflverse",
     domainLabel: "Player Overview",
+  },
+  {
+    id: "sports_betting",
+    product_type: PRODUCT_TYPE_NATIVE,
+    name: "Sports Betting",
+    description:
+      "Analyze NFL markets, compare InsightPilot projections with market prices, and evaluate edges.",
+    badge: PRODUCT_TYPE_LABELS.native,
+    href: "/products/sports-betting",
+    sourceLabel: "nflverse",
+    domainLabel: "Market Analysis",
   },
 ];
 

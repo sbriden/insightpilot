@@ -144,6 +144,104 @@ class PlayerSnapshotTests(unittest.TestCase):
             "Premium fantasy asset",
         )
 
+    def test_select_profile_prefers_opportunity_week(self):
+        from app.analysis.insights.player_snapshot import (
+            _select_profile_for_snapshot,
+        )
+
+        profiles = [
+            {
+                "season": 2025,
+                "week": 1,
+                "opportunity_score": 40,
+                "production_score": 30,
+            },
+            {
+                "season": 2025,
+                "week": 2,
+                "opportunity_score": None,
+                "production_score": 55,
+            },
+        ]
+        selected = _select_profile_for_snapshot(
+            profiles,
+            season=2025,
+            week=None,
+        )
+        self.assertEqual(selected["week"], 1)
+        self.assertEqual(selected["opportunity_score"], 40)
+
+    def test_snapshot_seasonizes_production_from_fppg(self):
+        """Season FPPG should drive production/assessment over one week."""
+
+        hot_week = build_player_snapshot(
+            player_id="pollard",
+            name="Tony Pollard",
+            position="RB",
+            season=2025,
+            week=2,
+            profile={
+                "fantasy_value_score": 40,
+                "opportunity_score": 35,
+                "production_score": 75,
+                "efficiency_score": 40,
+                "trend_score": 40,
+                "matchup_score": 40,
+                "environment_score": 40,
+                "risk_score": 40,
+            },
+            season_stats={
+                "fppg": 8.0,
+                "fantasy_points": 16.0,
+                "games": 2,
+            },
+            include_performance=False,
+        )
+        volume_lead = build_player_snapshot(
+            player_id="stevenson",
+            name="Rhamondre Stevenson",
+            position="RB",
+            season=2025,
+            week=2,
+            profile={
+                "fantasy_value_score": 35,
+                "opportunity_score": 55,
+                "production_score": 20,
+                "efficiency_score": 40,
+                "trend_score": 40,
+                "matchup_score": 40,
+                "environment_score": 40,
+                "risk_score": 40,
+            },
+            season_stats={
+                "fppg": 14.5,
+                "fantasy_points": 29.0,
+                "games": 2,
+            },
+            include_performance=False,
+        )
+
+        self.assertGreater(
+            volume_lead["production_score"],
+            hot_week["production_score"],
+        )
+        self.assertGreater(
+            volume_lead["fantasy_value_score"],
+            hot_week["fantasy_value_score"],
+        )
+        assessment_rank = {
+            "Elite": 5,
+            "Strong": 4,
+            "Solid": 3,
+            "Cautious": 2,
+            "Weak": 1,
+            "Insufficient data": 0,
+        }
+        self.assertGreaterEqual(
+            assessment_rank[volume_lead["overall_assessment"]],
+            assessment_rank[hot_week["overall_assessment"]],
+        )
+
 
     def test_search_players_matches_name(self):
         from unittest.mock import patch

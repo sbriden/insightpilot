@@ -7,6 +7,7 @@ import {
 
 import AnalysisDashboard from "@/components/AnalysisDashboard";
 import DailyFantasyAnalyzer from "@/components/fantasy/dfs/DailyFantasyAnalyzer";
+import SportsBettingAnalyzer from "@/components/betting/SportsBettingAnalyzer";
 import PlayerSnapshot, {
   snapshotsFromDashboard,
 } from "@/components/fantasy/PlayerSnapshot";
@@ -166,9 +167,14 @@ export default function ProductAnalysisTabs({
           <DailyFantasyAnalyzer />
         )}
 
+        {activeItem?.id === "sports_betting" && (
+          <SportsBettingAnalyzer />
+        )}
+
         {activeItem?.dashboard
           && activeItem.id !== "player_overview"
-          && activeItem.id !== "daily_fantasy" ? (
+          && activeItem.id !== "daily_fantasy"
+          && activeItem.id !== "sports_betting" ? (
           <AnalysisDashboard
             dashboard={
               activeItem.dashboard as any
@@ -179,7 +185,8 @@ export default function ProductAnalysisTabs({
 
         {!activeItem?.dashboard
           && activeItem?.id !== "player_overview"
-          && activeItem?.id !== "daily_fantasy" && (
+          && activeItem?.id !== "daily_fantasy"
+          && activeItem?.id !== "sports_betting" && (
           <div className="rounded-xl border border-dashed p-6 text-sm text-gray-500">
             {activeItem
               ? `${activeItem.title} is not available for this dataset or field mapping.`

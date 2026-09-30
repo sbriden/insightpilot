@@ -128,3 +128,94 @@
     @apply font-sans;
   }
 }
+
+/* Analytical Applications — command center surface */
+.ip-app {
+  --ip-obsidian: #030507;
+  --ip-midnight: #07111c;
+  --ip-deep: #0a1b30;
+  --ip-panel: #0a1624;
+  --ip-elevated: #0d1c2d;
+  --ip-electric: #008cff;
+  --ip-cyan: #00e5ff;
+  --ip-bright: #38f4ff;
+  --ip-white: #f5f7fa;
+  --ip-silver: #a8b3c2;
+  --ip-slate: #667384;
+  --ip-positive: #25d695;
+  --ip-negative: #ff5570;
+  --ip-warning: #ffb547;
+  --ip-border: rgba(255, 255, 255, 0.06);
+  --ip-border-input: rgba(255, 255, 255, 0.1);
+  --ip-focus: rgba(0, 229, 255, 0.45);
+  color: var(--ip-white);
+  background: var(--ip-obsidian);
+  font-family: var(--font-app-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+.ip-app h1,
+.ip-app h2,
+.ip-app .ip-heading {
+  font-family: var(--font-app-display), var(--font-app-sans), ui-sans-serif,
+    system-ui, sans-serif;
+}
+
+.ip-app-beam {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(0, 229, 255, 0.55) 50%,
+    transparent 100%
+  );
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.18);
+}
+
+.ip-app-cta {
+  background: linear-gradient(135deg, #008cff 0%, #00e5ff 100%);
+  color: #030507;
+  font-weight: 600;
+  transition: box-shadow 180ms ease, filter 180ms ease;
+}
+
+.ip-app-cta:hover {
+  filter: brightness(1.05);
+  box-shadow: 0 0 24px rgba(0, 229, 255, 0.18);
+}
+
+.ip-app-cta:disabled {
+  opacity: 0.4;
+  filter: none;
+  box-shadow: none;
+}
+
+.ip-app-input {
+  background: #07111c;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f5f7fa;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.ip-app-input::placeholder {
+  color: #667384;
+}
+
+.ip-app-input:focus {
+  outline: none;
+  border-color: rgba(0, 229, 255, 0.45);
+  box-shadow: 0 0 18px rgba(0, 229, 255, 0.12);
+}
+
+.ip-app-panel {
+  background: #07111c;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Analytical analysis surface — light panel inside dark command center */
+.ip-analysis-panel {
+  color-scheme: light;
+}
+
+.ip-analysis-panel a {
+  color: inherit;
+}

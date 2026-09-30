@@ -7,12 +7,15 @@ import {
   useState,
 } from "react";
 
-import DfsSlateHeader from "@/components/fantasy/dfs/DfsSlateHeader";
+import DfsSlateHeader, {
+  type DfsWorkspaceTab,
+} from "@/components/fantasy/dfs/DfsSlateHeader";
 import LineupCard from "@/components/fantasy/dfs/LineupCard";
 import LineupInsights from "@/components/fantasy/dfs/LineupInsights";
 import OptimizationProgress from "@/components/fantasy/dfs/OptimizationProgress";
 import PlayerDetailDrawer from "@/components/fantasy/dfs/PlayerDetailDrawer";
 import PlayerPool from "@/components/fantasy/dfs/PlayerPool";
+import PortfolioBuilder from "@/components/fantasy/dfs/portfolio/PortfolioBuilder";
 import SlateSummary from "@/components/fantasy/dfs/SlateSummary";
 import ValuePlays from "@/components/fantasy/dfs/ValuePlays";
 import PlayerSnapshotModal from "@/components/fantasy/snapshot/PlayerSnapshotModal";
@@ -32,21 +35,37 @@ import {
   getFantasyPlayerSnapshot,
   listDfsSites,
   listDfsSlates,
+  listDfsWeeks,
   optimizeDfsLineup,
 } from "@/services/api";
 
-export default function DailyFantasyAnalyzer() {
+export default function DailyFantasyAnalyzer({
+  initialTab = "analyzer",
+  hideTabBar = false,
+}: {
+  initialTab?: DfsWorkspaceTab;
+  hideTabBar?: boolean;
+} = {}) {
   const [sites, setSites] = useState<
     Array<{ id: string; name: string; salary_cap: number; slots: string[] }>
   >([]);
+  const [weeks, setWeeks] = useState<number[]>([]);
+  const [week, setWeek] = useState<number | null>(null);
   const [slates, setSlates] = useState<
-    Array<{ slate_id: string; label: string }>
+    Array<{
+      slate_id: string;
+      label: string;
+      week?: number | null;
+      game_count?: number;
+    }>
   >([]);
   const [site, setSite] = useState<DfsSiteId>("draftkings");
   const [slateId, setSlateId] = useState("");
   const [contestType, setContestType] =
     useState<DfsContestType>("classic");
   const [risk, setRisk] = useState<DfsRisk>("balanced");
+  const [activeTab, setActiveTab] =
+    useState<DfsWorkspaceTab>(initialTab);
   const [slate, setSlate] = useState<DfsSlate | null>(null);
   const [lineup, setLineup] = useState<DfsLineup | null>(null);
   const [lockedIds, setLockedIds] = useState<Set<string>>(
@@ -80,7 +99,18 @@ export default function DailyFantasyAnalyzer() {
   >(null);
   const [salaryRefreshNonce, setSalaryRefreshNonce] =
     useState(0);
+  const [portfolioMounted, setPortfolioMounted] = useState(false);
   const insightsRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
+    if (activeTab === "portfolio") {
+      setPortfolioMounted(true);
+    }
+  }, [activeTab]);
 
   const playersById = useMemo(() => {
     const map = new Map<string, DfsPlayer>();
@@ -116,7 +146,10 @@ export default function DailyFantasyAnalyzer() {
       try {
         setLoading(true);
         setError(null);
-        const siteResult = await listDfsSites();
+        const [siteResult, weekResult] = await Promise.all([
+          listDfsSites(),
+          listDfsWeeks(),
+        ]);
         if (cancelled) {
           return;
         }
@@ -124,6 +157,8 @@ export default function DailyFantasyAnalyzer() {
         if (siteResult.sites[0]?.id) {
           setSite(siteResult.sites[0].id);
         }
+        setWeeks(weekResult.weeks);
+        setWeek(weekResult.current_week);
       } catch (loadError) {
         if (!cancelled) {
           setError(
@@ -144,6 +179,9 @@ export default function DailyFantasyAnalyzer() {
   }, []);
 
   useEffect(() => {
+    if (week == null) {
+      return;
+    }
     let cancelled = false;
     void (async () => {
       try {
@@ -151,14 +189,20 @@ export default function DailyFantasyAnalyzer() {
         setError(null);
         const slateResult = await listDfsSlates(
           null,
-          contestType
+          contestType,
+          week
         );
         if (cancelled) {
           return;
         }
         setSlates(slateResult.slates);
-        const firstSlate = slateResult.slates[0]?.slate_id;
-        setSlateId(firstSlate || "");
+        const preferred =
+          slateResult.slates.find(
+            (item) => (item.game_count ?? 0) > 0
+          )?.slate_id
+          ?? slateResult.slates[0]?.slate_id
+          ?? "";
+        setSlateId(preferred);
         setLineup(null);
         setLockedIds(new Set());
         setExcludedIds(new Set());
@@ -181,7 +225,7 @@ export default function DailyFantasyAnalyzer() {
     return () => {
       cancelled = true;
     };
-  }, [contestType]);
+  }, [contestType, week]);
 
   useEffect(() => {
     const onSalariesUpdated = (event: Event) => {
@@ -201,14 +245,31 @@ export default function DailyFantasyAnalyzer() {
         setContestType(detail.contest_type);
       }
       setSalaryRefreshNonce((current) => current + 1);
+      void listDfsWeeks().then((weekResult) => {
+        setWeeks(weekResult.weeks);
+        setWeek((current) =>
+          current != null
+          && weekResult.weeks.includes(current)
+            ? current
+            : weekResult.current_week
+        );
+      }).catch(() => undefined);
     };
     window.addEventListener(
       "insightpilot:dfs-salaries-updated",
       onSalariesUpdated
     );
+    window.addEventListener(
+      "insightpilot:fantasy-data-refreshed",
+      onSalariesUpdated
+    );
     return () => {
       window.removeEventListener(
         "insightpilot:dfs-salaries-updated",
+        onSalariesUpdated
+      );
+      window.removeEventListener(
+        "insightpilot:fantasy-data-refreshed",
         onSalariesUpdated
       );
     };
@@ -608,159 +669,232 @@ export default function DailyFantasyAnalyzer() {
       <DfsSlateHeader
         site={site}
         sites={sites}
+        week={week}
+        weeks={weeks}
         slateId={slateId}
         slates={slates}
         contestType={contestType}
         risk={risk}
         optimizing={optimizing}
+        activeTab={activeTab}
         onSite={setSite}
+        onWeek={setWeek}
         onSlate={setSlateId}
         onContest={setContestType}
         onRisk={setRisk}
         onOptimize={() => void runOptimize()}
+        onTab={setActiveTab}
         freshness={freshness}
+        hideTabs={hideTabBar}
       />
 
-      <OptimizationProgress
-        active={optimizing}
-        stepIndex={optStep}
-      />
-
-      {error && (
-        <p
-          className="text-sm"
-          style={{ color: snapshotTokens.negative }}
+      {slate && portfolioMounted && (
+        <div
+          className={
+            activeTab === "portfolio" ? "block" : "hidden"
+          }
         >
-          {error}
-        </p>
-      )}
-      {constraintHint && (
-        <p
-          className="text-sm"
-          style={{ color: snapshotTokens.textSecondary }}
-        >
-          {constraintHint}
-        </p>
-      )}
-
-      <SlateSummary
-        lineup={lineup}
-        showEdge={analysisOpen}
-      />
-
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(18rem,0.85fr)]">
-        <div className="order-2 space-y-4 lg:order-1">
-          <PlayerPool
-            players={slate?.players ?? []}
-            positionFilter={positionFilter}
-            lockedIds={lockedIds}
-            excludedIds={excludedIds}
-            lineupIds={lineupIds}
-            onPositionFilter={setPositionFilter}
-            onSelectPlayer={setSelectedId}
-            onAdd={addToLineup}
-            onRemove={removeFromLineup}
-            onExclude={toggleExclude}
-          />
-          <ValuePlays
-            players={slate?.players ?? []}
-            onSelectPlayer={setSelectedId}
+          <PortfolioBuilder
+            slate={slate}
+            site={site}
+            contestType={contestType}
+            risk={risk}
+            seedLockedIds={lockedIds}
+            seedExcludedIds={excludedIds}
           />
         </div>
+      )}
 
-        <div className="order-1 space-y-4 lg:order-2 lg:sticky lg:top-3 lg:self-start">
-          <LineupCard
-            lineup={lineup}
-            slots={slots}
-            lockedIds={lockedIds}
-            activeSlotIndex={activeSlotIndex}
-            onSelectSlot={selectLineupSlot}
-            onSelectPlayer={setSelectedId}
-            onPlacePlayer={addToLineup}
-            onRemove={removeFromLineup}
-            onLockToggle={toggleLock}
+      {activeTab !== "portfolio" && (
+        <>
+          <OptimizationProgress
+            active={optimizing}
+            stepIndex={optStep}
           />
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => void runOptimize()}
-              disabled={optimizing}
-              className="rounded-lg px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
-              style={{ background: snapshotTokens.blue }}
+
+          {error && (
+            <p
+              className="text-sm"
+              style={{ color: snapshotTokens.negative }}
             >
-              Re-optimize
-            </button>
-            <button
-              type="button"
-              onClick={analyzeLineup}
-              disabled={!lineup || lineup.players.length === 0}
-              className="rounded-lg border px-3 py-2 text-sm font-semibold disabled:opacity-40"
-              style={{
-                borderColor: snapshotTokens.border,
-                color: snapshotTokens.textPrimary,
-              }}
+              {error}
+            </p>
+          )}
+          {constraintHint && (
+            <p
+              className="text-sm"
+              style={{ color: snapshotTokens.textSecondary }}
             >
-              Analyze
-            </button>
-          </div>
-          <div ref={insightsRef}>
-            <LineupInsights
-              insights={
-                analysisOpen ? lineup?.insights ?? [] : []
-              }
-              signals={
-                analysisOpen ? lineup?.signals ?? [] : []
-              }
-              waiting={!analysisOpen}
+              {constraintHint}
+            </p>
+          )}
+
+          {(activeTab === "analyzer" ||
+            activeTab === "optimizer") && (
+            <SlateSummary
+              lineup={lineup}
+              showEdge={analysisOpen}
             />
+          )}
+
+          <div
+            className={
+              activeTab === "analyzer"
+                ? "grid gap-4"
+                : "grid gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(18rem,0.85fr)]"
+            }
+          >
+            {(activeTab === "analyzer" ||
+              activeTab === "optimizer") && (
+              <div
+                className={
+                  activeTab === "optimizer"
+                    ? "order-2 space-y-4 lg:order-1"
+                    : "space-y-4"
+                }
+              >
+                <PlayerPool
+                  players={slate?.players ?? []}
+                  positionFilter={positionFilter}
+                  lockedIds={lockedIds}
+                  excludedIds={excludedIds}
+                  lineupIds={lineupIds}
+                  onPositionFilter={setPositionFilter}
+                  onSelectPlayer={setSelectedId}
+                  onAdd={addToLineup}
+                  onRemove={removeFromLineup}
+                  onExclude={toggleExclude}
+                />
+                {activeTab === "analyzer" && (
+                  <ValuePlays
+                    players={slate?.players ?? []}
+                    onSelectPlayer={setSelectedId}
+                  />
+                )}
+              </div>
+            )}
+
+            {activeTab === "optimizer" && (
+              <div className="order-1 space-y-4 lg:order-2 lg:sticky lg:top-3 lg:self-start">
+                <LineupCard
+                  lineup={lineup}
+                  slots={slots}
+                  lockedIds={lockedIds}
+                  activeSlotIndex={activeSlotIndex}
+                  onSelectSlot={selectLineupSlot}
+                  onSelectPlayer={setSelectedId}
+                  onPlacePlayer={addToLineup}
+                  onRemove={removeFromLineup}
+                  onLockToggle={toggleLock}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void runOptimize()}
+                    disabled={optimizing}
+                    className="rounded-lg px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    style={{ background: snapshotTokens.blue }}
+                  >
+                    Re-optimize
+                  </button>
+                  <button
+                    type="button"
+                    onClick={analyzeLineup}
+                    disabled={
+                      !lineup || lineup.players.length === 0
+                    }
+                    className="rounded-lg border px-3 py-2 text-sm font-semibold disabled:opacity-40"
+                    style={{
+                      borderColor: snapshotTokens.border,
+                      color: snapshotTokens.textPrimary,
+                    }}
+                  >
+                    Analyze
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (lineup) {
+                        exportLineupCsv(lineup, slots, slateId);
+                      }
+                    }}
+                    disabled={
+                      !lineup || lineup.players.length === 0
+                    }
+                    className="rounded-lg border px-3 py-2 text-sm font-semibold disabled:opacity-40"
+                    style={{
+                      borderColor: snapshotTokens.border,
+                      color: snapshotTokens.textPrimary,
+                    }}
+                  >
+                    Export CSV
+                  </button>
+                </div>
+                <div ref={insightsRef}>
+                  <LineupInsights
+                    insights={
+                      analysisOpen
+                        ? lineup?.insights ?? []
+                        : []
+                    }
+                    signals={
+                      analysisOpen
+                        ? lineup?.signals ?? []
+                        : []
+                    }
+                    waiting={!analysisOpen}
+                  />
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      </div>
 
-      <PlayerDetailDrawer
-        player={selectedPlayer}
-        inLineup={
-          selectedId ? lineupIds.has(selectedId) : false
-        }
-        locked={
-          selectedId ? lockedIds.has(selectedId) : false
-        }
-        excluded={
-          selectedId ? excludedIds.has(selectedId) : false
-        }
-        onClose={() => setSelectedId(null)}
-        onAdd={() => {
-          if (selectedId) {
-            addToLineup(selectedId);
-          }
-        }}
-        onLock={() => {
-          if (selectedId) {
-            toggleLock(selectedId);
-          }
-        }}
-        onExclude={() => {
-          if (selectedId) {
-            toggleExclude(selectedId);
-          }
-        }}
-        onOpenOverview={() => {
-          if (selectedId) {
-            void openPlayerOverview(selectedId);
-          }
-        }}
-      />
+          <PlayerDetailDrawer
+            player={selectedPlayer}
+            inLineup={
+              selectedId ? lineupIds.has(selectedId) : false
+            }
+            locked={
+              selectedId ? lockedIds.has(selectedId) : false
+            }
+            excluded={
+              selectedId ? excludedIds.has(selectedId) : false
+            }
+            onClose={() => setSelectedId(null)}
+            onAdd={() => {
+              if (selectedId) {
+                addToLineup(selectedId);
+              }
+            }}
+            onLock={() => {
+              if (selectedId) {
+                toggleLock(selectedId);
+              }
+            }}
+            onExclude={() => {
+              if (selectedId) {
+                toggleExclude(selectedId);
+              }
+            }}
+            onOpenOverview={() => {
+              if (selectedId) {
+                void openPlayerOverview(selectedId);
+              }
+            }}
+          />
 
-      {overviewOpen && (
-        <PlayerSnapshotModal
-          active={overviewSnapshot}
-          loading={overviewLoading}
-          error={overviewError}
-          onClose={closePlayerOverview}
-          onSelectPlayer={(playerId) => {
-            void openPlayerOverview(playerId);
-          }}
-        />
+          {overviewOpen && (
+            <PlayerSnapshotModal
+              active={overviewSnapshot}
+              loading={overviewLoading}
+              error={overviewError}
+              onClose={closePlayerOverview}
+              onSelectPlayer={(playerId) => {
+                void openPlayerOverview(playerId);
+              }}
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -784,6 +918,98 @@ function emptyLineup(slate: DfsSlate): DfsLineup {
     insights: [],
     signals: [],
   };
+}
+
+function csvEscape(value: string | number | null | undefined): string {
+  const text = value == null ? "" : String(value);
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function exportLineupCsv(
+  lineup: DfsLineup,
+  slots: string[],
+  slateId: string
+) {
+  const remaining = [...lineup.players];
+  const ordered: Array<DfsLineupPlayer | null> = slots.map(
+    (slot) => {
+      const index = remaining.findIndex((player) => {
+        const playerSlot = String(player.slot || "");
+        if (playerSlot === slot) {
+          return true;
+        }
+        if (slot === "DST" && playerSlot === "DEF") {
+          return true;
+        }
+        return false;
+      });
+      if (index < 0) {
+        return null;
+      }
+      const [player] = remaining.splice(index, 1);
+      return player;
+    }
+  );
+  for (const player of remaining) {
+    const empty = ordered.findIndex((item) => item == null);
+    if (empty < 0) {
+      break;
+    }
+    ordered[empty] = player;
+  }
+
+  const wideHeader = slots.map(csvEscape).join(",");
+  const wideRow = ordered
+    .map((player) => csvEscape(player?.name ?? ""))
+    .join(",");
+
+  const detailHeader = [
+    "slot",
+    "name",
+    "player_id",
+    "team",
+    "position",
+    "salary",
+    "projection",
+    "ownership",
+  ].join(",");
+  const detailRows = ordered.map((player, index) =>
+    [
+      csvEscape(slots[index] ?? player?.slot ?? ""),
+      csvEscape(player?.name ?? ""),
+      csvEscape(player?.player_id ?? ""),
+      csvEscape(player?.team ?? ""),
+      csvEscape(player?.position ?? ""),
+      csvEscape(player?.salary ?? ""),
+      csvEscape(player?.projection ?? ""),
+      csvEscape(
+        player?.projected_ownership != null
+          ? Number(player.projected_ownership).toFixed(3)
+          : ""
+      ),
+    ].join(",")
+  );
+
+  const csv = [
+    wideHeader,
+    wideRow,
+    "",
+    detailHeader,
+    ...detailRows,
+  ].join("\n");
+
+  const blob = new Blob([csv], {
+    type: "text/csv;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${slateId || "lineup"}-lineup.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function recomputeLineup(
@@ -828,15 +1054,16 @@ function toLineupPlayer(
       ? Number(slate.captain_multiplier || 1.5)
       : 1;
   const baseSalary = player.salary || 0;
-  const baseProjection = player.projection || 0;
+  const slotProjection = player.projection || 0;
   return {
     ...player,
     slot,
     salary: Math.round(baseSalary * multiplier),
     base_salary: baseSalary,
     projection:
-      Math.round(baseProjection * multiplier * 10) / 10,
-    base_projection: baseProjection,
+      Math.round(slotProjection * multiplier * 10) / 10,
+    // Keep season FPPG base_projection from the slate player;
+    // do not overwrite with the (already opponent-adjusted) slot proj.
     floor:
       player.floor == null
         ? player.floor
@@ -977,6 +1204,35 @@ function buildClientLineupAnalysis(lineup: DfsLineup): {
     };
   }
 
+  // Prefer engine-produced correlation explanations when present.
+  for (const pair of (lineup.correlation?.positive_pairs ?? []).slice(
+    0,
+    3
+  )) {
+    insights.push({
+      id: `corr-pos-${pair.player_id}-${pair.correlated_player_id}`,
+      tone: "positive",
+      text:
+        `Positive correlation (${pair.correlation_score >= 0 ? "+" : ""}` +
+        `${pair.correlation_score.toFixed(2)}): ` +
+        `${pair.player_name} ↔ ${pair.correlated_player_name}. ` +
+        `${pair.correlation_reason ?? ""}`.trim(),
+    });
+  }
+  for (const pair of (lineup.correlation?.negative_pairs ?? []).slice(
+    0,
+    2
+  )) {
+    insights.push({
+      id: `corr-neg-${pair.player_id}-${pair.correlated_player_id}`,
+      tone: "warning",
+      text:
+        `Negative correlation (${pair.correlation_score.toFixed(2)}): ` +
+        `${pair.player_name} ↔ ${pair.correlated_player_name}. ` +
+        `${pair.correlation_reason ?? ""}`.trim(),
+    });
+  }
+
   const teamCounts = new Map<string, number>();
   for (const player of players) {
     const team = (player.team || "").toUpperCase();
@@ -989,7 +1245,10 @@ function buildClientLineupAnalysis(lineup: DfsLineup): {
   const qb = players.find(
     (player) => (player.position || "").toUpperCase() === "QB"
   );
-  if (qb?.team) {
+  if (
+    qb?.team
+    && !(lineup.correlation?.positive_pairs?.length)
+  ) {
     const qbTeam = qb.team.toUpperCase();
     const stacked = players.filter(
       (player) =>

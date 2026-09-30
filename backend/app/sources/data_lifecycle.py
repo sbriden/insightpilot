@@ -531,6 +531,13 @@ def run_ingest(
     from app.canonical.data_quality import (
         validate_ingested_seasons,
     )
+    from app.canonical.cache_control import (
+        clear_all_fantasy_caches,
+    )
+
+    # Drop stale in-memory frames before rebuilding so derived
+    # layers read the latest Postgres facts.
+    clear_all_fantasy_caches()
 
     resolved_mode = normalize_ingest_mode(mode)
     definition = INGEST_MODES[resolved_mode]
@@ -670,8 +677,25 @@ def run_ingest(
             (validation or {}).get("message")
             or "The data loaded but failed validation."
         )
+        message = (
+            f"{message} Foundation tables were updated, but "
+            "derived analytics (opportunity, profiles, signals) "
+            "were skipped until validation passes. "
+            "Run Reprocess derived after fixing validation, "
+            "or re-run Incremental once core facts are complete."
+        )
     elif validation and validation.get("status") == "passed_with_warnings":
         status = "succeeded_with_warnings"
+
+    # Always drop process caches so API reads hit fresh DB rows.
+    try:
+        from app.canonical.cache_control import (
+            clear_all_fantasy_caches,
+        )
+
+        caches_cleared = clear_all_fantasy_caches()
+    except Exception:
+        caches_cleared = 0
 
     payload = {
         "mode": resolved_mode,
@@ -691,6 +715,7 @@ def run_ingest(
         "message": message,
         "validation": validation,
         "validation_blocked_derived": validation_blocked,
+        "caches_cleared": caches_cleared,
         "results": results,
     }
     _record_ingestion_state(

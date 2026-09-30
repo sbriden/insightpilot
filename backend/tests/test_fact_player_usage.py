@@ -283,6 +283,124 @@ class FactPlayerUsageTests(unittest.TestCase):
         self.assertEqual(source_ids["gsis_id"], rb_gsis)
         self.assertEqual(source_ids["nflverse_game_id"], game)
 
+    def test_snap_only_active_zero_included(self):
+        """TE with snaps but no box stats still enters usage spine."""
+
+        te_gsis = "00-0033858"
+        inactive_gsis = "00-0099999"
+        game_w1 = "2026_01_GB_MIN"
+        game_w2 = "2026_02_GB_NYJ"
+        player_lookup = {
+            te_gsis: make_player_id(
+                player_resolution_key(gsis_id=te_gsis)
+            ),
+            inactive_gsis: make_player_id(
+                player_resolution_key(gsis_id=inactive_gsis)
+            ),
+        }
+        game_lookup = {
+            game_w1: make_game_id(
+                game_resolution_key(nflverse_game_id=game_w1)
+            ),
+            game_w2: make_game_id(
+                game_resolution_key(nflverse_game_id=game_w2)
+            ),
+        }
+
+        stats = pd.DataFrame(
+            [
+                {
+                    "player_id": te_gsis,
+                    "game_id": game_w1,
+                    "season": 2026,
+                    "week": 1,
+                    "season_type": "REG",
+                    "team": "GB",
+                    "position": "TE",
+                    "carries": 0,
+                    "receptions": 2,
+                    "targets": 3,
+                    "target_share": 0.1,
+                    "receiving_air_yards": 40,
+                    "air_yards_share": 0.12,
+                }
+            ]
+        )
+        snaps = pd.DataFrame(
+            [
+                {
+                    "game_id": game_w1,
+                    "season": 2026,
+                    "week": 1,
+                    "game_type": "REG",
+                    "team": "GB",
+                    "pfr_player_id": "SmitJo01",
+                    "position": "TE",
+                    "offense_snaps": 32,
+                    "offense_pct": 0.45,
+                },
+                {
+                    "game_id": game_w2,
+                    "season": 2026,
+                    "week": 2,
+                    "game_type": "REG",
+                    "team": "GB",
+                    "pfr_player_id": "SmitJo01",
+                    "position": "TE",
+                    "offense_snaps": 13,
+                    "offense_pct": 0.2,
+                },
+                {
+                    "game_id": game_w2,
+                    "season": 2026,
+                    "week": 2,
+                    "game_type": "REG",
+                    "team": "GB",
+                    "pfr_player_id": "Inact01",
+                    "position": "TE",
+                    "offense_snaps": 0,
+                    "offense_pct": 0.0,
+                },
+            ]
+        )
+
+        with (
+            patch(
+                "app.canonical.fact_player_usage.upsert_fact_player_usage"
+            ),
+            patch(
+                "app.canonical.fact_player_usage._pfr_to_gsis_lookup",
+                return_value={
+                    "SmitJo01": te_gsis,
+                    "Inact01": inactive_gsis,
+                },
+            ),
+        ):
+            fact = build_fact_player_usage(
+                [2026],
+                persist=True,
+                source_frames={
+                    "player_stats": stats,
+                    "snap_counts": snaps,
+                    "pbp": pd.DataFrame(),
+                    "participation": pd.DataFrame(),
+                },
+                player_id_lookup=player_lookup,
+                game_id_lookup=game_lookup,
+            )
+
+        weeks = sorted(int(v) for v in fact["week"].tolist())
+        self.assertEqual(weeks, [1, 2])
+        week2 = fact[fact["week"] == 2].iloc[0]
+        self.assertEqual(int(week2["snap_count"] or 0), 13)
+        self.assertEqual(int(week2["touches"] or 0), 0)
+        self.assertFalse(
+            (
+                fact["player_id"]
+                == player_lookup[inactive_gsis]
+            ).any()
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,7 @@ import {
 import {
   FantasyPlayerSearchHit,
   FantasyPlayerSnapshot,
+  FantasyScoringFormat,
   getFantasyPlayerSnapshot,
   listFantasyPlayers,
 } from "@/services/api";
@@ -28,6 +29,7 @@ import PlayerOverviewCompare from "@/components/fantasy/PlayerOverviewCompare";
 import PlayerOverviewScatter from "@/components/fantasy/PlayerOverviewScatter";
 import PlayerOverviewTeamStats from "@/components/fantasy/PlayerOverviewTeamStats";
 import PlayerSnapshotModal from "@/components/fantasy/snapshot/PlayerSnapshotModal";
+import type { SnapshotTabId } from "@/components/fantasy/snapshot/PlayerTabs";
 import {
   assessmentStyles,
   formatScore as formatSnapshotScore,
@@ -43,6 +45,7 @@ type SortKey =
   | "status"
   | "fantasy_points"
   | "fppg"
+  | "projection"
   | "production_score"
   | "opportunity_score"
   | "fantasy_value_score";
@@ -54,6 +57,10 @@ type OverviewTab = "table" | "scatter" | "compare" | "teams";
 interface Props {
   /** Optional preloaded snapshots from the analysis dashboard. */
   snapshots?: PlayerSnapshotData[];
+  /** Open player detail on this tab when a player is selected. */
+  initialDetailTab?: SnapshotTabId;
+  /** Notify parent (e.g. application context) when a player is opened. */
+  onPlayerSelect?: (playerId: string) => void;
 }
 
 const POSITIONS = [
@@ -65,9 +72,19 @@ const POSITIONS = [
   "DEF",
 ] as const;
 
+const SCORING_OPTIONS: Array<{
+  id: FantasyScoringFormat;
+  label: string;
+}> = [
+  { id: "ppr", label: "PPR" },
+  { id: "half_ppr", label: "Half PPR" },
+  { id: "standard", label: "Standard" },
+];
+
 const NUMERIC_SORT_KEYS: SortKey[] = [
   "fantasy_points",
   "fppg",
+  "projection",
   "production_score",
   "opportunity_score",
   "fantasy_value_score",
@@ -136,6 +153,9 @@ function scoreValue(
   }
   if (key === "fppg") {
     return player.fppg ?? null;
+  }
+  if (key === "projection") {
+    return player.projection ?? null;
   }
   if (key === "production_score") {
     return player.production_score ?? null;
@@ -281,6 +301,8 @@ function matchesMulti(
 
 export default function PlayerSnapshot({
   snapshots: _snapshots = [],
+  initialDetailTab = "snapshot",
+  onPlayerSelect,
 }: Props) {
   const [players, setPlayers] = useState<
     FantasyPlayerSearchHit[]
@@ -300,6 +322,8 @@ export default function PlayerSnapshot({
     useState<string[]>([]);
   const [statusFilter, setStatusFilter] =
     useState<string[]>(["Active"]);
+  const [scoring, setScoring] =
+    useState<FantasyScoringFormat>("ppr");
   const [sortKey, setSortKey] =
     useState<SortKey>("fantasy_points");
   const [sortDir, setSortDir] =
@@ -314,6 +338,8 @@ export default function PlayerSnapshot({
     useState(false);
   const [snapshotError, setSnapshotError] =
     useState<string | null>(null);
+  const [listRefreshNonce, setListRefreshNonce] =
+    useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -324,6 +350,7 @@ export default function PlayerSnapshot({
         setListError(null);
         const result = await listFantasyPlayers({
           limit: 2000,
+          scoring,
         });
         if (cancelled) {
           return;
@@ -348,6 +375,22 @@ export default function PlayerSnapshot({
 
     return () => {
       cancelled = true;
+    };
+  }, [listRefreshNonce, scoring]);
+
+  useEffect(() => {
+    const onDataRefreshed = () => {
+      setListRefreshNonce((current) => current + 1);
+    };
+    window.addEventListener(
+      "insightpilot:fantasy-data-refreshed",
+      onDataRefreshed
+    );
+    return () => {
+      window.removeEventListener(
+        "insightpilot:fantasy-data-refreshed",
+        onDataRefreshed
+      );
     };
   }, []);
 
@@ -570,6 +613,7 @@ export default function PlayerSnapshot({
 
   function openPlayer(playerId: string) {
     setSelectedId(playerId);
+    onPlayerSelect?.(playerId);
   }
 
   function closeModal() {
@@ -620,8 +664,8 @@ export default function PlayerSnapshot({
         </p>
 
         <div
-          className="mt-4 flex gap-1 overflow-x-auto border-b"
-          style={{ borderColor: snapshotTokens.divider }}
+          className="mt-4 flex flex-wrap gap-1 border-b pb-2"
+          style={{ borderColor: snapshotTokens.border }}
           role="tablist"
           aria-label="Player overview views"
         >
@@ -634,15 +678,14 @@ export default function PlayerSnapshot({
                 role="tab"
                 aria-selected={selected}
                 onClick={() => setOverviewTab(tab.id)}
-                className="shrink-0 border-b-[2.5px] px-3 py-2.5 text-sm transition"
+                className="rounded-md px-3 py-1.5 text-sm font-semibold"
                 style={{
-                  borderColor: selected
-                    ? snapshotTokens.blue
+                  background: selected
+                    ? snapshotTokens.blueLight
                     : "transparent",
                   color: selected
                     ? snapshotTokens.blue
                     : snapshotTokens.textSecondary,
-                  fontWeight: selected ? 600 : 500,
                 }}
               >
                 {tab.label}
@@ -700,6 +743,33 @@ export default function PlayerSnapshot({
           onChange={setStatusFilter}
           emptyMeansAll={false}
         />
+        <label className="block min-w-[8.5rem]">
+          <span
+            className="mb-1 block text-[11px] font-semibold uppercase tracking-wide"
+            style={{ color: snapshotTokens.textMuted }}
+          >
+            Scoring
+          </span>
+          <select
+            value={scoring}
+            onChange={(event) =>
+              setScoring(
+                event.target.value as FantasyScoringFormat
+              )
+            }
+            className="w-full rounded-lg border bg-white px-2.5 py-2 text-sm"
+            style={{
+              borderColor: snapshotTokens.border,
+              color: snapshotTokens.textPrimary,
+            }}
+          >
+            {SCORING_OPTIONS.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <p
           className="ml-auto text-xs"
@@ -740,6 +810,7 @@ export default function PlayerSnapshot({
                       ["team", "Team"],
                       ["fantasy_points", "Pts"],
                       ["fppg", "PPG"],
+                      ["projection", "Proj"],
                       ["production_score", "Prod"],
                       ["opportunity_score", "Opp"],
                       ["fantasy_value_score", "Assess"],
@@ -770,7 +841,7 @@ export default function PlayerSnapshot({
                 {loadingList ? (
                   <tr>
                     <td
-                      colSpan={9}
+                      colSpan={10}
                       className="px-4 py-10 text-center"
                       style={{ color: snapshotTokens.textSecondary }}
                     >
@@ -780,7 +851,7 @@ export default function PlayerSnapshot({
                 ) : rows.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={9}
+                      colSpan={10}
                       className="px-4 py-10 text-center"
                       style={{ color: snapshotTokens.textSecondary }}
                     >
@@ -838,6 +909,12 @@ export default function PlayerSnapshot({
                           style={{ color: snapshotTokens.textPrimary }}
                         >
                           {formatPoints(player.fppg)}
+                        </td>
+                        <td
+                          className="px-4 py-3 tabular-nums font-semibold"
+                          style={{ color: snapshotTokens.blue }}
+                        >
+                          {formatPoints(player.projection)}
                         </td>
                         <td
                           className="px-4 py-3 tabular-nums"
@@ -919,6 +996,7 @@ export default function PlayerSnapshot({
           error={snapshotError}
           onClose={closeModal}
           onSelectPlayer={openPlayer}
+          initialTab={initialDetailTab}
         />
       )}
     </section>

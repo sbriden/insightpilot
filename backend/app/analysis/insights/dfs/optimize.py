@@ -5,6 +5,11 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from app.analysis.insights.dfs.correlation import (
+    CorrelationContext,
+    build_correlation_context,
+    score_lineup_correlation,
+)
 from app.analysis.insights.dfs.insights import (
     build_lineup_insights,
 )
@@ -17,36 +22,60 @@ from app.analysis.insights.dfs.slate import build_dfs_slate
 
 STRATEGY_WEIGHTS: dict[str, dict[str, float]] = {
     "cash": {
-        "projection": 0.35,
-        "floor": 0.30,
-        "value": 0.20,
-        "ownership": 0.05,
+        "projection": 0.55,
+        "floor": 0.20,
+        "value": 0.15,
+        "ownership": 0.0,
         "ceiling": 0.05,
         "correlation": 0.05,
     },
-    "gpp": {
-        "projection": 0.25,
+    "max_projection": {
+        "projection": 0.70,
         "floor": 0.05,
-        "value": 0.15,
-        "ownership": 0.20,
-        "ceiling": 0.25,
-        "correlation": 0.10,
+        "value": 0.10,
+        "ownership": 0.0,
+        "ceiling": 0.10,
+        "correlation": 0.05,
+    },
+    "gpp": {
+        "projection": 0.30,
+        "floor": 0.05,
+        "value": 0.12,
+        "ownership": 0.15,
+        "ceiling": 0.23,
+        "correlation": 0.15,
+    },
+    "tournament": {
+        "projection": 0.30,
+        "floor": 0.05,
+        "value": 0.12,
+        "ownership": 0.15,
+        "ceiling": 0.23,
+        "correlation": 0.15,
+    },
+    "contrarian": {
+        "projection": 0.28,
+        "floor": 0.05,
+        "value": 0.12,
+        "ownership": 0.22,
+        "ceiling": 0.20,
+        "correlation": 0.13,
     },
     "custom": {
-        "projection": 0.40,
+        "projection": 0.45,
         "floor": 0.10,
-        "value": 0.15,
-        "ownership": 0.15,
-        "ceiling": 0.15,
-        "correlation": 0.05,
+        "value": 0.14,
+        "ownership": 0.08,
+        "ceiling": 0.14,
+        "correlation": 0.09,
     },
     "balanced": {
-        "projection": 0.40,
-        "floor": 0.15,
-        "value": 0.15,
-        "ownership": 0.10,
-        "ceiling": 0.15,
-        "correlation": 0.05,
+        "projection": 0.45,
+        "floor": 0.12,
+        "value": 0.14,
+        "ownership": 0.06,
+        "ceiling": 0.14,
+        "correlation": 0.09,
     },
 }
 
@@ -78,6 +107,7 @@ def optimize_lineup(
     min_salary: int | None = None,
     max_ownership: float | None = None,
     season: int | None = None,
+    scoring: str | None = "ppr",
 ) -> dict[str, Any]:
     format_key, strategy_from_contest = _normalize_contest_inputs(
         contest_type
@@ -91,6 +121,7 @@ def optimize_lineup(
         site=site_config["id"],
         season=season,
         contest_type=format_key,
+        scoring=scoring,
     )
     players = list(slate.get("players") or [])
     locked = {
@@ -133,6 +164,22 @@ def optimize_lineup(
             max_ownership=max_ownership,
         )
 
+    correlation_context = build_correlation_context(
+        pool,
+        sport="nfl",
+        season=(
+            int(slate["season"])
+            if slate.get("season") is not None
+            else season
+        ),
+        week=(
+            int(slate["week"])
+            if slate.get("week") is not None
+            else None
+        ),
+    )
+    corr_weight = float(weights.get("correlation") or 0.0)
+
     salary_cap = int(site_config["salary_cap"])
     captain_mult = float(
         site_config.get("captain_multiplier") or 1.0
@@ -145,6 +192,8 @@ def optimize_lineup(
             captain_multiplier=captain_mult,
             locked=locked,
             max_ownership=max_ownership,
+            correlation_context=correlation_context,
+            correlation_weight=corr_weight,
         )
     else:
         selected = _optimize_classic(
@@ -155,6 +204,8 @@ def optimize_lineup(
             excluded=excluded,
             max_ownership=max_ownership,
             min_salary=min_salary,
+            correlation_context=correlation_context,
+            correlation_weight=corr_weight,
         )
 
     salary_used = sum(
@@ -216,6 +267,15 @@ def optimize_lineup(
         and salary_used <= salary_cap,
     }
 
+    correlation = score_lineup_correlation(
+        selected,
+        correlation_context,
+    )
+    lineup["correlation"] = correlation
+    lineup["lineup_correlation_score"] = correlation.get(
+        "lineup_correlation_score"
+    )
+
     insights, signals = build_lineup_insights(lineup, slate=slate)
     lineup["insights"] = insights
     lineup["signals"] = signals
@@ -226,6 +286,7 @@ def optimize_lineup(
         "alternatives": [],
         "insights": insights,
         "signals": signals,
+        "correlation": correlation,
         "optimization_metadata": {
             "players_evaluated": len(pool),
             "strategy": strategy_key,
@@ -237,6 +298,7 @@ def optimize_lineup(
             "site": site_config["id"],
             "salary_cap": salary_cap,
             "captain_multiplier": captain_mult,
+            "correlation_edges": len(correlation_context.edges),
         },
         "slate": {
             "slate_id": slate["slate_id"],
@@ -262,6 +324,32 @@ def _normalize_contest_inputs(
     return normalize_contest_type(raw), None
 
 
+def _is_qb(player: dict[str, Any]) -> bool:
+    return str(player.get("position") or "").strip().upper() == "QB"
+
+
+def _team_key(player: dict[str, Any]) -> str | None:
+    team = str(player.get("team") or "").strip().upper()
+    return team or None
+
+
+def _same_team_qb_conflict(
+    selected: list[dict[str, Any]],
+    candidate: dict[str, Any],
+) -> bool:
+    """True when candidate would add a second QB from one team."""
+
+    if not _is_qb(candidate):
+        return False
+    team = _team_key(candidate)
+    if not team:
+        return False
+    for item in selected:
+        if _is_qb(item) and _team_key(item) == team:
+            return True
+    return False
+
+
 def _optimize_classic(
     *,
     pool: list[dict[str, Any]],
@@ -271,6 +359,8 @@ def _optimize_classic(
     excluded: set[str],
     max_ownership: float | None,
     min_salary: int | None,
+    correlation_context: CorrelationContext | None = None,
+    correlation_weight: float = 0.0,
 ) -> list[dict[str, Any]]:
     by_id = {
         str(player["player_id"]): player
@@ -284,6 +374,8 @@ def _optimize_classic(
     for player_id in locked:
         player = by_id.get(player_id)
         if player is None:
+            continue
+        if _same_team_qb_conflict(selected, player):
             continue
         slot_index = _first_compatible_slot(
             roster_slots,
@@ -320,12 +412,14 @@ def _optimize_classic(
             later_slots,
             pool=pool,
             used_ids=used_ids,
+            selected=selected,
         )
         budget = salary_cap - salary_used - reserved
         candidates = _slot_candidates(
             pool=pool,
             slot=slot,
             used_ids=used_ids,
+            selected=selected,
             salary_budget=max(budget, 0),
             salary_cap=salary_cap,
             salary_used=salary_used,
@@ -337,6 +431,7 @@ def _optimize_classic(
                 pool=pool,
                 slot=slot,
                 used_ids=used_ids,
+                selected=selected,
                 salary_budget=salary_cap - salary_used,
                 salary_cap=salary_cap,
                 salary_used=salary_used,
@@ -346,10 +441,11 @@ def _optimize_classic(
         if not candidates:
             continue
         candidates.sort(
-            key=lambda item: (
-                -float(item.get("_opt_score") or 0.0),
-                -float(item.get("projection") or 0.0),
-                int(item.get("salary") or 0),
+            key=lambda item: _candidate_sort_key(
+                item,
+                selected=selected,
+                correlation_context=correlation_context,
+                correlation_weight=correlation_weight,
             )
         )
         pick = candidates[0]
@@ -374,6 +470,8 @@ def _optimize_classic(
         max_ownership=max_ownership,
         captain_multiplier=1.0,
         contest_type="classic",
+        correlation_context=correlation_context,
+        correlation_weight=correlation_weight,
     )
 
     if min_salary is not None:
@@ -402,42 +500,60 @@ def _optimize_showdown(
     captain_multiplier: float,
     locked: set[str],
     max_ownership: float | None,
+    required_captain_id: str | None = None,
+    correlation_context: CorrelationContext | None = None,
+    correlation_weight: float = 0.0,
 ) -> list[dict[str, Any]]:
     """
     Captain (1.5× salary / 1.5× points) + 5 FLEX from the same game.
     Try each viable captain and greedily fill FLEX.
+
+    When ``required_captain_id`` is set, only that captain is tried
+    (portfolio uses this to diversify CPT across lineups).
     """
 
     if len(pool) < 6:
         return []
 
     mult = float(captain_multiplier) or 1.5
-    captain_candidates = list(pool)
-    if locked:
-        locked_pool = [
-            player
-            for player in pool
-            if str(player.get("player_id")) in locked
-        ]
-        if locked_pool:
-            # Prefer locked players as captain when present.
-            captain_candidates = locked_pool + [
+    by_id = {
+        str(player.get("player_id")): player
+        for player in pool
+        if player.get("player_id")
+    }
+    required = str(required_captain_id or "").strip() or None
+    if required:
+        forced = by_id.get(required)
+        if forced is None:
+            return []
+        captain_candidates = [forced]
+    else:
+        captain_candidates = list(pool)
+        if locked:
+            locked_pool = [
                 player
                 for player in pool
-                if str(player.get("player_id")) not in locked
+                if str(player.get("player_id")) in locked
             ]
+            if locked_pool:
+                # Prefer locked players as captain when present.
+                captain_candidates = locked_pool + [
+                    player
+                    for player in pool
+                    if str(player.get("player_id")) not in locked
+                ]
+
+        # Cap captain search for large pools; score-sorted.
+        captain_candidates = sorted(
+            captain_candidates,
+            key=lambda item: (
+                -float(item.get("_opt_score") or 0.0),
+                -float(item.get("projection") or 0.0),
+            ),
+        )[: min(len(captain_candidates), 24)]
 
     best: list[dict[str, Any]] = []
     best_score = float("-inf")
-
-    # Cap captain search for large pools; score-sorted.
-    captain_candidates = sorted(
-        captain_candidates,
-        key=lambda item: (
-            -float(item.get("_opt_score") or 0.0),
-            -float(item.get("projection") or 0.0),
-        ),
-    )[: min(len(captain_candidates), 24)]
 
     for captain in captain_candidates:
         cpt_id = str(captain.get("player_id") or "")
@@ -468,6 +584,7 @@ def _optimize_showdown(
                 used_ids=used,
                 count=later,
                 exclude_salary_mult=1.0,
+                selected=selected,
             )
             budget = salary_cap - salary_used - reserved
             candidates = [
@@ -475,6 +592,7 @@ def _optimize_showdown(
                 for player in pool
                 if str(player.get("player_id")) not in used
                 and int(player.get("salary") or 0) <= max(budget, 0)
+                and not _same_team_qb_conflict(selected, player)
                 and (
                     max_ownership is None
                     or (player.get("projected_ownership") or 0)
@@ -488,6 +606,7 @@ def _optimize_showdown(
                     if str(player.get("player_id")) not in used
                     and salary_used + int(player.get("salary") or 0)
                     <= salary_cap
+                    and not _same_team_qb_conflict(selected, player)
                     and (
                         max_ownership is None
                         or (player.get("projected_ownership") or 0)
@@ -499,16 +618,18 @@ def _optimize_showdown(
                 player
                 for player in candidates
                 if str(player.get("player_id")) in locked
+                and not _same_team_qb_conflict(selected, player)
             ]
             if locked_left:
                 candidates = locked_left
             if not candidates:
                 break
             candidates.sort(
-                key=lambda item: (
-                    -float(item.get("_opt_score") or 0.0),
-                    -float(item.get("projection") or 0.0),
-                    int(item.get("salary") or 0),
+                key=lambda item: _candidate_sort_key(
+                    item,
+                    selected=selected,
+                    correlation_context=correlation_context,
+                    correlation_weight=correlation_weight,
                 )
             )
             pick = candidates[0]
@@ -536,6 +657,8 @@ def _optimize_showdown(
             max_ownership=max_ownership,
             captain_multiplier=mult,
             contest_type="showdown",
+            correlation_context=correlation_context,
+            correlation_weight=correlation_weight,
         )
 
         total_proj = sum(
@@ -555,15 +678,18 @@ def _cheapest_n(
     used_ids: set[str],
     count: int,
     exclude_salary_mult: float,
+    selected: list[dict[str, Any]] | None = None,
 ) -> int:
     del exclude_salary_mult
     if count <= 0:
         return 0
+    selected = selected or []
     options = sorted(
         (
             int(player.get("salary") or 0)
             for player in pool
             if str(player.get("player_id")) not in used_ids
+            and not _same_team_qb_conflict(selected, player)
         )
     )
     if not options:
@@ -583,13 +709,17 @@ def _slot_candidates(
     salary_used: int,
     max_ownership: float | None,
     relax: bool,
+    selected: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    selected = selected or []
     out: list[dict[str, Any]] = []
     for player in pool:
         pid = str(player.get("player_id") or "")
         if not pid or pid in used_ids:
             continue
         if not _fits_slot(player, slot):
+            continue
+        if _same_team_qb_conflict(selected, player):
             continue
         salary = int(player.get("salary") or 0)
         if relax:
@@ -627,12 +757,56 @@ def _player_score(
     value_n = min(100.0, value * 25.0)
     own_n = max(0.0, 100.0 - ownership * 280.0)
 
+    # Correlation is applied live during fill via
+    # ``_effective_opt_score`` / ``selection_delta`` so it can
+    # see already-selected teammates. Keep a tiny static term so
+    # the weight stays visible in metadata totals.
+    corr_n = 0.0
+
     return (
         weights.get("projection", 0) * proj_n
         + weights.get("floor", 0) * floor_n
         + weights.get("ceiling", 0) * ceil_n
         + weights.get("value", 0) * value_n
         + weights.get("ownership", 0) * own_n
+        + weights.get("correlation", 0) * corr_n
+    )
+
+
+def _effective_opt_score(
+    player: dict[str, Any],
+    *,
+    selected: list[dict[str, Any]],
+    correlation_context: CorrelationContext | None,
+    correlation_weight: float,
+) -> float:
+    base = float(player.get("_opt_score") or 0.0)
+    if correlation_context is None or correlation_weight <= 0:
+        return base
+    return base + correlation_context.selection_delta(
+        player,
+        selected,
+        correlation_weight=correlation_weight,
+    )
+
+
+def _candidate_sort_key(
+    player: dict[str, Any],
+    *,
+    selected: list[dict[str, Any]],
+    correlation_context: CorrelationContext | None,
+    correlation_weight: float,
+) -> tuple[float, float, int]:
+    score = _effective_opt_score(
+        player,
+        selected=selected,
+        correlation_context=correlation_context,
+        correlation_weight=correlation_weight,
+    )
+    return (
+        -score,
+        -float(player.get("projection") or 0.0),
+        int(player.get("salary") or 0),
     )
 
 
@@ -641,9 +815,11 @@ def _reserve_salary_for_slots(
     *,
     pool: list[dict[str, Any]],
     used_ids: set[str],
+    selected: list[dict[str, Any]] | None = None,
 ) -> int:
     """Cheapest feasible salary needed to finish remaining slots."""
 
+    selected = list(selected or [])
     reserved = 0
     claimed: set[str] = set()
     for slot in slots:
@@ -654,6 +830,7 @@ def _reserve_salary_for_slots(
                 if str(player.get("player_id")) not in used_ids
                 and str(player.get("player_id")) not in claimed
                 and _fits_slot(player, slot)
+                and not _same_team_qb_conflict(selected, player)
             ),
             key=lambda item: int(item.get("salary") or 0),
         )
@@ -662,6 +839,7 @@ def _reserve_salary_for_slots(
             continue
         pick = options[0]
         claimed.add(str(pick["player_id"]))
+        selected.append(pick)
         reserved += int(pick.get("salary") or 2500)
     return reserved
 
@@ -784,6 +962,8 @@ def _upgrade_lineup(
     max_ownership: float | None,
     captain_multiplier: float,
     contest_type: str = "classic",
+    correlation_context: CorrelationContext | None = None,
+    correlation_weight: float = 0.0,
 ) -> list[dict[str, Any]]:
     result = list(selected)
     by_id = {
@@ -802,8 +982,16 @@ def _upgrade_lineup(
             continue
         is_cpt = str(current.get("slot") or "").upper() == "CPT"
         mult = captain_multiplier if is_cpt else 1.0
-        current_score = float(
-            current_full.get("_opt_score") or 0.0
+        others = [
+            item
+            for item_index, item in enumerate(result)
+            if item_index != index
+        ]
+        current_score = _effective_opt_score(
+            current_full,
+            selected=others,
+            correlation_context=correlation_context,
+            correlation_weight=correlation_weight,
         ) * mult
         salary_without = sum(
             int(item.get("salary") or 0)
@@ -827,6 +1015,8 @@ def _upgrade_lineup(
                 contest_type=contest_type,
             ):
                 continue
+            if _same_team_qb_conflict(others, candidate):
+                continue
             cand_salary = int(
                 round(int(candidate.get("salary") or 0) * mult)
             )
@@ -838,8 +1028,11 @@ def _upgrade_lineup(
                 > float(max_ownership)
             ):
                 continue
-            cand_score = float(
-                candidate.get("_opt_score") or 0.0
+            cand_score = _effective_opt_score(
+                candidate,
+                selected=others,
+                correlation_context=correlation_context,
+                correlation_weight=correlation_weight,
             ) * mult
             if cand_score <= current_score:
                 continue
@@ -910,6 +1103,13 @@ def _spend_up(
                         contest_type=contest_type,
                     )
                 ):
+                    continue
+                others = [
+                    item
+                    for item_index, item in enumerate(result)
+                    if item_index != index
+                ]
+                if _same_team_qb_conflict(others, candidate):
                     continue
                 cand_salary = int(
                     round(int(candidate.get("salary") or 0) * mult)

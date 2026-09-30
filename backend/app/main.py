@@ -31,6 +31,14 @@ from app.canonical.schema import (
     ensure_canonical_schema,
 )
 
+from app.applications.schema import (
+    ensure_applications_schema,
+)
+
+from app.applications.router import (
+    router as applications_router,
+)
+
 load_dotenv()
 
 
@@ -39,6 +47,7 @@ Base.metadata.create_all(bind=engine)
 ensure_data_products_schema()
 ensure_datasets_schema()
 ensure_canonical_schema()
+ensure_applications_schema()
 
 
 app = FastAPI(
@@ -95,3 +104,5 @@ app.include_router(
     prefix="/api/sources",
     tags=["Sources"],
 )
+
+app.include_router(applications_router)

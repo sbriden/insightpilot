@@ -7,10 +7,37 @@ import unittest
 from app.analysis.insights.fantasy_scoring import (
     fantasy_points_from_row,
     fantasy_points_sql,
+    normalize_scoring,
 )
 
 
 class FantasyScoringTests(unittest.TestCase):
+    def test_normalize_scoring_aliases(self):
+        self.assertEqual(normalize_scoring("PPR"), "ppr")
+        self.assertEqual(normalize_scoring("half"), "half_ppr")
+        self.assertEqual(normalize_scoring("half-ppr"), "half_ppr")
+        self.assertEqual(normalize_scoring("standard"), "standard")
+        self.assertEqual(normalize_scoring("non_ppr"), "standard")
+
+    def test_reception_scoring_formats(self):
+        row = {
+            "receptions": 5,
+            "receiving_yards": 50,
+            "receiving_tds": 0,
+        }
+        self.assertEqual(
+            fantasy_points_from_row(row, scoring="ppr"),
+            10.0,
+        )
+        self.assertEqual(
+            fantasy_points_from_row(row, scoring="half_ppr"),
+            7.5,
+        )
+        self.assertEqual(
+            fantasy_points_from_row(row, scoring="standard"),
+            5.0,
+        )
+
     def test_skill_ppr(self):
         points = fantasy_points_from_row(
             {

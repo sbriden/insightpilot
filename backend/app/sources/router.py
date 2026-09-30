@@ -744,6 +744,7 @@ def list_nflverse_players(
     position: str | None = None,
     team: str | None = None,
     limit: int = 500,
+    scoring: str = "ppr",
 ):
     """
     List fantasy skill-position players for Player Overview.
@@ -759,6 +760,7 @@ def list_nflverse_players(
             position=position,
             team=team,
             limit=max(1, min(int(limit), 2000)),
+            scoring=scoring,
         )
     except Exception as exc:
         traceback.print_exc()
@@ -773,6 +775,7 @@ def list_nflverse_players(
     return {
         "players": players,
         "count": len(players),
+        "scoring": scoring,
     }
 
 
@@ -1151,9 +1154,26 @@ async def upload_dfs_salaries(
     return result
 
 
+@router.get("/nflverse/dfs/weeks")
+def list_nflverse_dfs_weeks(season: int | None = None):
+    """Available NFL weeks for DFS slate selection."""
+
+    from app.analysis.insights.dfs.slate import list_dfs_weeks
+
+    try:
+        return list_dfs_weeks(season=season)
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to list DFS weeks: {exc}",
+        ) from exc
+
+
 @router.get("/nflverse/dfs/slates")
 def list_nflverse_dfs_slates(
     season: int | None = None,
+    week: int | None = None,
     contest_type: str = "classic",
 ):
     """Available DFS slates for classic or showdown contests."""
@@ -1163,6 +1183,7 @@ def list_nflverse_dfs_slates(
     try:
         slates = list_dfs_slates(
             season=season,
+            week=week,
             contest_type=contest_type,
         )
     except Exception as exc:
@@ -1180,6 +1201,7 @@ def get_nflverse_dfs_slate(
     site: str = "draftkings",
     season: int | None = None,
     contest_type: str = "classic",
+    scoring: str = "ppr",
     limit: int = 250,
 ):
     """Player pool for one DFS slate."""
@@ -1192,6 +1214,7 @@ def get_nflverse_dfs_slate(
             site=site,
             season=season,
             contest_type=contest_type,
+            scoring=scoring,
             limit=limit,
         )
     except ValueError as exc:
@@ -1238,6 +1261,7 @@ def optimize_nflverse_dfs_lineup(payload: dict):
             min_salary=payload.get("min_salary"),
             max_ownership=payload.get("max_ownership"),
             season=payload.get("season"),
+            scoring=str(payload.get("scoring") or "ppr"),
         )
     except ValueError as exc:
         raise HTTPException(
@@ -1251,6 +1275,284 @@ def optimize_nflverse_dfs_lineup(payload: dict):
             detail=f"Failed to optimize DFS lineup: {exc}",
         ) from exc
     return result
+
+
+@router.post("/nflverse/dfs/portfolio")
+def generate_nflverse_dfs_portfolio(payload: dict):
+    """
+    Generate a diversified multi-lineup DFS portfolio.
+    """
+
+    from app.analysis.insights.dfs.portfolio import (
+        generate_portfolio,
+    )
+
+    try:
+        result = generate_portfolio(
+            slate_id=str(
+                payload.get("slate_id") or "nfl-current-main"
+            ),
+            site=str(payload.get("site") or "draftkings"),
+            contest_type=str(
+                payload.get("contest_type") or "classic"
+            ),
+            lineup_count=int(payload.get("lineup_count") or 20),
+            strategy=str(payload.get("strategy") or "balanced"),
+            risk=str(payload.get("risk") or "balanced"),
+            max_lineup_similarity=payload.get(
+                "max_lineup_similarity"
+            ),
+            min_unique_players=payload.get("min_unique_players"),
+            default_max_exposure=payload.get(
+                "default_max_exposure"
+            ),
+            default_max_captain_exposure=payload.get(
+                "default_max_captain_exposure"
+            ),
+            player_exposure=dict(
+                payload.get("player_exposure") or {}
+            ),
+            locked_players=list(
+                payload.get("locked_players") or []
+            ),
+            excluded_players=list(
+                payload.get("excluded_players") or []
+            ),
+            season=payload.get("season"),
+            scoring=str(payload.get("scoring") or "ppr"),
+            seed=payload.get("seed"),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Failed to generate DFS portfolio: {exc}"
+            ),
+        ) from exc
+    return result
+
+
+@router.get("/nflverse/betting/weeks")
+def list_betting_weeks(
+    season: int | None = None,
+    sport: str = "NFL",
+):
+    """Available NFL weeks with betting market coverage."""
+
+    from app.analysis.insights.betting import (
+        list_betting_weeks as _list_weeks,
+    )
+
+    try:
+        return _list_weeks(season=season, sport=sport)
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to list betting weeks: {exc}",
+        ) from exc
+
+
+@router.get("/nflverse/betting/slate")
+def get_betting_slate(
+    season: int | None = None,
+    week: int | None = None,
+    sport: str = "NFL",
+):
+    """
+    NFL Sports Betting slate for a week.
+
+    Returns events, expanded markets (spread / total /
+    moneyline), model vs market comparisons, and signals.
+    """
+
+    from app.analysis.insights.betting import (
+        build_betting_slate,
+    )
+
+    try:
+        return build_betting_slate(
+            season=season,
+            week=week,
+            sport=sport,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to build betting slate: {exc}",
+        ) from exc
+
+
+@router.get("/nflverse/betting/event/{event_id}")
+def get_betting_event_detail(
+    event_id: str,
+    season: int | None = None,
+):
+    """Single-event betting analysis payload."""
+
+    from app.analysis.insights.betting import (
+        get_betting_event,
+    )
+
+    try:
+        result = get_betting_event(
+            event_id,
+            season=season,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to load betting event: {exc}",
+        ) from exc
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Betting event not found: {event_id}",
+        )
+    return result
+
+
+@router.get("/nflverse/betting/results")
+def get_nflverse_betting_results(
+    season: int | None = None,
+    week: int | None = None,
+    sport: str = "NFL",
+):
+    """
+    Auto-settled model vs actual results for all markets
+    once final scores are available.
+    """
+
+    del sport
+    from app.analysis.insights.betting import (
+        build_betting_results,
+    )
+
+    try:
+        return build_betting_results(
+            season=season,
+            week=week,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to build betting results: {exc}",
+        ) from exc
+
+
+@router.post("/nflverse/betting/portfolio/generate")
+def generate_nflverse_betting_portfolio(payload: dict):
+    """
+    Generate an open-position portfolio from total exposure and
+    per-game risk exposure against the current betting slate.
+    """
+
+    from app.analysis.insights.betting import (
+        generate_betting_portfolio,
+    )
+
+    try:
+        return generate_betting_portfolio(
+            total_exposure=float(
+                payload.get("total_exposure") or 0
+            ),
+            risk_exposure=float(
+                payload.get("risk_exposure") or 0
+            ),
+            season=payload.get("season"),
+            week=payload.get("week"),
+            risk=str(payload.get("risk") or "balanced"),
+            market_types=list(
+                payload.get("market_types") or []
+            )
+            or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Failed to generate betting portfolio: "
+                f"{exc}"
+            ),
+        ) from exc
+
+
+@router.post("/nflverse/betting/portfolio/analyze")
+def analyze_nflverse_betting_portfolio(payload: dict):
+    """
+    Refresh saved betting positions against the current slate
+    and return portfolio analytics (exposure, correlation,
+    assumptions, health).
+    """
+
+    from app.analysis.insights.betting import (
+        analyze_betting_portfolio,
+    )
+
+    try:
+        return analyze_betting_portfolio(
+            list(payload.get("positions") or []),
+            season=payload.get("season"),
+            week=payload.get("week"),
+            status_filter=str(
+                payload.get("status_filter") or "open"
+            ),
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Failed to analyze betting portfolio: "
+                f"{exc}"
+            ),
+        ) from exc
+
+
+@router.post("/nflverse/betting/portfolio/position")
+def create_nflverse_betting_position(payload: dict):
+    """Create a portfolio position from a market snapshot."""
+
+    from app.analysis.insights.betting import (
+        create_position_from_market,
+    )
+
+    market = dict(payload.get("market") or {})
+    if not market.get("market_id"):
+        raise HTTPException(
+            status_code=400,
+            detail="market.market_id is required",
+        )
+    try:
+        return create_position_from_market(
+            market,
+            exposure=float(payload.get("exposure") or 25.0),
+            notes=payload.get("notes"),
+            sportsbook=payload.get("sportsbook"),
+            entry_price=payload.get("entry_price"),
+            entry_line=payload.get("entry_line"),
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to create betting position: {exc}",
+        ) from exc
 
 
 @router.get("/nflverse/quality")
