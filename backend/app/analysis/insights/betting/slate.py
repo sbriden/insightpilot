@@ -5,7 +5,10 @@ Phase 1 sources:
   - dim_game / dim_team for schedule identity
   - fact_game_market for spread / total / implied scores
   - fact_team_game / fact_defensive_game opponent-adjusted
-    team strength for InsightPilot score projections
+    team strength for InsightPilot score residuals
+
+Architecture:
+  market baseline + model residual = InsightPilot projection
 
 Market types emitted: spread, total, moneyline.
 """
@@ -32,12 +35,11 @@ from app.analysis.insights.betting.game_scripts import (
     project_game_scripts,
 )
 from app.analysis.insights.betting.player_context import (
-    apply_injury_adjustment,
+    combined_score_adjustments,
     load_week_player_context,
     team_injury_context,
 )
 from app.analysis.insights.betting.results import (
-    apply_calibration_to_scores,
     build_performance_trend,
     build_projection_snapshot,
     calibration_feedback_from_results,
@@ -47,13 +49,34 @@ from app.analysis.insights.betting.results import (
     trend_summary_from_points,
 )
 from app.analysis.insights.betting.team_strength import (
-    blend_market_and_strength,
     load_team_strength_context,
-    project_strength_scores,
 )
-from app.analysis.insights.betting.projection_blend import (
-    estimate_projection_confidence,
-    load_blend_policy,
+from app.analysis.insights.betting.residual_model import (
+    add_situational_residuals,
+    apply_score_residuals,
+    calibration_score_deltas,
+    predict_score_residuals,
+)
+from app.analysis.insights.betting.model_disagreement import (
+    build_model_disagreement,
+    disagreement_for_market,
+)
+from app.analysis.insights.betting.market_movement import (
+    build_market_movement,
+)
+from app.analysis.insights.betting.probability_calibration import (
+    calibrate_market_probability,
+    fit_probability_calibration,
+)
+from app.analysis.insights.betting.edge_confidence import (
+    fit_confidence_thresholds,
+)
+from app.analysis.insights.betting.market_performance import (
+    build_market_performance,
+    merge_edge_confidence_with_markets,
+)
+from app.analysis.insights.betting.bet_qualification import (
+    evaluate_market_decision,
 )
 from app.canonical.schema import FANTASY_SCHEMA
 from app.database import engine
@@ -124,10 +147,25 @@ def build_betting_slate(
         week=resolved_week,
     )
     calibration = _load_calibration_feedback(resolved_season)
+    probability_calibration = _load_probability_calibration(
+        resolved_season
+    )
+    edge_confidence = _load_edge_confidence(resolved_season)
     enriched: list[dict[str, Any]] = []
     markets: list[dict[str, Any]] = []
     signals: list[dict[str, Any]] = []
     newly_settled: list[dict[str, Any]] = []
+
+    from app.canonical.fact_betting_results import (
+        get_projection_snapshots,
+    )
+
+    snapshots = get_projection_snapshots(
+        [
+            str(event.get("event_id") or "")
+            for event in events
+        ]
+    )
 
     for event in events:
         built = _enrich_event(
@@ -135,12 +173,18 @@ def build_betting_slate(
             strength_context=strength_context,
             player_context=player_context,
             calibration=calibration,
+            probability_calibration=probability_calibration,
+            edge_confidence=edge_confidence,
         )
         event_row = built["event"]
         event_markets = built["markets"]
+        event_id = str(event_row.get("event_id") or "")
         # Snapshot / settle against final scores when available.
         settled_rows = _sync_event_results(
-            event_row, event_markets
+            event_row,
+            event_markets,
+            existing_snapshot=snapshots.get(event_id),
+            snapshot_loaded=True,
         )
         newly_settled.extend(settled_rows)
         enriched.append(event_row)
@@ -173,6 +217,26 @@ def build_betting_slate(
         if (num(row.get("edge")) or 0.0) != 0.0
         and row.get("confidence") in {"High", "Moderate"}
     ]
+    qualified_bets = [
+        row
+        for row in markets_sorted
+        if row.get("bet_qualified")
+    ]
+    strong_bets = [
+        row
+        for row in markets_sorted
+        if row.get("bet_status") == "strong_bet"
+    ]
+    lean_bets = [
+        row
+        for row in markets_sorted
+        if row.get("bet_status") == "lean"
+    ]
+    no_bets = [
+        row
+        for row in markets_sorted
+        if row.get("no_bet") or row.get("bet_status") == "pass"
+    ]
     confidences = [
         row.get("confidence")
         for row in markets_sorted
@@ -202,6 +266,10 @@ def build_betting_slate(
         "market_count": len(markets_sorted),
         "model_coverage_pct": coverage,
         "markets_with_edge": len(with_edge),
+        "markets_qualified": len(qualified_bets),
+        "markets_strong_bet": len(strong_bets),
+        "markets_lean": len(lean_bets),
+        "markets_no_bet": len(no_bets),
         "average_confidence": avg_confidence,
         "events": enriched_sorted,
         "markets": markets_sorted,
@@ -210,13 +278,52 @@ def build_betting_slate(
         "source_note": (
             "Market lines are nflverse schedule snapshots "
             "(not live multi-book sportsbook feeds). "
-            "InsightPilot projections start from the market "
-            "baseline, then apply a confidence-scaled "
-            "opponent-adjusted team-strength adjustment plus "
-            "situational injury / calibration adjustments."
+            "InsightPilot projection = market baseline + "
+            "model residual (where the market is likely "
+            "wrong). Residuals come from confidence-shrunk "
+            "opponent-adjusted team-strength disagreement "
+            "plus situational injury / calibration layers. "
+            "Opening vs current lines track whether the "
+            "market has started incorporating that view. "
+            "Displayed win probabilities are calibrated "
+            "against historical predicted vs actual results "
+            "when enough settled bets exist. "
+            "Predictions are separate from bets — markets are "
+            "classified Strong Bet / Lean / Pass using explicit "
+            "edge, EV, confidence, data-quality, and market-move "
+            "thresholds. Pass / No Bet is a first-class outcome."
         ),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "injury_report_week": player_context.get("week"),
+        "probability_calibration": (
+            {
+                "active": bool(
+                    probability_calibration.get("active")
+                ),
+                "method": probability_calibration.get("method"),
+                "sample_size": probability_calibration.get(
+                    "sample_size"
+                ),
+                "metrics": probability_calibration.get("metrics"),
+                "note": probability_calibration.get("note"),
+            }
+            if probability_calibration
+            else None
+        ),
+        "edge_confidence": (
+            {
+                "active": bool(edge_confidence.get("active")),
+                "method": edge_confidence.get("method"),
+                "sample_size": edge_confidence.get("sample_size"),
+                "high_min": edge_confidence.get("high_min"),
+                "moderate_min": edge_confidence.get("moderate_min"),
+                "by_market": edge_confidence.get("by_market"),
+                "note": edge_confidence.get("note"),
+                "market_note": edge_confidence.get("market_note"),
+            }
+            if edge_confidence
+            else None
+        ),
     }
 
 
@@ -249,11 +356,17 @@ def get_betting_event(
         week=week,
     )
     calibration = _load_calibration_feedback(resolved_season)
+    probability_calibration = _load_probability_calibration(
+        resolved_season
+    )
+    edge_confidence = _load_edge_confidence(resolved_season)
     built = _enrich_event(
         events[0],
         strength_context=strength_context,
         player_context=player_context,
         calibration=calibration,
+        probability_calibration=probability_calibration,
+        edge_confidence=edge_confidence,
     )
     _sync_event_results(built["event"], built["markets"])
     return built
@@ -341,6 +454,25 @@ def build_betting_results(
     feedback = _load_calibration_feedback(
         int(season_value or 0)
     ) or calibration_feedback_from_results(stored)
+    # Keep probability calibration current from season settled bets.
+    try:
+        _refresh_season_calibration(
+            season=int(season_value or resolved_season),
+            extra_rows=season_stored or stored,
+        )
+    except Exception:
+        pass
+    probability_calibration = _load_probability_calibration(
+        int(season_value) if season_value is not None else resolved_season
+    )
+    edge_confidence = (
+        (summary or {}).get("edge_confidence")
+        or _load_edge_confidence(
+            int(season_value)
+            if season_value is not None
+            else resolved_season
+        )
+    )
     return {
         "sport": _SPORT,
         "league": _LEAGUE,
@@ -350,6 +482,23 @@ def build_betting_results(
         "label": f"{slate.get('label')} · Model Results",
         "model_results": summary,
         "calibration_feedback": feedback,
+        "probability_calibration": (
+            {
+                "active": bool(
+                    (probability_calibration or {}).get("active")
+                ),
+                "method": (probability_calibration or {}).get("method"),
+                "sample_size": (probability_calibration or {}).get(
+                    "sample_size"
+                ),
+                "metrics": (probability_calibration or {}).get("metrics"),
+                "note": (probability_calibration or {}).get("note"),
+            }
+            if probability_calibration
+            else None
+        ),
+        "edge_confidence": edge_confidence,
+        "market_performance": (summary or {}).get("market_performance"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -357,6 +506,9 @@ def build_betting_results(
 def _sync_event_results(
     event: dict[str, Any],
     markets: list[dict[str, Any]],
+    *,
+    existing_snapshot: dict[str, Any] | None = None,
+    snapshot_loaded: bool = False,
 ) -> list[dict[str, Any]]:
     try:
         from app.canonical.fact_betting_results import (
@@ -369,13 +521,16 @@ def _sync_event_results(
         return []
 
     event_id = str(event.get("event_id") or "")
-    existing = get_projection_snapshot(event_id)
+    if snapshot_loaded:
+        existing = existing_snapshot
+    else:
+        existing = get_projection_snapshot(event_id)
     snap = build_projection_snapshot(event)
 
     if not is_game_final(event):
-        # Lock the first pregame projection. Do not rewrite it on
-        # refresh when calibration / PPG / injuries drift — those
-        # only apply to games that do not yet have a snapshot.
+        # Capture a first-publish snapshot for later CLV/settlement
+        # bet_line, but do not freeze yet — open games recompute
+        # live so model upgrades appear on refresh.
         if not existing:
             upsert_projection_snapshot(snap, freeze=False)
         return []
@@ -424,6 +579,30 @@ def _load_calibration_feedback(
         return None
 
 
+def _load_probability_calibration(
+    season: int,
+) -> dict[str, Any] | None:
+    try:
+        from app.canonical.fact_betting_results import (
+            get_probability_calibration,
+        )
+
+        return get_probability_calibration(int(season))
+    except Exception:
+        return None
+
+
+def _load_edge_confidence(season: int) -> dict[str, Any] | None:
+    try:
+        from app.canonical.fact_betting_results import (
+            get_edge_confidence,
+        )
+
+        return get_edge_confidence(int(season))
+    except Exception:
+        return None
+
+
 def _refresh_season_calibration(
     *,
     season: int,
@@ -433,6 +612,8 @@ def _refresh_season_calibration(
         from app.canonical.fact_betting_results import (
             load_market_results,
             upsert_calibration,
+            upsert_edge_confidence,
+            upsert_probability_calibration,
         )
     except Exception:
         return
@@ -446,6 +627,40 @@ def _refresh_season_calibration(
                 rows.append(row)
     feedback = calibration_feedback_from_results(rows)
     upsert_calibration(feedback, season=int(season))
+
+    # Probability calibration: fit from raw predicted vs actual.
+    prob_model = fit_probability_calibration(rows, method="auto")
+    upsert_probability_calibration(
+        prob_model,
+        season=int(season),
+        market_type="all",
+    )
+
+    # Learn High/Moderate floors from point-edge bucket backtests.
+    edge_model = fit_confidence_thresholds(rows)
+    market_perf = build_market_performance(rows)
+    edge_model = merge_edge_confidence_with_markets(
+        edge_model, market_perf
+    )
+    upsert_edge_confidence(edge_model, season=int(season))
+
+    # Also fit probability calibration per market when samples allow.
+    for mtype in ("spread", "total", "moneyline"):
+        subset = [
+            row
+            for row in rows
+            if str(row.get("market_type") or "").lower() == mtype
+        ]
+        if len(subset) < 25:
+            continue
+        m_model = fit_probability_calibration(
+            subset, method="auto", market_type=mtype
+        )
+        upsert_probability_calibration(
+            m_model,
+            season=int(season),
+            market_type=mtype,
+        )
 
 
 def find_betting_event_by_matchup(
@@ -566,6 +781,12 @@ def _load_events(
           m.over_under,
           m.home_implied_total,
           m.away_implied_total,
+          m.opening_spread,
+          m.opening_over_under,
+          m.opening_home_implied_total,
+          m.opening_away_implied_total,
+          m.opening_captured_at,
+          m.line_moved_at,
           m.timestamp AS market_timestamp,
           m.source,
           g.game_date AS start_time,
@@ -656,6 +877,8 @@ def _enrich_event(
     recent_ppg: dict[str, float] | None = None,
     player_context: dict[str, Any] | None = None,
     calibration: dict[str, Any] | None = None,
+    probability_calibration: dict[str, Any] | None = None,
+    edge_confidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     home = str(raw.get("home_team") or "").upper()
     away = str(raw.get("away_team") or "").upper()
@@ -687,20 +910,29 @@ def _enrich_event(
 
     home_injury = team_injury_context(player_context, home_team_id)
     away_injury = team_injury_context(player_context, away_team_id)
-    home_adj = float(home_injury.get("adjustment_pts") or 0.0)
-    away_adj = float(away_injury.get("adjustment_pts") or 0.0)
+    home_adj, away_adj = combined_score_adjustments(
+        home_injury=home_injury,
+        away_injury=away_injury,
+    )
 
     locked = _load_projection_snapshot(event_id)
     locked_home = num((locked or {}).get("projected_home_score"))
     locked_away = num((locked or {}).get("projected_away_score"))
-    using_locked = locked_home is not None and locked_away is not None
+    # Only frozen snapshots pin the UI. Unfrozen first-publish
+    # rows are kept for settlement/CLV bet_line but open games
+    # must recompute so model upgrades (residuals, injuries,
+    # disagreement, etc.) actually show on refresh.
+    using_locked = bool(
+        locked
+        and locked.get("frozen")
+        and locked_home is not None
+        and locked_away is not None
+    )
     strength_detail: dict[str, Any] = {"available": False}
     blend_meta: dict[str, Any] = {}
 
     if using_locked:
-        # Keep the published pregame projection stable across
-        # refreshes. Calibration feedback only seeds games that
-        # do not yet have a snapshot.
+        # Settlement lock — published pregame projection stays fixed.
         model_home = locked_home
         model_away = locked_away
         model_total = num(locked.get("projected_total"))
@@ -717,15 +949,10 @@ def _enrich_event(
             away_team_id=away_team_id,
             strength_context=strength_context,
             recent_ppg=recent_ppg,
+            home_injury_adj=home_adj,
+            away_injury_adj=away_adj,
+            calibration=calibration,
         )
-        # Situational layer on top of the market-anchored blend.
-        model_home, model_away = apply_calibration_to_scores(
-            model_home,
-            model_away,
-            feedback=calibration,
-        )
-        model_home = apply_injury_adjustment(model_home, home_adj)
-        model_away = apply_injury_adjustment(model_away, away_adj)
         model_total = (
             round(model_home + model_away, 1)
             if model_home is not None and model_away is not None
@@ -737,6 +964,22 @@ def _enrich_event(
             else None
         )
         blend_meta = dict(strength_detail.get("blend") or {})
+
+    disagreement = build_model_disagreement(
+        market_home=market_home,
+        market_away=market_away,
+        market_spread=market_spread,
+        market_total=market_total,
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        strength_context=strength_context,
+        recent_ppg=recent_ppg,
+        home_injury_adj=home_adj,
+        away_injury_adj=away_adj,
+        strength_home=strength_detail.get("strength_home"),
+        strength_away=strength_detail.get("strength_away"),
+        strength_detail=strength_detail,
+    )
 
     game_scripts = project_game_scripts(
         projected_home=model_home,
@@ -754,16 +997,32 @@ def _enrich_event(
     for note in home_injury.get("injuries") or []:
         injury_notes.append({**note, "team": home})
     model_drivers = [
-        "Projected scores = market baseline + confidence-scaled "
-        "team-strength adjustment + situational adjustments."
+        "InsightPilot projection = market baseline + model "
+        "residual (where the market is likely wrong)."
     ]
     blend_meta = strength_detail.get("blend") or blend_meta or {}
-    if blend_meta:
+    residual_meta = strength_detail.get("residuals") or {}
+    if residual_meta.get("residual_home") is not None:
+        model_drivers.append(
+            f"Residuals — home {float(residual_meta['residual_home']):+0.1f}, "
+            f"away {float(residual_meta['residual_away']):+0.1f} "
+            f"(shrink {float(residual_meta.get('shrink') or 0):.0%}, "
+            f"{residual_meta.get('confidence') or 'Low'} confidence)."
+        )
+    elif blend_meta:
         model_drivers.append(
             f"Blend confidence {blend_meta.get('confidence')} — "
             f"market {float(blend_meta.get('market_weight') or 0):.0%} / "
             f"model {float(blend_meta.get('model_weight') or 0):.0%} "
             f"({blend_meta.get('policy_source') or 'prior'})."
+        )
+    spread_ens = (disagreement or {}).get("spread") or {}
+    if spread_ens.get("n_models"):
+        model_drivers.append(
+            f"Ensemble spread mean {spread_ens.get('projection_mean')} "
+            f"(σ {spread_ens.get('projection_stddev')}, "
+            f"agreement {spread_ens.get('model_agreement')} · "
+            f"{spread_ens.get('n_models')} models)."
         )
     if strength_detail.get("available"):
         home_m = strength_detail.get("home_matchup")
@@ -785,6 +1044,54 @@ def _enrich_event(
         model_drivers.append(
             "No material starter injury adjustments applied for this slate week."
         )
+
+    residual_home = residual_meta.get("total_residual_home")
+    residual_away = residual_meta.get("total_residual_away")
+    if using_locked:
+        residual_home = num((locked or {}).get("residual_home")) or residual_home
+        residual_away = num((locked or {}).get("residual_away")) or residual_away
+
+    opening_home = num(raw.get("opening_home_implied_total"))
+    opening_away = num(raw.get("opening_away_implied_total"))
+    opening_spread_raw = num(raw.get("opening_spread"))
+    opening_total = num(raw.get("opening_over_under"))
+    if opening_total is None:
+        opening_total = market_total
+
+    # Match event spread convention (away − home).
+    if opening_home is not None and opening_away is not None:
+        opening_spread = round(
+            float(opening_away) - float(opening_home),
+            1,
+        )
+    elif opening_spread_raw is not None:
+        # nflverse spread_line: positive = home favored → negate.
+        opening_spread = round(-float(opening_spread_raw), 1)
+    else:
+        opening_spread = market_spread
+
+    market_movement = build_market_movement(
+        opening_spread=opening_spread,
+        current_spread=market_spread,
+        opening_total=opening_total,
+        current_total=market_total,
+        opening_captured_at=_iso(raw.get("opening_captured_at")),
+        line_moved_at=_iso(raw.get("line_moved_at")),
+        residual_home=residual_home,
+        residual_away=residual_away,
+    )
+    vs_model = market_movement.get("vs_model") or {}
+    if market_movement.get("moved"):
+        bits = []
+        if market_movement.get("spread_move") is not None:
+            bits.append(f"spread {float(market_movement['spread_move']):+0.1f}")
+        if market_movement.get("total_move") is not None:
+            bits.append(f"total {float(market_movement['total_move']):+0.1f}")
+        model_drivers.append(
+            "Market move since open — " + ", ".join(bits) + "."
+        )
+        if vs_model.get("explanation"):
+            model_drivers.append(str(vs_model["explanation"]))
 
     label = f"{away} @ {home}" if away and home else event_id
     # Prefer schedule kickoff (gameday + gametime stored on
@@ -809,6 +1116,16 @@ def _enrich_event(
         "label": label,
         "market_spread": market_spread,
         "market_total": market_total,
+        "opening_spread": market_movement.get("opening_spread"),
+        "current_spread": market_movement.get("current_spread"),
+        "opening_total": market_movement.get("opening_total"),
+        "current_total": market_movement.get("current_total"),
+        "opening_moneyline": market_movement.get("opening_moneyline"),
+        "current_moneyline": market_movement.get("current_moneyline"),
+        "spread_move": market_movement.get("spread_move"),
+        "total_move": market_movement.get("total_move"),
+        "moneyline_move": market_movement.get("moneyline_move"),
+        "market_movement": market_movement,
         "market_home_score": (
             round(market_home, 1) if market_home is not None else None
         ),
@@ -819,8 +1136,12 @@ def _enrich_event(
         "projected_away_score": model_away,
         "projected_total": model_total,
         "model_spread": model_spread,
+        "residual_home": residual_home,
+        "residual_away": residual_away,
         "team_strength": strength_detail if strength_detail.get("available") else None,
         "projection_blend": blend_meta or None,
+        "residuals": residual_meta or None,
+        "model_disagreement": disagreement,
         "game_scripts": game_scripts,
         "injury_adjustment_home": home_adj or None,
         "injury_adjustment_away": away_adj or None,
@@ -835,10 +1156,43 @@ def _enrich_event(
         "away_score": raw.get("away_score"),
     }
 
-    markets = _build_markets(event)
-    signals = _build_signals(event, markets)
+    markets = _build_markets(
+        event,
+        probability_calibration=probability_calibration,
+        edge_confidence=edge_confidence,
+    )
+    signals = _build_signals(
+        event, markets, edge_confidence=edge_confidence
+    )
     event["primary_signal"] = signals[0] if signals else None
     event["market_ids"] = [m["market_id"] for m in markets]
+    event["probability_calibration"] = (
+        {
+            "active": bool(
+                (probability_calibration or {}).get("active")
+            ),
+            "method": (probability_calibration or {}).get("method"),
+            "sample_size": (probability_calibration or {}).get(
+                "sample_size"
+            ),
+        }
+        if probability_calibration
+        else None
+    )
+    event["edge_confidence"] = (
+        {
+            "active": bool((edge_confidence or {}).get("active")),
+            "method": (edge_confidence or {}).get("method"),
+            "sample_size": (edge_confidence or {}).get("sample_size"),
+            "high_min": (edge_confidence or {}).get("high_min"),
+            "moderate_min": (edge_confidence or {}).get("moderate_min"),
+            "by_market": (edge_confidence or {}).get("by_market"),
+            "note": (edge_confidence or {}).get("note"),
+            "market_note": (edge_confidence or {}).get("market_note"),
+        }
+        if edge_confidence
+        else None
+    )
     return {
         "event": event,
         "markets": markets,
@@ -854,80 +1208,115 @@ def _model_scores(
     away_team_id: str | None = None,
     strength_context: dict[str, Any] | None = None,
     recent_ppg: dict[str, float] | None = None,
+    home_injury_adj: float = 0.0,
+    away_injury_adj: float = 0.0,
+    calibration: dict[str, Any] | None = None,
 ) -> tuple[float | None, float | None, dict[str, Any]]:
     """
-    Market baseline + confidence-scaled strength adjustment.
+    Market + residual projection.
 
-    Situational layers (calibration / injuries) are applied by the
-    caller after this blend so they stay separate from the earned
-    model weight.
+    1. Predict where the market is wrong (team-strength residual)
+    2. Shrink residual by projection confidence
+    3. Add situational residuals (injuries, calibration)
+    4. final = market + total residual
     """
 
-    strength_home = None
-    strength_away = None
-    detail: dict[str, Any] = {"available": False}
-    if home_team_id and away_team_id and strength_context:
-        strength_home, strength_away, detail = project_strength_scores(
-            home_team_id=home_team_id,
-            away_team_id=away_team_id,
-            context=strength_context,
-        )
-
-    if not detail.get("available") and recent_ppg:
-        # Legacy PPG fallback for unit tests / sparse data.
-        home_ppg = recent_ppg.get(str(home_team_id or ""))
-        away_ppg = recent_ppg.get(str(away_team_id or ""))
-        if home_ppg is not None and away_ppg is not None:
-            strength_home = float(home_ppg)
-            strength_away = float(away_ppg)
-            detail = {
-                "available": True,
-                "fallback": "recent_ppg",
-                "home_matchup": 0.0,
-                "away_matchup": 0.0,
-                "home_games": 0,
-                "away_games": 0,
-            }
-
-    policy = load_blend_policy()
-    confidence = estimate_projection_confidence(
-        strength_detail=detail,
-        home_games=detail.get("home_games"),
-        away_games=detail.get("away_games"),
-    )
-    home, away, blend_meta = blend_market_and_strength(
+    residual_model = predict_score_residuals(
         market_home=market_home,
         market_away=market_away,
-        strength_home=strength_home,
-        strength_away=strength_away,
-        confidence=confidence,
-        policy=policy,
-        strength_detail=detail,
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        strength_context=strength_context,
+        recent_ppg=recent_ppg,
     )
+    detail = dict(residual_model.get("strength") or {"available": False})
+
+    # Situational residuals: calibration expressed as deltas vs the
+    # market-anchored strength projection, plus injury adjustments.
+    provisional_home, provisional_away, _ = apply_score_residuals(
+        residual_model
+    )
+    cal_home, cal_away = calibration_score_deltas(
+        projected_home=provisional_home,
+        projected_away=provisional_away,
+        feedback=calibration,
+    )
+    residual_model = add_situational_residuals(
+        residual_model,
+        home_adjustment=float(home_injury_adj or 0.0) + cal_home,
+        away_adjustment=float(away_injury_adj or 0.0) + cal_away,
+    )
+    home, away, apply_meta = apply_score_residuals(residual_model)
+
+    blend_meta = {
+        "confidence": apply_meta.get("confidence"),
+        "market_weight": apply_meta.get("market_weight"),
+        "model_weight": apply_meta.get("model_weight"),
+        "policy_source": apply_meta.get("policy_source"),
+        "policy_learned": apply_meta.get("policy_learned"),
+        "mode": apply_meta.get("mode"),
+        "formula": apply_meta.get("formula"),
+        "home_applied_delta": apply_meta.get("home_applied_delta"),
+        "away_applied_delta": apply_meta.get("away_applied_delta"),
+    }
     detail = {
         **detail,
-        "projection_confidence": confidence,
+        "available": bool(
+            detail.get("available") or residual_model.get("available")
+        ),
+        "projection_confidence": residual_model.get(
+            "projection_confidence"
+        ),
         "blend": blend_meta,
-        "strength_home": strength_home,
-        "strength_away": strength_away,
+        "residuals": {
+            "raw_residual_home": residual_model.get("raw_residual_home"),
+            "raw_residual_away": residual_model.get("raw_residual_away"),
+            "residual_home": residual_model.get("residual_home"),
+            "residual_away": residual_model.get("residual_away"),
+            "situational_residual_home": residual_model.get(
+                "situational_residual_home"
+            ),
+            "situational_residual_away": residual_model.get(
+                "situational_residual_away"
+            ),
+            "total_residual_home": apply_meta.get("total_residual_home"),
+            "total_residual_away": apply_meta.get("total_residual_away"),
+            "shrink": residual_model.get("shrink"),
+            "confidence": residual_model.get("projection_confidence"),
+            "architecture": "market + residual",
+        },
+        "strength_home": residual_model.get("strength_home"),
+        "strength_away": residual_model.get("strength_away"),
         "market_home": market_home,
         "market_away": market_away,
     }
     return home, away, detail
 
 
-def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_markets(
+    event: dict[str, Any],
+    *,
+    probability_calibration: dict[str, Any] | None = None,
+    edge_confidence: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     markets: list[dict[str, Any]] = []
     event_id = event["event_id"]
     home = event.get("home_team")
     away = event.get("away_team")
     start = event.get("start_time")
     label = event.get("label")
+    cal_model = probability_calibration
+    conf_thresholds = edge_confidence
 
     market_spread = num(event.get("market_spread"))
     model_spread = num(event.get("model_spread"))
     market_total = num(event.get("market_total"))
     model_total = num(event.get("projected_total"))
+    opening_spread = num(event.get("opening_spread"))
+    opening_total = num(event.get("opening_total"))
+    opening_ml = event.get("opening_moneyline")
+    current_ml = event.get("current_moneyline")
+    move = event.get("market_movement") or {}
 
     if market_spread is not None:
         # Home-team spread line (nflverse convention).
@@ -948,9 +1337,13 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
         )
         # Favorable side: if model has home covering more than 50%.
         side_is_home = cover_p is not None and cover_p >= 0.5
-        model_p = cover_p if side_is_home else (
+        raw_model_p = cover_p if side_is_home else (
             (1.0 - cover_p) if cover_p is not None else None
         )
+        cal = calibrate_market_probability(
+            raw_model_p, model=cal_model
+        )
+        model_p = cal["model_probability"]
         if not side_is_home and away:
             selection = (
                 f"{away} {-market_spread:+g}"
@@ -976,6 +1369,12 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
                 else None
             ),
             model_coverage=model_spread is not None,
+            thresholds=conf_thresholds,
+            market_type="spread",
+            model_agreement=(
+                ((event.get("model_disagreement") or {}).get("spread") or {})
+                .get("model_agreement")
+            ),
         )
         markets.append(
             _market_row(
@@ -992,6 +1391,10 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
                 model_projection=model_spread,
                 market_projection=market_spread,
                 model_probability=model_p,
+                raw_model_probability=cal.get("raw_model_probability"),
+                probability_calibrated=bool(cal.get("calibrated")),
+                probability_calibration_method=cal.get("method"),
+                event=event,
                 market_probability=market_p,
                 model_fair_price=fair,
                 edge=edge_points,
@@ -1000,6 +1403,16 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
                 confidence=confidence,
                 home_team=home,
                 away_team=away,
+                opening_line=(
+                    opening_spread
+                    if side_is_home
+                    else (
+                        -opening_spread
+                        if opening_spread is not None
+                        else None
+                    )
+                ),
+                line_move=move.get("spread_move"),
                 opportunity=_spread_opportunity(
                     home_team=home,
                     away_team=away,
@@ -1024,9 +1437,13 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
             market_p_raw,
         )
         side_over = over_p is not None and over_p >= 0.5
-        model_p = over_p if side_over else (
+        raw_model_p = over_p if side_over else (
             (1.0 - over_p) if over_p is not None else None
         )
+        cal = calibrate_market_probability(
+            raw_model_p, model=cal_model
+        )
+        model_p = cal["model_probability"]
         selection = (
             f"Over {market_total:g}"
             if side_over
@@ -1052,6 +1469,12 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
                 else None
             ),
             model_coverage=model_total is not None,
+            thresholds=conf_thresholds,
+            market_type="total",
+            model_agreement=(
+                ((event.get("model_disagreement") or {}).get("total") or {})
+                .get("model_agreement")
+            ),
         )
         markets.append(
             _market_row(
@@ -1066,6 +1489,10 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
                 model_projection=model_total,
                 market_projection=market_total,
                 model_probability=model_p,
+                raw_model_probability=cal.get("raw_model_probability"),
+                probability_calibrated=bool(cal.get("calibrated")),
+                probability_calibration_method=cal.get("method"),
+                event=event,
                 market_probability=market_p,
                 model_fair_price=fair,
                 edge=edge_points,
@@ -1074,6 +1501,8 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
                 confidence=confidence,
                 home_team=home,
                 away_team=away,
+                opening_line=opening_total,
+                line_move=move.get("total_move"),
                 opportunity=_total_opportunity(
                     market_total=market_total,
                     model_total=model_total,
@@ -1097,7 +1526,11 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
             else 0.5
         )
         side_home = home_win_p >= 0.5
-        model_p = home_win_p if side_home else (1.0 - home_win_p)
+        raw_model_p = home_win_p if side_home else (1.0 - home_win_p)
+        cal = calibrate_market_probability(
+            raw_model_p, model=cal_model
+        )
+        model_p = cal["model_probability"]
         market_p = (
             market_home_win if side_home else (1.0 - market_home_win)
         )
@@ -1110,12 +1543,44 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
             market_price = min(market_price, -105)
         else:
             market_price = max(market_price, 100)
-        edge_prob = round((float(model_p) - float(market_p)) * 100.0, 1)
+        edge_prob = (
+            round((float(model_p) - float(market_p)) * 100.0, 1)
+            if model_p is not None
+            else None
+        )
         ev = expected_value(model_p, market_price)
         confidence = confidence_from_edge(
-            edge_probability=(model_p - market_p),
+            edge_probability=(
+                (model_p - market_p) if model_p is not None else None
+            ),
             model_coverage=True,
+            thresholds=conf_thresholds,
+            market_type="moneyline",
+            model_agreement=(
+                ((event.get("model_disagreement") or {}).get("spread") or {})
+                .get("model_agreement")
+            ),
         )
+        # Prefer stored/derived home ML; flip for away selection.
+        open_home_ml = (
+            int(opening_ml) if opening_ml is not None else None
+        )
+        cur_home_ml = (
+            int(current_ml) if current_ml is not None else None
+        )
+        if side_home:
+            open_price = open_home_ml
+            display_price = cur_home_ml or int(market_price)
+        else:
+            open_price = None
+            if opening_spread is not None:
+                away_open_p = 1.0 - (
+                    1.0
+                    / (1.0 + math_exp_safe(float(opening_spread) / 7.0))
+                )
+                open_price = implied_prob_to_american(away_open_p)
+            display_price = int(market_price)
+
         markets.append(
             _market_row(
                 market_id=f"{event_id}:moneyline",
@@ -1125,10 +1590,14 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
                 market_type="moneyline",
                 selection=str(selection or ""),
                 line=None,
-                price=int(market_price),
+                price=display_price,
                 model_projection=None,
                 market_projection=None,
                 model_probability=model_p,
+                raw_model_probability=cal.get("raw_model_probability"),
+                probability_calibrated=bool(cal.get("calibrated")),
+                probability_calibration_method=cal.get("method"),
+                event=event,
                 market_probability=market_p,
                 model_fair_price=fair,
                 edge=edge_prob,
@@ -1137,6 +1606,8 @@ def _build_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
                 confidence=confidence,
                 home_team=home,
                 away_team=away,
+                opening_price=open_price,
+                line_move=move.get("moneyline_move"),
                 opportunity=_moneyline_opportunity(
                     selection=str(selection or ""),
                     model_probability=model_p,
@@ -1180,6 +1651,13 @@ def _market_row(
     home_team: str | None,
     away_team: str | None,
     opportunity: str | None = None,
+    opening_line: float | None = None,
+    opening_price: int | float | None = None,
+    line_move: float | None = None,
+    raw_model_probability: float | None = None,
+    probability_calibrated: bool = False,
+    probability_calibration_method: str | None = None,
+    event: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     direction = "aligned"
     if edge is not None:
@@ -1189,16 +1667,46 @@ def _market_row(
             direction = "above_market"
         else:
             direction = "below_market"
-    signal = None
+
+    # Prediction disagreement signal (not a bet recommendation).
+    # Confidence already reflects learned point-edge floors.
+    prediction_signal = None
     if confidence in {"High", "Moderate"} and edge is not None:
-        if abs(float(edge)) >= 1.5:
-            signal = (
-                "MODEL_ABOVE_MARKET"
-                if float(edge) > 0
-                else "MODEL_BELOW_MARKET"
-            )
-        else:
-            signal = "MARKET_AGREEMENT"
+        prediction_signal = (
+            "MODEL_ABOVE_MARKET"
+            if float(edge) > 0
+            else "MODEL_BELOW_MARKET"
+        )
+    elif edge is not None and abs(float(edge)) < 0.5:
+        prediction_signal = "MARKET_AGREEMENT"
+
+    ev_pct = (
+        round(float(expected_value) * 100.0, 1)
+        if expected_value is not None
+        else None
+    )
+    ensemble_block = disagreement_for_market(
+        (event or {}).get("model_disagreement"),
+        market_type,
+    )
+    decision = evaluate_market_decision(
+        market_type=market_type,
+        selection=selection,
+        model_projection=model_projection,
+        market_projection=market_projection,
+        raw_probability=raw_model_probability,
+        calibrated_probability=model_probability,
+        market_probability=market_probability,
+        expected_value=ev_pct,
+        edge_probability=edge_probability,
+        model_confidence=confidence,
+        direction=direction,
+        event=event,
+        probability_calibrated=probability_calibrated,
+    )
+    bet = decision.get("bet") or {}
+    prediction = decision.get("prediction") or {}
+    data_quality = decision.get("data_quality") or {}
 
     return {
         "market_id": market_id,
@@ -1214,16 +1722,32 @@ def _market_row(
         "selection": selection,
         "line": line,
         "price": price,
-        "opening_line": None,
-        "opening_price": None,
+        "opening_line": opening_line if opening_line is not None else line,
+        "opening_price": (
+            opening_price if opening_price is not None else price
+        ),
         "current_line": line,
         "current_price": price,
+        "line_move": line_move,
         "sportsbook": "consensus",
         "market_timestamp": None,
         "model_probability": (
             round(float(model_probability), 4)
             if model_probability is not None
             else None
+        ),
+        "raw_model_probability": (
+            round(float(raw_model_probability), 4)
+            if raw_model_probability is not None
+            else (
+                round(float(model_probability), 4)
+                if model_probability is not None
+                else None
+            )
+        ),
+        "probability_calibrated": bool(probability_calibrated),
+        "probability_calibration_method": (
+            probability_calibration_method
         ),
         "market_probability": (
             round(float(market_probability), 4)
@@ -1235,20 +1759,38 @@ def _market_row(
         "market_implied_projection": market_projection,
         "edge": edge,
         "edge_probability": edge_probability,
-        "expected_value": (
-            round(float(expected_value) * 100.0, 1)
-            if expected_value is not None
-            else None
-        ),
+        "expected_value": ev_pct,
         "confidence": confidence,
         "confidence_explanation": confidence_explanation(
             confidence
         ),
+        "projection_mean": (
+            (ensemble_block or {}).get("projection_mean")
+        ),
+        "projection_stddev": (
+            (ensemble_block or {}).get("projection_stddev")
+        ),
+        "model_agreement": (
+            (ensemble_block or {}).get("model_agreement")
+        ),
+        "model_agreement_label": (ensemble_block or {}).get("label"),
+        "ensemble_estimates": (ensemble_block or {}).get("estimates"),
+        "ensemble_n_models": (ensemble_block or {}).get("n_models"),
+        "model_disagreement": ensemble_block,
         "direction": direction,
-        "primary_signal": signal,
+        # Legacy field — prediction disagreement, not bet advice.
+        "primary_signal": prediction_signal,
+        "prediction": prediction,
+        "data_quality": data_quality,
+        "bet_qualification": bet,
+        "bet_qualified": bool(bet.get("qualified")),
+        "bet_status": bet.get("status") or "pass",
+        "bet_label": bet.get("label") or "Pass",
+        "no_bet": bool(bet.get("no_bet", not bet.get("qualified"))),
         "opportunity": opportunity,
         "status": "open",
         "source": "nflverse_schedules",
+        "decision_pipeline": decision.get("pipeline"),
     }
 
 
@@ -1376,16 +1918,20 @@ def _likelihood_phrase(edge_probability: float | None) -> str:
 def _build_signals(
     event: dict[str, Any],
     markets: list[dict[str, Any]],
+    *,
+    edge_confidence: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    del markets  # reserved for market-linked signal expansion
     signals: list[dict[str, Any]] = []
+    moderate_min = float(
+        num((edge_confidence or {}).get("moderate_min")) or 1.5
+    )
 
     market_spread = num(event.get("market_spread"))
     model_spread = num(event.get("model_spread"))
     if (
         market_spread is not None
         and model_spread is not None
-        and abs(model_spread - market_spread) >= 1.5
+        and abs(model_spread - market_spread) >= moderate_min
     ):
         signals.append(
             {
@@ -1393,19 +1939,23 @@ def _build_signals(
                 "event_id": event["event_id"],
                 "market_id": f"{event['event_id']}:spread",
                 "signal_type": "MARKET_DISAGREEMENT",
-                "label": "Spread disagreement",
+                "layer": "prediction",
+                "label": "Spread prediction",
                 "direction": (
                     "above"
                     if model_spread > market_spread
                     else "below"
                 ),
                 "confidence": confidence_from_edge(
-                    edge_points=model_spread - market_spread
+                    edge_points=model_spread - market_spread,
+                    thresholds=edge_confidence,
+                    market_type="spread",
                 ),
                 "explanation": (
                     f"Model spread {model_spread:+g} differs from "
                     f"market {market_spread:+g} by "
-                    f"{model_spread - market_spread:+g} points."
+                    f"{model_spread - market_spread:+g} points. "
+                    "This is a prediction signal, not a qualified bet."
                 ),
             }
         )
@@ -1432,6 +1982,7 @@ def _build_signals(
                 "event_id": event["event_id"],
                 "market_id": f"{event['event_id']}:total",
                 "signal_type": "INJURY_IMPACT",
+                "layer": "prediction",
                 "label": "Injury impact",
                 "direction": "below" if total_adj < 0 else "aligned",
                 "confidence": (
@@ -1454,7 +2005,75 @@ def _build_signals(
             },
         )
 
-    # Attach event label for UI.
+    # Bet classifications are separate from prediction signals.
+    for market in markets:
+        status = str(market.get("bet_status") or "pass")
+        bet = market.get("bet_qualification") or {}
+        label = market.get("bet_label") or bet.get("label") or status
+        if status in {"strong_bet", "lean"}:
+            signals.insert(
+                0,
+                {
+                    "signal_id": (
+                        f"{market.get('market_id')}:{status}"
+                    ),
+                    "event_id": event["event_id"],
+                    "market_id": market.get("market_id"),
+                    "signal_type": (
+                        "STRONG_BET"
+                        if status == "strong_bet"
+                        else "LEAN"
+                    ),
+                    "layer": "bet",
+                    "label": f"{label} · {market.get('selection')}",
+                    "direction": "bet",
+                    "confidence": market.get("confidence"),
+                    "explanation": bet.get("summary") or (
+                        f"{label} after threshold gates."
+                    ),
+                },
+            )
+        elif market.get("no_bet") or status == "pass":
+            # Surface No Bet when there is a directional prediction
+            # that failed gates — makes "no actionable edge" visible.
+            pred = market.get("prediction") or {}
+            edge_pp = num(market.get("edge_probability"))
+            if pred.get("has_prediction") and (
+                edge_pp is None or abs(float(edge_pp)) >= 0.5
+            ):
+                signals.append(
+                    {
+                        "signal_id": (
+                            f"{market.get('market_id')}:no_bet"
+                        ),
+                        "event_id": event["event_id"],
+                        "market_id": market.get("market_id"),
+                        "signal_type": "NO_BET",
+                        "layer": "bet",
+                        "label": f"Pass · {market.get('selection')}",
+                        "direction": "no_bet",
+                        "confidence": market.get("confidence"),
+                        "explanation": bet.get("summary") or (
+                            "No actionable edge — Pass / No Bet."
+                        ),
+                    }
+                )
+
+    # Prefer Strong Bet, then Lean, then predictions, then No Bet notes.
+    rank = {
+        "STRONG_BET": 0,
+        "LEAN": 1,
+        "INJURY_IMPACT": 2,
+        "MARKET_DISAGREEMENT": 3,
+        "NO_BET": 4,
+    }
+    signals.sort(
+        key=lambda s: (
+            rank.get(str(s.get("signal_type")), 9),
+            str(s.get("signal_id") or ""),
+        )
+    )
+
     for signal in signals:
         signal["event_label"] = event.get("label")
     return signals

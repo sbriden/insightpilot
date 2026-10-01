@@ -770,6 +770,9 @@ def _opportunity_vs_production(
             {
                 "week": week.get("week"),
                 "label": week.get("label"),
+                "opponent": week.get("opponent"),
+                "opponent_label": week.get("opponent_label"),
+                "home_away": week.get("home_away"),
                 "opportunity": opp,
                 "production": pts,
             }

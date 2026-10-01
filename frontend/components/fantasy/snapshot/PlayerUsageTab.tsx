@@ -18,6 +18,7 @@ import {
   FantasyPlayerUsage,
   FantasyScoringFormat,
   FantasyUsageDirection,
+  FantasyUsageOppProdPoint,
   FantasyUsageMetricCard,
   FantasyUsagePeriod,
   getFantasyPlayerUsage,
@@ -31,6 +32,58 @@ import {
 interface Props {
   playerId: string;
   defaultSeason?: number | null;
+}
+
+function OppProdTooltip({
+  active,
+  payload,
+  opportunityLabel,
+  productionLabel,
+}: {
+  active?: boolean;
+  payload?: Array<{
+    payload?: FantasyUsageOppProdPoint & { name?: string };
+  }>;
+  opportunityLabel: string;
+  productionLabel: string;
+}) {
+  if (!active || !payload?.length) {
+    return null;
+  }
+  const point = payload[0]?.payload;
+  if (!point) {
+    return null;
+  }
+  const week =
+    point.label
+    || (point.week != null ? `W${point.week}` : "Game");
+  const game =
+    point.opponent_label
+    || (point.opponent ? `vs ${point.opponent}` : null);
+
+  return (
+    <div
+      className="rounded-lg border bg-white px-3 py-2 text-xs shadow-sm"
+      style={{ borderColor: snapshotTokens.border }}
+    >
+      <p
+        className="font-semibold"
+        style={{ color: snapshotTokens.navy }}
+      >
+        {week}
+        {game ? ` · ${game}` : ""}
+      </p>
+      <p
+        className="mt-1"
+        style={{ color: snapshotTokens.textSecondary }}
+      >
+        {opportunityLabel}: {formatMetricValue(point.opportunity, 1)}
+      </p>
+      <p style={{ color: snapshotTokens.textSecondary }}>
+        {productionLabel}: {formatMetricValue(point.production, 1)}
+      </p>
+    </div>
+  );
 }
 
 const PERIOD_OPTIONS: Array<{
@@ -742,27 +795,28 @@ export default function PlayerUsageTab({
                         cursor={{
                           strokeDasharray: "3 3",
                         }}
-                        contentStyle={{
-                          borderRadius: 8,
-                          borderColor: snapshotTokens.border,
-                        }}
-                        formatter={(
-                          value: number,
-                          name: string
-                        ) => [
-                          formatMetricValue(value, 1),
-                          name === "opportunity"
-                            ? usage.opportunity_vs_production
+                        content={(props) => (
+                          <OppProdTooltip
+                            active={props.active}
+                            payload={
+                              props.payload as Array<{
+                                payload?: FantasyUsageOppProdPoint & {
+                                  name?: string;
+                                };
+                              }>
+                            }
+                            opportunityLabel={
+                              usage.opportunity_vs_production
                                 ?.opportunity_metric.label
-                            : usage.opportunity_vs_production
-                                ?.production_metric.label,
-                        ]}
-                        labelFormatter={(_, payload) => {
-                          const point = payload?.[0]?.payload as
-                            | { name?: string }
-                            | undefined;
-                          return point?.name || "";
-                        }}
+                              || "Opportunity"
+                            }
+                            productionLabel={
+                              usage.opportunity_vs_production
+                                ?.production_metric.label
+                              || "Fantasy points"
+                            }
+                          />
+                        )}
                       />
                       <Scatter
                         data={scatterData}

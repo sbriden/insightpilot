@@ -3,13 +3,20 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import { ChevronDown } from "lucide-react";
 
 import {
+  FantasyTeamDefense,
+  FantasyTeamEfficiency,
+  FantasyTeamOffense,
   FantasyTeamPlayerStats,
+  FantasyTeamRecord,
   FantasyTeamStats,
   FantasyTeamSummary,
+  FantasyTeamTotals,
   getFantasyTeamStats,
   listFantasyTeams,
 } from "@/services/api";
@@ -21,6 +28,301 @@ import {
 
 interface Props {
   onSelectPlayer: (playerId: string) => void;
+}
+
+function formatCount(
+  value: number | null | undefined
+): string {
+  if (value == null || Number.isNaN(value)) {
+    return "—";
+  }
+  return Math.round(value).toLocaleString();
+}
+
+function formatDecimal(
+  value: number | null | undefined,
+  digits = 1
+): string {
+  if (value == null || Number.isNaN(value)) {
+    return "—";
+  }
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function formatSigned(
+  value: number | null | undefined,
+  digits = 2
+): string {
+  if (value == null || Number.isNaN(value)) {
+    return "—";
+  }
+  const body = formatDecimal(Math.abs(value), digits);
+  if (value > 0) {
+    return `+${body}`;
+  }
+  if (value < 0) {
+    return `-${body}`;
+  }
+  return body;
+}
+
+function formatPercent(
+  value: number | null | undefined
+): string {
+  if (value == null || Number.isNaN(value)) {
+    return "—";
+  }
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function recordLabel(record: FantasyTeamRecord): string {
+  const base = `${record.wins}–${record.losses}`;
+  if (record.ties > 0) {
+    return `${base}–${record.ties}`;
+  }
+  return base;
+}
+
+function statTiles(
+  pairs: Array<[string, string]>
+): Array<{ label: string; value: string }> {
+  return pairs
+    .filter(([, value]) => value !== "—")
+    .map(([label, value]) => ({ label, value }));
+}
+
+function TeamLogo({
+  abbreviation,
+  logoUrl,
+  size = 36,
+}: {
+  abbreviation: string;
+  logoUrl?: string | null;
+  size?: number;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (!logoUrl || failed) {
+    return (
+      <span
+        className="inline-flex shrink-0 items-center justify-center rounded-full text-[10px] font-semibold"
+        style={{
+          width: size,
+          height: size,
+          background: snapshotTokens.blueLight,
+          color: snapshotTokens.blue,
+        }}
+      >
+        {abbreviation.slice(0, 3)}
+      </span>
+    );
+  }
+  return (
+    <img
+      src={logoUrl}
+      alt=""
+      width={size}
+      height={size}
+      className="shrink-0 object-contain"
+      style={{ width: size, height: size }}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function StatGroup({
+  title,
+  tiles,
+}: {
+  title: string;
+  tiles: Array<{ label: string; value: string }>;
+}) {
+  if (tiles.length === 0) {
+    return null;
+  }
+  return (
+    <div>
+      <h5
+        className="text-[11px] font-semibold uppercase tracking-wide"
+        style={{ color: snapshotTokens.textMuted }}
+      >
+        {title}
+      </h5>
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+        {tiles.map((tile) => (
+          <div
+            key={tile.label}
+            className="rounded-lg border px-3 py-2"
+            style={{
+              borderColor: snapshotTokens.divider,
+              background: snapshotTokens.background,
+            }}
+          >
+            <p
+              className="text-[10px] font-semibold uppercase tracking-wide"
+              style={{ color: snapshotTokens.textMuted }}
+            >
+              {tile.label}
+            </p>
+            <p
+              className="mt-1 text-base font-semibold tabular-nums"
+              style={{ color: snapshotTokens.navy }}
+            >
+              {tile.value}
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function offenseTiles(offense: FantasyTeamOffense | null | undefined) {
+  if (!offense) {
+    return [];
+  }
+  return statTiles([
+    ["Points", formatCount(offense.points)],
+    ["PPG", formatDecimal(offense.points_per_game, 1)],
+    ["Yards", formatCount(offense.yards)],
+    ["Yds/G", formatDecimal(offense.yards_per_game, 1)],
+    ["Yds/play", formatDecimal(offense.yards_per_play, 2)],
+    ["EPA/play", formatSigned(offense.epa_per_play, 3)],
+    [
+      "Pass EPA/att",
+      formatSigned(offense.pass_epa_per_attempt, 3),
+    ],
+    [
+      "Rush EPA/att",
+      formatSigned(offense.rush_epa_per_attempt, 3),
+    ],
+    ["Pass rate", formatPercent(offense.pass_rate)],
+    ["RZ TD%", formatPercent(offense.red_zone_td_rate)],
+    ["TO/G", formatDecimal(offense.turnovers_per_game, 2)],
+  ]);
+}
+
+function defenseTiles(defense: FantasyTeamDefense | null | undefined) {
+  if (!defense) {
+    return [];
+  }
+  return statTiles([
+    ["PA", formatCount(defense.points_allowed)],
+    ["PA/G", formatDecimal(defense.points_allowed_per_game, 1)],
+    ["Yds allowed", formatCount(defense.yards_allowed)],
+    [
+      "Yds allowed/G",
+      formatDecimal(defense.yards_allowed_per_game, 1),
+    ],
+    [
+      "Pass yds/G",
+      formatDecimal(defense.pass_yards_allowed_per_game, 1),
+    ],
+    [
+      "Rush yds/G",
+      formatDecimal(defense.rush_yards_allowed_per_game, 1),
+    ],
+    [
+      "Pass EPA/G",
+      formatSigned(defense.pass_epa_allowed_per_game, 2),
+    ],
+    [
+      "Rush EPA/G",
+      formatSigned(defense.rush_epa_allowed_per_game, 2),
+    ],
+    ["Sack%", formatPercent(defense.sack_rate)],
+    ["Pressure%", formatPercent(defense.pressure_rate)],
+  ]);
+}
+
+function efficiencyTiles(
+  efficiency: FantasyTeamEfficiency | null | undefined
+) {
+  if (!efficiency) {
+    return [];
+  }
+  return statTiles([
+    ["Cmp%", formatPercent(efficiency.completion_pct)],
+    ["Y/A", formatDecimal(efficiency.yards_per_attempt, 2)],
+    ["Y/C", formatDecimal(efficiency.yards_per_carry, 2)],
+    ["Catch%", formatPercent(efficiency.catch_rate)],
+    ["Y/Tgt", formatDecimal(efficiency.yards_per_target, 2)],
+    ["Y/Rec", formatDecimal(efficiency.yards_per_reception, 2)],
+  ]);
+}
+
+function TeamTotalsPanel({
+  totals,
+}: {
+  totals: FantasyTeamTotals;
+}) {
+  const offense = offenseTiles(totals.offense);
+  const defense = defenseTiles(totals.defense);
+  const efficiency = efficiencyTiles(totals.efficiency);
+  if (
+    !totals.record
+    && offense.length === 0
+    && defense.length === 0
+    && efficiency.length === 0
+  ) {
+    return null;
+  }
+
+  const differential = totals.record?.point_differential;
+
+  return (
+    <section
+      className="rounded-[10px] border bg-white p-4 sm:p-5"
+      style={{ borderColor: snapshotTokens.border }}
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h4
+          className="text-[15px] font-semibold"
+          style={{ color: snapshotTokens.navy }}
+        >
+          Team totals
+        </h4>
+        <p
+          className="text-xs"
+          style={{ color: snapshotTokens.textMuted }}
+        >
+          {totals.games != null
+            ? `${totals.games} regular-season game${totals.games === 1 ? "" : "s"}`
+            : "Season aggregates"}
+        </p>
+      </div>
+      {totals.record && (
+        <p
+          className="mt-3 text-sm font-semibold tabular-nums"
+          style={{ color: snapshotTokens.textPrimary }}
+        >
+          {recordLabel(totals.record)}
+          {differential != null && (
+            <span
+              className="ml-2 font-medium"
+              style={{
+                color:
+                  differential > 0
+                    ? snapshotTokens.success
+                    : differential < 0
+                      ? snapshotTokens.negative
+                      : snapshotTokens.textSecondary,
+              }}
+            >
+              · {formatSigned(differential, 0)} pts
+            </span>
+          )}
+        </p>
+      )}
+      <div className="mt-4 space-y-4">
+        <StatGroup title="Offense" tiles={offense} />
+        <StatGroup title="Efficiency" tiles={efficiency} />
+        <StatGroup title="Defense" tiles={defense} />
+      </div>
+    </section>
+  );
 }
 
 function metric(
@@ -142,6 +444,8 @@ export default function PlayerOverviewTeamStats({
     []
   );
   const [teamAbbr, setTeamAbbr] = useState("");
+  const [teamMenuOpen, setTeamMenuOpen] = useState(false);
+  const teamMenuRef = useRef<HTMLDivElement | null>(null);
   const [stats, setStats] = useState<FantasyTeamStats | null>(
     null
   );
@@ -222,6 +526,24 @@ export default function PlayerOverviewTeamStats({
     };
   }, [teamAbbr]);
 
+  useEffect(() => {
+    function onPointerDown(event: MouseEvent) {
+      if (
+        teamMenuRef.current
+        && !teamMenuRef.current.contains(event.target as Node)
+      ) {
+        setTeamMenuOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", onPointerDown);
+    return () => {
+      window.removeEventListener(
+        "mousedown",
+        onPointerDown
+      );
+    };
+  }, []);
+
   const roster = useMemo(() => {
     const players = stats?.players ?? [];
     return [...players].sort((left, right) => {
@@ -246,50 +568,109 @@ export default function PlayerOverviewTeamStats({
         style={{ borderColor: snapshotTokens.border }}
       >
         <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h3
-              className="text-[15px] font-semibold"
-              style={{ color: snapshotTokens.navy }}
-            >
-              Team Stats
-            </h3>
-            <p
-              className="mt-1 text-xs"
-              style={{ color: snapshotTokens.textSecondary }}
-            >
-              Season leaders, roster production, and depth
-              chart for one franchise.
-            </p>
+          <div className="flex min-w-0 items-center gap-3">
+            {selectedTeam && (
+              <TeamLogo
+                key={selectedTeam.logo_url || selectedTeam.abbreviation}
+                abbreviation={selectedTeam.abbreviation}
+                logoUrl={selectedTeam.logo_url}
+                size={48}
+              />
+            )}
+            <div className="min-w-0">
+              <h3
+                className="text-[15px] font-semibold"
+                style={{ color: snapshotTokens.navy }}
+              >
+                Team Stats
+              </h3>
+              <p
+                className="mt-1 text-xs"
+                style={{ color: snapshotTokens.textSecondary }}
+              >
+                Season totals, efficiency, leaders, and the
+                depth chart for one franchise.
+              </p>
+            </div>
           </div>
-          <label className="block text-sm">
+          <div ref={teamMenuRef} className="relative block text-sm">
             <span
               className="mb-1 block text-[11px] font-semibold uppercase tracking-wide"
               style={{ color: snapshotTokens.textMuted }}
             >
               Team
             </span>
-            <select
-              value={teamAbbr}
+            <button
+              type="button"
               disabled={loadingTeams || teams.length === 0}
-              onChange={(event) =>
-                setTeamAbbr(event.target.value)
+              onClick={() =>
+                setTeamMenuOpen((open) => !open)
               }
-              className="min-w-[12rem] rounded-lg border bg-white px-3 py-2 text-sm outline-none"
+              className="flex min-w-[14rem] items-center gap-2 rounded-lg border bg-white px-3 py-2 text-left disabled:opacity-60"
               style={{
                 borderColor: snapshotTokens.border,
                 color: snapshotTokens.textPrimary,
               }}
+              aria-haspopup="listbox"
+              aria-expanded={teamMenuOpen}
             >
-              {teams.map((team) => (
-                <option
-                  key={team.team_id || team.abbreviation}
-                  value={team.abbreviation}
-                >
-                  {team.abbreviation} — {team.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              {selectedTeam && (
+                <TeamLogo
+                  key={`menu-${selectedTeam.logo_url || selectedTeam.abbreviation}`}
+                  abbreviation={selectedTeam.abbreviation}
+                  logoUrl={selectedTeam.logo_url}
+                  size={22}
+                />
+              )}
+              <span className="min-w-0 flex-1 truncate">
+                {selectedTeam
+                  ? `${selectedTeam.abbreviation} — ${selectedTeam.name}`
+                  : "Select a team"}
+              </span>
+              <ChevronDown className="h-4 w-4 shrink-0" />
+            </button>
+            {teamMenuOpen && (
+              <ul
+                className="absolute right-0 z-30 mt-1 max-h-72 w-72 overflow-auto rounded-lg border bg-white py-1 shadow-lg"
+                style={{ borderColor: snapshotTokens.border }}
+                role="listbox"
+              >
+                {teams.map((team) => {
+                  const selected =
+                    team.abbreviation === teamAbbr;
+                  return (
+                    <li key={team.team_id || team.abbreviation}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
+                        style={{
+                          background: selected
+                            ? snapshotTokens.blueLight
+                            : "transparent",
+                          color: snapshotTokens.textPrimary,
+                        }}
+                        onClick={() => {
+                          setTeamAbbr(team.abbreviation);
+                          setTeamMenuOpen(false);
+                        }}
+                      >
+                        <TeamLogo
+                          abbreviation={team.abbreviation}
+                          logoUrl={team.logo_url}
+                          size={22}
+                        />
+                        <span className="truncate">
+                          {team.abbreviation} — {team.name}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
         </div>
 
         {selectedTeam && (
@@ -335,6 +716,9 @@ export default function PlayerOverviewTeamStats({
 
       {!loadingStats && stats && (
         <>
+          {stats.team_totals && (
+            <TeamTotalsPanel totals={stats.team_totals} />
+          )}
           <div className="grid gap-4 lg:grid-cols-3">
             <LeaderTable
               title="Passing leaders"

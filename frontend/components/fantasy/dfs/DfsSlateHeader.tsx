@@ -204,7 +204,7 @@ export default function DfsSlateHeader({
           }))}
           onChange={onSlate}
         />
-        {activeTab !== "portfolio" && (
+        {activeTab === "optimizer" && (
           <div className="min-w-[10rem]">
             <p
               className="mb-1 text-[11px] font-semibold uppercase tracking-wide"

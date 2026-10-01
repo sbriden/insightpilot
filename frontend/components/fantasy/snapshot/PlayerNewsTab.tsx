@@ -217,6 +217,9 @@ function InsightImpact({
   if (development.category === "injury" || development.category === "practice") {
     related.push("snapshot");
   }
+  if (development.event_type === "opponent_injury") {
+    related.push("matchups");
+  }
   if (related.length === 0) {
     related.push("snapshot");
   }
@@ -299,7 +302,10 @@ function NewsCard({
   featured?: boolean;
   onNavigateTab?: Props["onNavigateTab"];
 }) {
-  const meta = categoryMeta(development.category);
+  const meta =
+    development.event_type === "opponent_injury"
+      ? { label: "Opponent Update", Icon: Users }
+      : categoryMeta(development.category);
   const Icon = meta.Icon;
 
   return (
@@ -653,7 +659,11 @@ export default function PlayerNewsTab({
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
         <Section
           title="Featured Development"
-          subtitle="Most relevant recent event — ranked by impact, not just recency"
+          subtitle={
+            news.current_week
+              ? `Highest-impact event from week ${news.current_week}`
+              : "Highest-impact event from this week"
+          }
         >
           {news.featured ? (
             <NewsCard
@@ -666,21 +676,29 @@ export default function PlayerNewsTab({
               className="text-xs"
               style={{ color: snapshotTokens.textSecondary }}
             >
-              No featured development in this window.
+              {news.current_week
+                ? `No featured development for week ${news.current_week}.`
+                : "No featured development this week."}
             </p>
           )}
         </Section>
 
         <Section
           title="Important Developments"
-          subtitle="Current situation at a glance"
+          subtitle={
+            news.current_week
+              ? `Week ${news.current_week} at a glance`
+              : "This week at a glance"
+          }
         >
           {news.important_developments.length === 0 ? (
             <p
               className="text-xs"
               style={{ color: snapshotTokens.textSecondary }}
             >
-              No summarized developments yet.
+              {news.current_week
+                ? `No developments for week ${news.current_week}.`
+                : "No developments this week."}
             </p>
           ) : (
             <ul className="space-y-3">

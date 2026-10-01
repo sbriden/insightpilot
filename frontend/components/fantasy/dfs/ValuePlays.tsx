@@ -1,24 +1,48 @@
 "use client";
 
+import {
+  filterDfsPool,
+  type DfsPoolFilter,
+} from "@/components/fantasy/dfs/PlayerPool";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
 import type { DfsPlayer } from "@/services/api";
 
 interface Props {
   players: DfsPlayer[];
+  filters: DfsPoolFilter;
   onSelectPlayer: (playerId: string) => void;
+}
+
+function filtersActive(filters: DfsPoolFilter): boolean {
+  if ((filters.selectedPlayerIds ?? []).length > 0) {
+    return true;
+  }
+  if ((filters.search ?? "").trim().length > 0) {
+    return true;
+  }
+  const positions = filters.positionFilter;
+  if (typeof positions === "string" && positions !== "All") {
+    return true;
+  }
+  if (Array.isArray(positions) && positions.length > 0) {
+    return true;
+  }
+  return (filters.teamFilter ?? []).length > 0;
 }
 
 export default function ValuePlays({
   players,
+  filters,
   onSelectPlayer,
 }: Props) {
-  const top = [...players]
+  const top = filterDfsPool(players, filters)
     .filter((player) => player.value != null)
     .sort(
       (left, right) =>
         (right.value || 0) - (left.value || 0)
     )
     .slice(0, 6);
+  const filtered = filtersActive(filters);
 
   return (
     <section
@@ -35,8 +59,18 @@ export default function ValuePlays({
         className="mt-1 text-xs"
         style={{ color: snapshotTokens.textSecondary }}
       >
-        Highest projection per $1,000 of salary — not must-plays.
+        Highest projection per $1,000 of salary
+        {filtered ? " in the current filters" : ""} — not
+        must-plays.
       </p>
+      {top.length === 0 ? (
+        <p
+          className="mt-3 text-sm"
+          style={{ color: snapshotTokens.textSecondary }}
+        >
+          No value plays match the current filters.
+        </p>
+      ) : (
       <div className="mt-3 overflow-x-auto">
         <table className="min-w-full text-left text-sm">
           <thead
@@ -99,6 +133,7 @@ export default function ValuePlays({
           </tbody>
         </table>
       </div>
+      )}
     </section>
   );
 }

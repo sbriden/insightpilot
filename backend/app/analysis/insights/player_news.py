@@ -12,6 +12,11 @@ from typing import Any
 
 import pandas as pd
 
+from app.analysis.insights.injury_relevance import (
+    _as_share,
+    canonical_news_position,
+    evaluate_injury_relevance,
+)
 from app.analysis.insights.player_performance import (
     _position_group,
 )
@@ -245,55 +250,41 @@ def _self_injury_impact(
     }
 
 
-def _teammate_injury_impact(
+def _listed_out(game_status: str | None) -> bool:
+    game = (game_status or "").strip().lower()
+    return any(
+        token in game
+        for token in ("out", "ir", "pup", "doubt", "suspend")
+    )
+
+
+def _remaining_share(
+    usage_by_player: dict[str, dict[str, Any]],
+    players_by_id: dict[str, dict[str, Any]],
     *,
-    same_position: bool,
-    teammate_depth_order: int | None,
-    player_depth_order: int | None,
-    game_status: str | None,
-) -> dict[str, Any]:
-    game = (game_status or "").lower()
-    severe = any(token in game for token in ("out", "ir", "doubt", "pup"))
-    if same_position and severe:
-        ahead = (
-            teammate_depth_order is not None
-            and player_depth_order is not None
-            and int(teammate_depth_order) < int(player_depth_order)
+    exclude_id: str,
+    positions: set[str],
+    field: str,
+) -> float | None:
+    total = 0.0
+    found = False
+    for pid, shares in usage_by_player.items():
+        if pid == exclude_id:
+            continue
+        person = players_by_id.get(pid, {})
+        position = canonical_news_position(
+            person.get("depth_position")
+            or person.get("position")
+            or shares.get("position")
         )
-        if ahead or teammate_depth_order == 1:
-            return {
-                "level": "moderate",
-                "fantasy_impact": "positive",
-                "role_impact": "Increased Opportunity",
-                "availability": "Available",
-                "confidence": "moderate",
-                "label": "Potential opportunity increase",
-                "summary": (
-                    "A higher-ranked teammate at the same position "
-                    "has an availability concern."
-                ),
-            }
-        return {
-            "level": "low",
-            "fantasy_impact": "neutral",
-            "role_impact": "Role Unchanged",
-            "availability": "Available",
-            "confidence": "low",
-            "label": "Low fantasy impact",
-            "summary": (
-                "Teammate availability note at the same position, "
-                "with limited clear opportunity transfer."
-            ),
-        }
-    return {
-        "level": "low",
-        "fantasy_impact": "neutral",
-        "role_impact": "Role Unchanged",
-        "availability": "Available",
-        "confidence": "low",
-        "label": "Team context",
-        "summary": "Relevant team availability context.",
-    }
+        if position not in positions:
+            continue
+        value = _as_share(shares.get(field))
+        if value is None:
+            continue
+        total += value
+        found = True
+    return total if found else None
 
 
 def _depth_change_impact(
@@ -414,6 +405,8 @@ def _injury_developments(
     season: int,
     injuries: pd.DataFrame,
     players_by_id: dict[str, dict[str, Any]],
+    usage_by_player: dict[str, dict[str, Any]] | None = None,
+    week_opponents: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
     if injuries is None or injuries.empty:
         return []
@@ -431,6 +424,37 @@ def _injury_developments(
         if row_season != int(season):
             continue
         by_player.setdefault(pid, []).append(row)
+
+    usage_by_player = usage_by_player or {}
+    week_opponents = week_opponents or {}
+    absences: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for pid, player_rows in by_player.items():
+        identity = players_by_id.get(pid, {})
+        position = canonical_news_position(
+            identity.get("depth_position") or identity.get("position")
+        )
+        depth = _parse_depth_order(identity.get("depth_order"))
+        if position is None or depth is None or depth > 2:
+            continue
+        for row in player_rows:
+            if not _listed_out(_clean_text(row.get("game_status"))):
+                continue
+            try:
+                week = int(row.get("week"))
+            except (TypeError, ValueError):
+                continue
+            team = str(row.get("team_id") or "").strip()
+            bucket = absences.setdefault((team, week), [])
+            bucket[:] = [
+                item for item in bucket if item["player_id"] != pid
+            ]
+            bucket.append(
+                {
+                    "player_id": pid,
+                    "position": position,
+                    "depth": depth,
+                }
+            )
 
     developments: list[dict[str, Any]] = []
     for pid, player_rows in by_player.items():
@@ -559,26 +583,120 @@ def _injury_developments(
                 ):
                     previous = row
                     continue
-                same_position = (
-                    _position_group(position)
-                    == _position_group(player_position)
-                )
-                teammate_depth = _parse_depth_order(
+                injured_depth = _parse_depth_order(
                     identity.get("depth_order")
                 )
-                impact = _teammate_injury_impact(
-                    same_position=same_position,
-                    teammate_depth_order=teammate_depth,
-                    player_depth_order=player_depth_order,
-                    game_status=game,
+                injured_position = (
+                    identity.get("depth_position") or position
                 )
-                if impact["level"] == "low" and not same_position:
+                injured_team = str(row.get("team_id") or "").strip()
+                same_team = injured_team == str(team_id or "").strip()
+                if not same_team:
+                    expected_opponent = (
+                        week_opponents.get(week)
+                        if week is not None
+                        else None
+                    )
+                    if (
+                        not expected_opponent
+                        or injured_team != expected_opponent
+                    ):
+                        previous = row
+                        continue
+                    relationship = "opponent"
+                cohort = []
+                if week is not None:
+                    cohort = [
+                        item
+                        for item in absences.get(
+                            (
+                                str(row.get("team_id") or "").strip(),
+                                week,
+                            ),
+                            [],
+                        )
+                        if item["player_id"] != pid
+                    ]
+                viewer_usage = usage_by_player.get(player_id, {})
+                injured_usage = usage_by_player.get(pid, {})
+                impact = evaluate_injury_relevance(
+                    viewer_position=player_position,
+                    viewer_depth=player_depth_order,
+                    injured_position=injured_position,
+                    injured_depth=injured_depth,
+                    game_status=game,
+                    same_team=same_team,
+                    injured_target_share=injured_usage.get(
+                        "target_share"
+                    ),
+                    viewer_target_share=viewer_usage.get(
+                        "target_share"
+                    ),
+                    remaining_target_share=_remaining_share(
+                        usage_by_player,
+                        players_by_id,
+                        exclude_id=pid,
+                        positions={"WR", "TE", "RB"},
+                        field="target_share",
+                    ) if same_team else None,
+                    injured_air_yard_share=injured_usage.get(
+                        "air_yard_share"
+                    ),
+                    injured_rush_share=injured_usage.get("rush_share"),
+                    viewer_rush_share=viewer_usage.get("rush_share"),
+                    remaining_rush_share=_remaining_share(
+                        usage_by_player,
+                        players_by_id,
+                        exclude_id=pid,
+                        positions={"RB"},
+                        field="rush_share",
+                    ) if same_team else None,
+                    other_wr_out=sum(
+                        1
+                        for item in cohort
+                        if item["position"] == "WR"
+                    ),
+                    other_edge_out=sum(
+                        1
+                        for item in cohort
+                        if item["position"] in {"EDGE", "DL"}
+                    ),
+                    other_cb_out=sum(
+                        1
+                        for item in cohort
+                        if item["position"] == "CB"
+                    ),
+                    other_dt_out=sum(
+                        1
+                        for item in cohort
+                        if item["position"] == "DT"
+                    ),
+                    other_front_out=sum(
+                        1
+                        for item in cohort
+                        if item["position"] in {"EDGE", "DT", "DL"}
+                    ),
+                )
+                if impact is None or impact["level"] == "low":
                     previous = row
                     continue
-                event_type = "teammate_injury"
+                event_type = (
+                    "teammate_injury"
+                    if same_team
+                    else "opponent_injury"
+                )
                 category = "team"
                 status_bit = game or practice or "availability update"
-                headline = f"Teammate update: {name} — {status_bit}"
+                who = (
+                    "Teammate"
+                    if same_team
+                    else "Opposing"
+                )
+                headline = (
+                    f"{who} update: {name}"
+                    + (f" ({position})" if position else "")
+                    + f" — {status_bit}"
+                )
                 body = (
                     f"{name}"
                     + (f" ({position})" if position else "")
@@ -762,6 +880,48 @@ def _depth_developments(
     return developments
 
 
+def _news_current_week(
+    season: int,
+    scheduled_weeks: list[int],
+) -> int | None:
+    """
+    Week the featured and important panels should describe.
+
+    For the live season this is the nflverse current week.
+    For an older season it is the last scheduled week.
+    """
+
+    try:
+        import nflreadpy as nfl
+
+        if int(season) == int(nfl.get_current_season()):
+            week = max(1, int(nfl.get_current_week()))
+            if scheduled_weeks and week not in scheduled_weeks:
+                if week > max(scheduled_weeks):
+                    return max(scheduled_weeks)
+            return week
+    except Exception:
+        pass
+    if scheduled_weeks:
+        return max(scheduled_weeks)
+    return None
+
+
+def _developments_for_week(
+    developments: list[dict[str, Any]],
+    week: int | None,
+) -> list[dict[str, Any]]:
+    if week is None:
+        return []
+    target = int(week)
+    return [
+        item
+        for item in developments
+        if item.get("week") is not None
+        and int(item["week"]) == target
+    ]
+
+
 def _important_developments(
     developments: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -774,7 +934,7 @@ def _important_developments(
         category = item.get("category") or "other"
         level = (item.get("impact") or {}).get("level")
         current = buckets.get(category)
-        if current is None or _impact_rank(level) >= _impact_rank(
+        if current is None or _impact_rank(level) > _impact_rank(
             (current.get("impact") or {}).get("level")
         ):
             buckets[category] = item
@@ -785,12 +945,19 @@ def _important_developments(
         item = buckets.get(key)
         if not item:
             continue
+        relationship = (
+            (item.get("subject") or {}).get("relationship")
+        )
         label = {
             "injury": "Injury status",
             "practice": "Practice status",
             "depth_chart": "Depth chart",
             "role": "Role",
-            "team": "Teammate",
+            "team": (
+                "Opponent"
+                if relationship == "opponent"
+                else "Teammate"
+            ),
         }.get(key, key.title())
         results.append(
             {
@@ -903,10 +1070,59 @@ def build_player_news(
     player_position = identity.get("position")
     team_abbr = identity.get("team")
 
-    # Load injuries for player + teammates.
+    # Load injuries for the player, teammates, and weekly opponents.
+    opponent_team_ids: list[str] = []
+    week_opponents: dict[int, str] = {}
     try:
         with engine.connect() as connection:
             if team_id:
+                schedule = pd.read_sql_query(
+                    text(
+                        f"""
+                        SELECT week, home_team_id, away_team_id
+                        FROM {FANTASY_SCHEMA}.dim_game
+                        WHERE season = :season
+                          AND (
+                            home_team_id = :team_id
+                            OR away_team_id = :team_id
+                          )
+                        """
+                    ),
+                    connection,
+                    params={
+                        "season": int(season),
+                        "team_id": team_id,
+                    },
+                )
+                seen_opponents: set[str] = set()
+                for game in schedule.to_dict(orient="records"):
+                    home = str(game.get("home_team_id") or "").strip()
+                    away = str(game.get("away_team_id") or "").strip()
+                    opponent = away if home == team_id else home
+                    if not opponent:
+                        continue
+                    if opponent not in seen_opponents:
+                        seen_opponents.add(opponent)
+                        opponent_team_ids.append(opponent)
+                    try:
+                        week_opponents[int(game.get("week"))] = opponent
+                    except (TypeError, ValueError):
+                        continue
+
+            injury_team_ids = [
+                value
+                for value in [team_id, *opponent_team_ids]
+                if value
+            ]
+            if injury_team_ids:
+                team_params = {
+                    f"team_{index}": value
+                    for index, value in enumerate(injury_team_ids)
+                }
+                team_sql = ", ".join(
+                    f":team_{index}"
+                    for index in range(len(injury_team_ids))
+                )
                 injuries = pd.read_sql_query(
                     text(
                         f"""
@@ -924,7 +1140,7 @@ def build_player_news(
                         WHERE i.season = :season
                           AND (
                             i.player_id = :player_id
-                            OR i.team_id = :team_id
+                            OR i.team_id IN ({team_sql})
                           )
                         ORDER BY i.week ASC NULLS LAST,
                           i.report_date ASC NULLS LAST
@@ -934,7 +1150,7 @@ def build_player_news(
                     params={
                         "season": int(season),
                         "player_id": pid,
-                        "team_id": team_id,
+                        **team_params,
                     },
                 )
             else:
@@ -965,31 +1181,45 @@ def build_player_news(
                     },
                 )
 
-            depth = pd.read_sql_query(
-                text(
-                    f"""
-                    SELECT
-                      d.player_id,
-                      d.team_id,
-                      d.position,
-                      d.depth_order,
-                      d.role,
-                      d.effective_date,
-                      d.season,
-                      d.week
-                    FROM {FANTASY_SCHEMA}.fact_depth_chart d
-                    WHERE d.season = :season
-                      AND d.team_id = :team_id
-                    ORDER BY d.week ASC NULLS LAST,
-                      d.effective_date ASC NULLS LAST
-                    """
-                ),
-                connection,
-                params={
-                    "season": int(season),
-                    "team_id": team_id or "",
-                },
-            ) if team_id else pd.DataFrame()
+            depth_team_ids = injury_team_ids or (
+                [team_id] if team_id else []
+            )
+            if depth_team_ids:
+                depth_params = {
+                    f"depth_team_{index}": value
+                    for index, value in enumerate(depth_team_ids)
+                }
+                depth_sql = ", ".join(
+                    f":depth_team_{index}"
+                    for index in range(len(depth_team_ids))
+                )
+                depth = pd.read_sql_query(
+                    text(
+                        f"""
+                        SELECT
+                          d.player_id,
+                          d.team_id,
+                          d.position,
+                          d.depth_order,
+                          d.role,
+                          d.effective_date,
+                          d.season,
+                          d.week
+                        FROM {FANTASY_SCHEMA}.fact_depth_chart d
+                        WHERE d.season = :season
+                          AND d.team_id IN ({depth_sql})
+                        ORDER BY d.week ASC NULLS LAST,
+                          d.effective_date ASC NULLS LAST
+                        """
+                    ),
+                    connection,
+                    params={
+                        "season": int(season),
+                        **depth_params,
+                    },
+                )
+            else:
+                depth = pd.DataFrame()
 
             teammate_ids = sorted(
                 {
@@ -1024,23 +1254,63 @@ def build_player_news(
                 for row in people.to_dict(orient="records"):
                     players_by_id[str(row["player_id"])] = row
 
-            # Attach latest depth order for teammate impact heuristics.
+            # Latest depth order per player, including opponents.
             if not depth.empty:
-                latest_week = None
+                latest_by_player: dict[str, tuple[int, dict[str, Any]]] = {}
+                for row in depth.to_dict(orient="records"):
+                    person_id = str(row.get("player_id") or "").strip()
+                    if not person_id:
+                        continue
+                    try:
+                        depth_week = int(row.get("week") or 0)
+                    except (TypeError, ValueError):
+                        depth_week = 0
+                    current = latest_by_player.get(person_id)
+                    if current is None or depth_week >= current[0]:
+                        latest_by_player[person_id] = (depth_week, row)
+                for person_id, (_, row) in latest_by_player.items():
+                    person = players_by_id.get(person_id)
+                    if person is None:
+                        continue
+                    person["depth_order"] = _parse_depth_order(
+                        row.get("depth_order")
+                    )
+                    person["depth_position"] = row.get("position")
+
+            usage_by_player = {}
+            if team_id:
                 try:
-                    latest_week = int(depth["week"].dropna().max())
-                except (TypeError, ValueError):
-                    latest_week = None
-                if latest_week is not None:
-                    latest_depth = depth[depth["week"] == latest_week]
-                    for row in latest_depth.to_dict(orient="records"):
-                        person = players_by_id.get(
-                            str(row.get("player_id") or "")
-                        )
-                        if person is not None:
-                            person["depth_order"] = _parse_depth_order(
-                                row.get("depth_order")
-                            )
+                    usage = pd.read_sql_query(
+                        text(
+                            f"""
+                            SELECT
+                              u.player_id,
+                              p.position,
+                              AVG(u.target_share) AS target_share,
+                              AVG(u.rush_share) AS rush_share,
+                              AVG(u.air_yard_share) AS air_yard_share
+                            FROM {FANTASY_SCHEMA}.fact_player_usage u
+                            LEFT JOIN {FANTASY_SCHEMA}.dim_player p
+                              ON p.player_id = u.player_id
+                            WHERE u.season = :season
+                              AND u.team_id = :team_id
+                              AND (
+                                u.season_type IS NULL
+                                OR UPPER(u.season_type) IN ('REG', 'REGULAR')
+                              )
+                            GROUP BY u.player_id, p.position
+                            """
+                        ),
+                        connection,
+                        params={
+                            "season": int(season),
+                            "team_id": team_id,
+                        },
+                    )
+                    for row in usage.to_dict(orient="records"):
+                        usage_by_player[str(row["player_id"])] = row
+                except Exception:
+                    usage_by_player = {}
     except Exception:
         return {
             "player_id": pid,
@@ -1090,6 +1360,8 @@ def build_player_news(
             season=int(season),
             injuries=injuries,
             players_by_id=players_by_id,
+            usage_by_player=usage_by_player,
+            week_opponents=week_opponents,
         )
     )
     developments.extend(
@@ -1168,10 +1440,19 @@ def build_player_news(
         ),
     }
 
+    current_week = _news_current_week(
+        int(season),
+        sorted(week_opponents),
+    )
+    this_week = _developments_for_week(
+        developments,
+        current_week,
+    )
+
     featured = None
-    if developments:
+    if this_week:
         featured = max(
-            developments,
+            this_week,
             key=lambda item: (
                 _impact_rank((item.get("impact") or {}).get("level")),
                 _sort_key(
@@ -1181,16 +1462,6 @@ def build_player_news(
                 ),
             ),
         )
-
-    current_week = None
-    if developments:
-        weeks = [
-            int(item["week"])
-            for item in developments
-            if item.get("week") is not None
-        ]
-        if weeks:
-            current_week = max(weeks)
 
     empty_message = None
     if not developments:
@@ -1215,7 +1486,7 @@ def build_player_news(
         "last_checked_at": datetime.now(timezone.utc).isoformat(),
         "featured": featured,
         "important_developments": _important_developments(
-            developments
+            this_week
         ),
         "developments": developments,
         "counts": counts,
@@ -1223,6 +1494,7 @@ def build_player_news(
         "data_note": (
             "Synthesized from nflverse injury reports and depth "
             "charts — not an external news wire. "
-            "InsightPilot Impact labels are evidence-based heuristics."
+            "Injury items are limited to absences that can change "
+            "this player's opportunity or efficiency."
         ),
     }

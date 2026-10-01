@@ -75,6 +75,15 @@ export default function DailyFantasyAnalyzer({
     () => new Set()
   );
   const [positionFilter, setPositionFilter] = useState("All");
+  const [poolSearch, setPoolSearch] = useState("");
+  const [selectedPlayerIds, setSelectedPlayerIds] = useState<
+    string[]
+  >([]);
+  const [positionSelections, setPositionSelections] =
+    useState<string[]>([]);
+  const [teamSelections, setTeamSelections] = useState<
+    string[]
+  >([]);
   const [selectedId, setSelectedId] = useState<string | null>(
     null
   );
@@ -729,8 +738,7 @@ export default function DailyFantasyAnalyzer({
             </p>
           )}
 
-          {(activeTab === "analyzer" ||
-            activeTab === "optimizer") && (
+          {activeTab === "optimizer" && (
             <SlateSummary
               lineup={lineup}
               showEdge={analysisOpen}
@@ -756,10 +764,20 @@ export default function DailyFantasyAnalyzer({
                 <PlayerPool
                   players={slate?.players ?? []}
                   positionFilter={positionFilter}
+                  search={poolSearch}
+                  multiSelect={activeTab === "analyzer"}
+                  selectedPlayerIds={selectedPlayerIds}
+                  positionSelections={positionSelections}
+                  teamSelections={teamSelections}
+                  showActions={activeTab === "optimizer"}
                   lockedIds={lockedIds}
                   excludedIds={excludedIds}
                   lineupIds={lineupIds}
                   onPositionFilter={setPositionFilter}
+                  onSearch={setPoolSearch}
+                  onSelectedPlayers={setSelectedPlayerIds}
+                  onPositionSelections={setPositionSelections}
+                  onTeamSelections={setTeamSelections}
                   onSelectPlayer={setSelectedId}
                   onAdd={addToLineup}
                   onRemove={removeFromLineup}
@@ -768,6 +786,11 @@ export default function DailyFantasyAnalyzer({
                 {activeTab === "analyzer" && (
                   <ValuePlays
                     players={slate?.players ?? []}
+                    filters={{
+                      positionFilter: positionSelections,
+                      teamFilter: teamSelections,
+                      selectedPlayerIds,
+                    }}
                     onSelectPlayer={setSelectedId}
                   />
                 )}

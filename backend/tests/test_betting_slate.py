@@ -141,7 +141,7 @@ class BettingGameScriptTests(unittest.TestCase):
         self.assertIn("Shootout", labels)
         self.assertIn("Contrarian upset", labels)
 
-    def test_enrich_event_prefers_locked_projection_snapshot(self):
+    def test_enrich_event_uses_frozen_snapshot_only(self):
         raw = {
             "event_id": "ip_game_atl_gb",
             "season": 2026,
@@ -158,13 +158,13 @@ class BettingGameScriptTests(unittest.TestCase):
             "status": "scheduled",
             "source": "nflverse_schedules",
         }
-        locked = {
+        frozen = {
             "game_id": "ip_game_atl_gb",
             "projected_home_score": 23.1,
             "projected_away_score": 19.4,
             "projected_total": 42.5,
             "model_spread": -3.7,
-            "frozen": False,
+            "frozen": True,
         }
         # Live PPG + active calibration would otherwise shift scores.
         calibration = {
@@ -174,7 +174,7 @@ class BettingGameScriptTests(unittest.TestCase):
         }
         with patch(
             "app.analysis.insights.betting.slate._load_projection_snapshot",
-            return_value=locked,
+            return_value=frozen,
         ):
             built = _enrich_event(
                 raw,
@@ -187,6 +187,49 @@ class BettingGameScriptTests(unittest.TestCase):
         self.assertEqual(event["projected_total"], 42.5)
         self.assertEqual(event["model_spread"], -3.7)
         self.assertTrue(
+            any(
+                "locked pregame projection" in driver.lower()
+                for driver in event["model_drivers"]
+            )
+        )
+
+    def test_enrich_event_unfrozen_snapshot_does_not_block_recompute(self):
+        raw = {
+            "event_id": "ip_game_atl_gb",
+            "season": 2026,
+            "week": 3,
+            "spread": -5.5,
+            "over_under": 42.5,
+            "home_implied_total": 24.0,
+            "away_implied_total": 18.5,
+            "home_team": "GB",
+            "away_team": "ATL",
+            "home_team_id": "t-gb",
+            "away_team_id": "t-atl",
+            "start_time": "2026-09-28T20:20:00",
+            "status": "scheduled",
+            "source": "nflverse_schedules",
+        }
+        unfrozen = {
+            "game_id": "ip_game_atl_gb",
+            "projected_home_score": 23.1,
+            "projected_away_score": 19.4,
+            "projected_total": 42.5,
+            "model_spread": -3.7,
+            "frozen": False,
+        }
+        with patch(
+            "app.analysis.insights.betting.slate._load_projection_snapshot",
+            return_value=unfrozen,
+        ):
+            built = _enrich_event(
+                raw,
+                recent_ppg={"t-gb": 30.0, "t-atl": 14.0},
+            )
+        event = built["event"]
+        # Live recompute should not echo the stale unfrozen snapshot.
+        self.assertNotEqual(event["projected_home_score"], 23.1)
+        self.assertFalse(
             any(
                 "locked pregame projection" in driver.lower()
                 for driver in event["model_drivers"]
@@ -288,14 +331,16 @@ class BettingInjuryContextTests(unittest.TestCase):
             "status": "scheduled",
             "source": "nflverse_schedules",
         }
-        qb_out_impact = round(-4.0 * INJURY_MARKET_WEIGHT, 2)
+        qb_out_impact = round(-5.5 * INJURY_MARKET_WEIGHT, 2)
         context = {
             "season": 2026,
             "week": 3,
             "by_team": {
                 "t-buf": {
                     "adjustment_pts": qb_out_impact,
-                    "raw_adjustment_pts": -4.0,
+                    "opponent_adjustment_pts": 0.0,
+                    "raw_adjustment_pts": -5.5,
+                    "raw_opponent_adjustment_pts": 0.0,
                     "injuries": [
                         {
                             "player_id": "p-allen",
@@ -308,11 +353,13 @@ class BettingInjuryContextTests(unittest.TestCase):
                             "injury_type": "Elbow",
                             "is_starter": True,
                             "projection_impact_pts": qb_out_impact,
+                            "own_score_delta": qb_out_impact,
+                            "opponent_score_delta": 0.0,
                         }
                     ],
                     "drivers": [
                         "Josh Allen (QB1) listed Out — Elbow; "
-                        f"projection {qb_out_impact:+g} pts"
+                        f"own projection {qb_out_impact:+g} pts"
                     ],
                 }
             },
@@ -454,6 +501,27 @@ class BettingSlateTests(unittest.TestCase):
             })
             self.assertIsNotNone(market["model_probability"])
 
+        # Residual architecture: projection = market + residual.
+        residuals = event.get("residuals") or {}
+        self.assertEqual(
+            residuals.get("architecture"),
+            "market + residual",
+        )
+        self.assertIsNotNone(event.get("residual_home"))
+        self.assertIsNotNone(event.get("residual_away"))
+        # PPG fallback: home 28 vs market 25.5 → raw +2.5;
+        # away 21 vs market 22 → raw -1.0. Low confidence
+        # shrinks at 15%.
+        self.assertAlmostEqual(
+            event["projected_home_score"],
+            round(25.5 + 0.15 * (28.0 - 25.5), 1),
+            places=1,
+        )
+        self.assertAlmostEqual(
+            event["projected_away_score"],
+            round(22.0 + 0.15 * (21.0 - 22.0), 1),
+            places=1,
+        )
     @patch("app.analysis.insights.betting.slate.load_week_player_context")
     @patch("app.analysis.insights.betting.slate.load_team_strength_context")
     @patch("app.analysis.insights.betting.slate._load_events")
@@ -498,7 +566,7 @@ class BettingSlateTests(unittest.TestCase):
         self.assertTrue(slate["markets"])
         self.assertEqual(slate["injury_report_week"], 3)
         self.assertIn(
-            "confidence-scaled",
+            "model residual",
             slate["source_note"],
         )
         self.assertIn(

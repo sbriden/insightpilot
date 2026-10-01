@@ -153,6 +153,85 @@ export default function MarketDetailDrawer({
             </p>
           </div>
 
+          {market.prediction || market.bet_qualification ? (
+            <div
+              className="rounded-xl border p-4 space-y-3"
+              style={{
+                borderColor: snapshotTokens.border,
+                background: snapshotTokens.background,
+              }}
+            >
+              <div>
+                <p
+                  className="text-xs font-semibold uppercase tracking-[0.14em]"
+                  style={{ color: snapshotTokens.textMuted }}
+                >
+                  Prediction
+                </p>
+                <p
+                  className="mt-1 text-sm"
+                  style={{ color: snapshotTokens.textSecondary }}
+                >
+                  {market.prediction?.note
+                    || "Directional model view only."}
+                </p>
+              </div>
+              <div>
+                <p
+                  className="text-xs font-semibold uppercase tracking-[0.14em]"
+                  style={{ color: snapshotTokens.textMuted }}
+                >
+                  Bet classification
+                  {market.bet_label
+                    ? ` · ${market.bet_label}`
+                    : market.bet_status
+                      ? ` · ${String(market.bet_status)}`
+                      : ""}
+                </p>
+                <p
+                  className="mt-1 text-sm font-medium"
+                  style={{
+                    color:
+                      market.bet_status === "strong_bet"
+                        ? snapshotTokens.success
+                        : market.bet_status === "lean"
+                          ? snapshotTokens.blue
+                          : snapshotTokens.textPrimary,
+                  }}
+                >
+                  {market.no_bet
+                    ? (market.bet_qualification?.summary
+                      || "Pass / No Bet — no actionable edge.")
+                    : (market.bet_qualification?.summary
+                      || "Not evaluated.")}
+                </p>
+                {market.bet_qualification?.reasons_fail?.length ? (
+                  <ul
+                    className="mt-2 space-y-1 text-xs"
+                    style={{ color: snapshotTokens.textMuted }}
+                  >
+                    {market.bet_qualification.reasons_fail
+                      .slice(0, 4)
+                      .map((reason) => (
+                        <li key={reason}>• {reason}</li>
+                      ))}
+                  </ul>
+                ) : null}
+                {market.data_quality?.label ? (
+                  <p
+                    className="mt-1 text-xs"
+                    style={{ color: snapshotTokens.textMuted }}
+                  >
+                    Data quality: {market.data_quality.label}
+                    {market.data_quality.score != null
+                      ? ` (${Math.round(market.data_quality.score * 100)}%)`
+                      : ""}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
           {portfolioImpact ? (
             <div
               className="rounded-xl border p-4"
@@ -175,6 +254,8 @@ export default function MarketDetailDrawer({
               </p>
             </div>
           ) : null}
+
+          <ModelDisagreementPanel market={market} event={event} />
 
           {event ? (
             <div>
@@ -217,6 +298,44 @@ export default function MarketDetailDrawer({
                       : "—"
                   }
                 />
+                {(event.residual_home != null
+                  || event.residual_away != null) && (
+                  <>
+                    <Stat
+                      label={`${event.away_team || "Away"} Residual`}
+                      value={fmtAdj(event.residual_away)}
+                    />
+                    <Stat
+                      label={`${event.home_team || "Home"} Residual`}
+                      value={fmtAdj(event.residual_home)}
+                    />
+                  </>
+                )}
+                {(event.spread_move != null
+                  || event.total_move != null) && (
+                  <>
+                    <Stat
+                      label="Spread Move"
+                      value={fmtAdj(event.spread_move)}
+                    />
+                    <Stat
+                      label="Total Move"
+                      value={fmtAdj(event.total_move)}
+                    />
+                  </>
+                )}
+                {event.market_movement?.vs_model?.label
+                  && event.market_movement.vs_model.label !== "unknown"
+                  && event.market_movement.vs_model.label !== "stable" ? (
+                  <div className="col-span-2">
+                    <p
+                      className="text-xs"
+                      style={{ color: snapshotTokens.textMuted }}
+                    >
+                      {event.market_movement.vs_model.explanation}
+                    </p>
+                  </div>
+                ) : null}
                 {(event.injury_adjustment_away != null
                   || event.injury_adjustment_home != null) && (
                   <>
@@ -293,7 +412,18 @@ export default function MarketDetailDrawer({
 }
 
 function InjuryRow({ injury }: { injury: BettingInjuryNote }) {
-  const impact = injury.projection_impact_pts;
+  const own = injury.own_score_delta;
+  const opp = injury.opponent_score_delta;
+  const impact =
+    own != null && own !== 0
+      ? own
+      : opp != null && opp !== 0
+        ? opp
+        : injury.projection_impact_pts;
+  const impactLabel =
+    opp != null && opp !== 0 && !(own != null && own !== 0)
+      ? "opp"
+      : "pts";
   return (
     <li
       className="rounded-lg border px-3 py-2"
@@ -306,12 +436,12 @@ function InjuryRow({ injury }: { injury: BettingInjuryNote }) {
             style={{ color: snapshotTokens.textPrimary }}
           >
             {injury.player_name}
-            {injury.team || injury.depth_label ? (
+            {injury.team || injury.depth_label || injury.position ? (
               <span
                 className="ml-1 text-xs font-normal"
                 style={{ color: snapshotTokens.textMuted }}
               >
-                {[injury.team, injury.depth_label]
+                {[injury.team, injury.depth_label || injury.position]
                   .filter(Boolean)
                   .join(" · ")}
               </span>
@@ -321,7 +451,11 @@ function InjuryRow({ injury }: { injury: BettingInjuryNote }) {
             className="mt-0.5 text-xs"
             style={{ color: snapshotTokens.textSecondary }}
           >
-            {[injury.game_status, injury.injury_type]
+            {[
+              injury.game_status,
+              injury.injury_type,
+              injury.impact_side === "defense" ? "defense" : null,
+            ]
               .filter(Boolean)
               .join(" · ")}
           </p>
@@ -332,11 +466,112 @@ function InjuryRow({ injury }: { injury: BettingInjuryNote }) {
             style={{ color: snapshotTokens.textPrimary }}
           >
             {impact > 0 ? "+" : ""}
-            {impact.toFixed(1)} pts
+            {impact.toFixed(1)} {impactLabel}
           </span>
         ) : null}
       </div>
     </li>
+  );
+}
+
+function ModelDisagreementPanel({
+  market,
+  event,
+}: {
+  market: BettingMarket;
+  event: BettingEvent | null;
+}) {
+  const fromMarket = market.model_disagreement;
+  const eventBlock =
+    market.market_type === "total"
+      ? event?.model_disagreement?.total
+      : event?.model_disagreement?.spread;
+  const block = fromMarket || eventBlock || null;
+  const estimates =
+    market.ensemble_estimates
+    || block?.estimates
+    || null;
+  const mean = market.projection_mean ?? block?.projection_mean;
+  const stddev = market.projection_stddev ?? block?.projection_stddev;
+  const agreement =
+    market.model_agreement ?? block?.model_agreement;
+  const label =
+    market.model_agreement_label ?? block?.label ?? null;
+
+  if (!estimates || Object.keys(estimates).length === 0) {
+    return null;
+  }
+
+  const rows = Object.entries(estimates).sort(([a], [b]) =>
+    a.localeCompare(b)
+  );
+  const estimateLabels: Record<string, string> = {
+    market: "Market",
+    team_strength: "Team strength",
+    efficiency: "Efficiency",
+    recent_form: "Recent form",
+    injury: "Injury",
+    matchup: "Matchup",
+  };
+
+  return (
+    <div>
+      <p
+        className="text-xs font-semibold uppercase tracking-[0.14em]"
+        style={{ color: snapshotTokens.textMuted }}
+      >
+        Model disagreement
+      </p>
+      <p
+        className="mt-1 text-sm"
+        style={{ color: snapshotTokens.textSecondary }}
+      >
+        Independent estimates — mean and σ matter more than any
+        single number. Low agreement dampens confidence.
+      </p>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <Stat
+          label="Mean"
+          value={
+            mean != null
+              ? `${mean > 0 ? "+" : ""}${mean}`
+              : "—"
+          }
+        />
+        <Stat
+          label="Std Dev"
+          value={stddev != null ? String(stddev) : "—"}
+        />
+        <Stat
+          label="Agreement"
+          value={
+            agreement != null
+              ? `${Math.round(agreement * 100)}%${label ? ` · ${label}` : ""}`
+              : "—"
+          }
+        />
+      </div>
+      <ul className="mt-3 space-y-1.5 text-sm">
+        {rows.map(([key, value]) => (
+          <li
+            key={key}
+            className="flex items-center justify-between gap-3"
+          >
+            <span style={{ color: snapshotTokens.textSecondary }}>
+              {estimateLabels[key] || key}
+            </span>
+            <span
+              className="tabular-nums font-medium"
+              style={{ color: snapshotTokens.textPrimary }}
+            >
+              {value != null
+                ? `${Number(value) > 0 ? "+" : ""}${value}`
+                : "—"}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

@@ -83,7 +83,7 @@ export default function ProductAnalysisTabs({
 
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+    <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
 
       <div className="border-b border-gray-100 bg-gray-50 px-4 py-4 sm:px-6">
 

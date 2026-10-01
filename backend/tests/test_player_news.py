@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import unittest
 
+from app.analysis.insights.injury_relevance import (
+    evaluate_injury_relevance,
+)
 from app.analysis.insights.player_news import (
     _depth_change_impact,
+    _developments_for_week,
     _normalize_category,
     _normalize_impact_filter,
     _normalize_lookback,
     _self_injury_impact,
-    _teammate_injury_impact,
     build_player_news,
 )
 
@@ -48,18 +51,128 @@ class PlayerNewsHelperTests(unittest.TestCase):
         )
         self.assertEqual(impact["level"], "moderate")
 
-    def test_teammate_ahead_out_is_opportunity(self):
-        impact = _teammate_injury_impact(
-            same_position=True,
-            teammate_depth_order=1,
-            player_depth_order=2,
+    def test_wr2_rises_when_wr1_is_out(self):
+        impact = evaluate_injury_relevance(
+            viewer_position="WR",
+            viewer_depth=2,
+            injured_position="WR",
+            injured_depth=1,
             game_status="Out",
+            same_team=True,
+            injured_target_share=0.28,
+            viewer_target_share=0.22,
+            remaining_target_share=0.72,
         )
-        self.assertEqual(impact["level"], "moderate")
+        self.assertIsNotNone(impact)
+        assert impact is not None
+        self.assertEqual(impact["level"], "high")
+        self.assertEqual(impact["fantasy_impact"], "positive")
+        self.assertIn("9 points", impact["summary"])
+        self.assertIn("28%", impact["summary"])
+
+    def test_safety_teammate_is_not_relevant_to_wr(self):
+        impact = evaluate_injury_relevance(
+            viewer_position="WR",
+            viewer_depth=1,
+            injured_position="SS",
+            injured_depth=1,
+            game_status="Out",
+            same_team=True,
+        )
+        self.assertIsNone(impact)
+
+    def test_wr1_out_lowers_qb_efficiency_without_flat_drop(self):
+        impact = evaluate_injury_relevance(
+            viewer_position="QB",
+            viewer_depth=1,
+            injured_position="WR",
+            injured_depth=1,
+            game_status="Out",
+            same_team=True,
+            injured_air_yard_share=0.34,
+        )
+        self.assertIsNotNone(impact)
+        assert impact is not None
+        self.assertEqual(impact["fantasy_impact"], "negative")
+        self.assertIn("catch rate", impact["summary"])
+        self.assertIn("air yards", impact["summary"])
+
+    def test_rb2_rises_when_rb1_is_out(self):
+        impact = evaluate_injury_relevance(
+            viewer_position="RB",
+            viewer_depth=2,
+            injured_position="RB",
+            injured_depth=1,
+            game_status="Out",
+            same_team=True,
+        )
+        self.assertIsNotNone(impact)
+        assert impact is not None
+        self.assertEqual(impact["level"], "high")
+        self.assertEqual(impact["fantasy_impact"], "positive")
+
+    def test_ol_starter_out_hits_qb_and_rb_only(self):
+        qb = evaluate_injury_relevance(
+            viewer_position="QB",
+            viewer_depth=1,
+            injured_position="LT",
+            injured_depth=1,
+            game_status="Out",
+            same_team=True,
+        )
+        rb = evaluate_injury_relevance(
+            viewer_position="RB",
+            viewer_depth=1,
+            injured_position="LT",
+            injured_depth=1,
+            game_status="Out",
+            same_team=True,
+        )
+        wr = evaluate_injury_relevance(
+            viewer_position="WR",
+            viewer_depth=1,
+            injured_position="LT",
+            injured_depth=1,
+            game_status="Out",
+            same_team=True,
+        )
+        self.assertEqual(qb["fantasy_impact"], "negative")
+        self.assertEqual(rb["fantasy_impact"], "negative")
+        self.assertIsNone(wr)
+
+    def test_top_corner_out_lifts_primary_wr(self):
+        primary = evaluate_injury_relevance(
+            viewer_position="WR",
+            viewer_depth=1,
+            injured_position="CB",
+            injured_depth=1,
+            game_status="Out",
+            same_team=False,
+        )
+        wr3 = evaluate_injury_relevance(
+            viewer_position="WR",
+            viewer_depth=3,
+            injured_position="CB",
+            injured_depth=1,
+            game_status="Out",
+            same_team=False,
+        )
+        self.assertEqual(primary["fantasy_impact"], "positive")
+        self.assertIn("covers", primary["summary"])
+        self.assertIsNone(wr3)
+
+    def test_featured_window_keeps_only_the_requested_week(self):
+        developments = [
+            {"week": 2, "headline": "Older"},
+            {"week": 4, "headline": "Current"},
+            {"week": None, "headline": "Undated"},
+        ]
+        current = _developments_for_week(developments, 4)
         self.assertEqual(
-            impact["fantasy_impact"],
-            "positive",
+            [item["headline"] for item in current],
+            ["Current"],
         )
+        self.assertEqual(_developments_for_week(developments, None), [])
 
     def test_depth_promotion(self):
         impact = _depth_change_impact(

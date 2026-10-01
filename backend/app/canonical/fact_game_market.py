@@ -37,6 +37,12 @@ FACT_GAME_MARKET_COLUMNS = [
     "over_under",
     "home_implied_total",
     "away_implied_total",
+    "opening_spread",
+    "opening_over_under",
+    "opening_home_implied_total",
+    "opening_away_implied_total",
+    "opening_captured_at",
+    "line_moved_at",
     "season",
     "week",
     "season_type",
@@ -240,6 +246,14 @@ def build_fact_game_market(
                 "over_under": over_under,
                 "home_implied_total": home_implied,
                 "away_implied_total": away_implied,
+                # First write seeds opening = current; upsert
+                # preserves prior opening once set.
+                "opening_spread": spread,
+                "opening_over_under": over_under,
+                "opening_home_implied_total": home_implied,
+                "opening_away_implied_total": away_implied,
+                "opening_captured_at": None,
+                "line_moved_at": None,
                 "season": _normalize_int(row.get("season")),
                 "week": _normalize_int(row.get("week")),
                 "season_type": _season_type(
@@ -365,6 +379,12 @@ def upsert_fact_game_market(
             over_under,
             home_implied_total,
             away_implied_total,
+            opening_spread,
+            opening_over_under,
+            opening_home_implied_total,
+            opening_away_implied_total,
+            opening_captured_at,
+            line_moved_at,
             season,
             week,
             season_type,
@@ -379,6 +399,15 @@ def upsert_fact_game_market(
             :over_under,
             :home_implied_total,
             :away_implied_total,
+            :opening_spread,
+            :opening_over_under,
+            :opening_home_implied_total,
+            :opening_away_implied_total,
+            COALESCE(
+              CAST(NULLIF(:opening_captured_at, '') AS TIMESTAMP),
+              CURRENT_TIMESTAMP
+            ),
+            CAST(NULLIF(:line_moved_at, '') AS TIMESTAMP),
             :season,
             :week,
             :season_type,
@@ -394,6 +423,40 @@ def upsert_fact_game_market(
             over_under = EXCLUDED.over_under,
             home_implied_total = EXCLUDED.home_implied_total,
             away_implied_total = EXCLUDED.away_implied_total,
+            opening_spread = COALESCE(
+                {FANTASY_SCHEMA}.fact_game_market.opening_spread,
+                EXCLUDED.opening_spread,
+                EXCLUDED.spread
+            ),
+            opening_over_under = COALESCE(
+                {FANTASY_SCHEMA}.fact_game_market.opening_over_under,
+                EXCLUDED.opening_over_under,
+                EXCLUDED.over_under
+            ),
+            opening_home_implied_total = COALESCE(
+                {FANTASY_SCHEMA}.fact_game_market.opening_home_implied_total,
+                EXCLUDED.opening_home_implied_total,
+                EXCLUDED.home_implied_total
+            ),
+            opening_away_implied_total = COALESCE(
+                {FANTASY_SCHEMA}.fact_game_market.opening_away_implied_total,
+                EXCLUDED.opening_away_implied_total,
+                EXCLUDED.away_implied_total
+            ),
+            opening_captured_at = COALESCE(
+                {FANTASY_SCHEMA}.fact_game_market.opening_captured_at,
+                EXCLUDED.opening_captured_at,
+                CURRENT_TIMESTAMP
+            ),
+            line_moved_at = CASE
+              WHEN
+                {FANTASY_SCHEMA}.fact_game_market.spread
+                  IS DISTINCT FROM EXCLUDED.spread
+                OR {FANTASY_SCHEMA}.fact_game_market.over_under
+                  IS DISTINCT FROM EXCLUDED.over_under
+              THEN CURRENT_TIMESTAMP
+              ELSE {FANTASY_SCHEMA}.fact_game_market.line_moved_at
+            END,
             season = EXCLUDED.season,
             week = EXCLUDED.week,
             season_type = EXCLUDED.season_type,
@@ -430,6 +493,34 @@ def upsert_fact_game_market(
                 ),
                 "away_implied_total": _sql_null_if_missing(
                     record.get("away_implied_total")
+                ),
+                "opening_spread": _sql_null_if_missing(
+                    record.get("opening_spread")
+                    if record.get("opening_spread") is not None
+                    else record.get("spread")
+                ),
+                "opening_over_under": _sql_null_if_missing(
+                    record.get("opening_over_under")
+                    if record.get("opening_over_under") is not None
+                    else record.get("over_under")
+                ),
+                "opening_home_implied_total": _sql_null_if_missing(
+                    record.get("opening_home_implied_total")
+                    if record.get("opening_home_implied_total")
+                    is not None
+                    else record.get("home_implied_total")
+                ),
+                "opening_away_implied_total": _sql_null_if_missing(
+                    record.get("opening_away_implied_total")
+                    if record.get("opening_away_implied_total")
+                    is not None
+                    else record.get("away_implied_total")
+                ),
+                "opening_captured_at": _sql_null_if_missing(
+                    record.get("opening_captured_at")
+                ),
+                "line_moved_at": _sql_null_if_missing(
+                    record.get("line_moved_at")
                 ),
                 "season": _sql_null_if_missing(
                     record.get("season")

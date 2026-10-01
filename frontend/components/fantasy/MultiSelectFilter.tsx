@@ -61,13 +61,13 @@ export default function MultiSelectFilter({
 
   const summary = (() => {
     if (isCleared) {
-      return `No ${label.toLowerCase()}`;
+      return "None";
     }
     if (treatAsAll || allSelected) {
-      return `All ${label.toLowerCase()}`;
+      return "All";
     }
     if (selected.length === 0) {
-      return `No ${label.toLowerCase()}`;
+      return "None";
     }
     if (selected.length === 1) {
       return selected[0];
@@ -96,27 +96,25 @@ export default function MultiSelectFilter({
   }
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative block min-w-[8.5rem] text-sm">
+      <span
+        className="mb-1 block text-[11px] font-semibold uppercase tracking-wide"
+        style={{ color: snapshotTokens.textMuted }}
+      >
+        {label}
+      </span>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="inline-flex min-w-[8.5rem] items-center justify-between gap-2 rounded-lg border bg-white px-2.5 py-2 text-sm"
+        className="inline-flex w-full items-center justify-between gap-2 rounded-lg border bg-white px-2.5 py-2 text-sm"
         style={{
           borderColor: snapshotTokens.border,
-          color: snapshotTokens.textSecondary,
+          color: snapshotTokens.textPrimary,
         }}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className="truncate">
-          <span
-            className="mr-1 text-[11px] font-semibold uppercase tracking-wide"
-            style={{ color: snapshotTokens.textMuted }}
-          >
-            {label}
-          </span>
-          {summary}
-        </span>
+        <span className="truncate">{summary}</span>
         <ChevronDown className="h-4 w-4 shrink-0" />
       </button>
 

@@ -408,6 +408,65 @@ export interface FantasyTeamSummary {
   name: string;
   conference?: string | null;
   division?: string | null;
+  logo_url?: string | null;
+}
+
+
+export interface FantasyTeamRecord {
+  wins: number;
+  losses: number;
+  ties: number;
+  point_differential?: number | null;
+}
+
+
+export interface FantasyTeamOffense {
+  points?: number | null;
+  points_per_game?: number | null;
+  yards?: number | null;
+  yards_per_game?: number | null;
+  yards_per_play?: number | null;
+  epa_per_play?: number | null;
+  pass_epa_per_attempt?: number | null;
+  rush_epa_per_attempt?: number | null;
+  pass_rate?: number | null;
+  seconds_per_play?: number | null;
+  red_zone_td_rate?: number | null;
+  turnovers?: number | null;
+  turnovers_per_game?: number | null;
+}
+
+
+export interface FantasyTeamDefense {
+  points_allowed?: number | null;
+  points_allowed_per_game?: number | null;
+  yards_allowed?: number | null;
+  yards_allowed_per_game?: number | null;
+  pass_yards_allowed_per_game?: number | null;
+  rush_yards_allowed_per_game?: number | null;
+  pass_epa_allowed_per_game?: number | null;
+  rush_epa_allowed_per_game?: number | null;
+  sack_rate?: number | null;
+  pressure_rate?: number | null;
+}
+
+
+export interface FantasyTeamEfficiency {
+  completion_pct?: number | null;
+  yards_per_attempt?: number | null;
+  yards_per_carry?: number | null;
+  catch_rate?: number | null;
+  yards_per_target?: number | null;
+  yards_per_reception?: number | null;
+}
+
+
+export interface FantasyTeamTotals {
+  games?: number | null;
+  record?: FantasyTeamRecord | null;
+  offense?: FantasyTeamOffense | null;
+  defense?: FantasyTeamDefense | null;
+  efficiency?: FantasyTeamEfficiency | null;
 }
 
 
@@ -469,6 +528,7 @@ export interface FantasyDepthChartGroup {
 export interface FantasyTeamStats {
   team: FantasyTeamSummary;
   season?: number | null;
+  team_totals?: FantasyTeamTotals | null;
   depth_season?: number | null;
   depth_week?: number | null;
   depth_as_of?: string | null;
@@ -737,6 +797,9 @@ export interface FantasyUsageRoleChange {
 export interface FantasyUsageOppProdPoint {
   week?: number | null;
   label?: string | null;
+  opponent?: string | null;
+  opponent_label?: string | null;
+  home_away?: string | null;
   opportunity: number;
   production: number;
 }
@@ -2587,6 +2650,24 @@ export type BettingMarketType =
 
 export type BettingConfidence = "High" | "Moderate" | "Low" | string;
 
+export interface BettingEnsembleEstimates {
+  estimates?: Record<string, number | null | undefined>;
+  projection_mean?: number | null;
+  projection_stddev?: number | null;
+  model_agreement?: number | null;
+  n_models?: number | null;
+  unit?: string | null;
+  label?: string | null;
+  range?: number | null;
+}
+
+export interface BettingModelDisagreement {
+  spread?: BettingEnsembleEstimates | null;
+  total?: BettingEnsembleEstimates | null;
+  models_available?: string[];
+  note?: string | null;
+}
+
 export interface BettingSignal {
   signal_id: string;
   event_id: string;
@@ -2612,11 +2693,26 @@ export interface BettingMarket {
   selection: string;
   line?: number | null;
   price?: number | null;
+  opening_line?: number | null;
+  opening_price?: number | null;
+  current_line?: number | null;
+  current_price?: number | null;
+  line_move?: number | null;
   model_probability?: number | null;
+  raw_model_probability?: number | null;
+  probability_calibrated?: boolean;
+  probability_calibration_method?: string | null;
   market_probability?: number | null;
   model_fair_price?: number | null;
   model_projection?: number | null;
   market_implied_projection?: number | null;
+  projection_mean?: number | null;
+  projection_stddev?: number | null;
+  model_agreement?: number | null;
+  model_agreement_label?: string | null;
+  ensemble_estimates?: Record<string, number | null | undefined> | null;
+  ensemble_n_models?: number | null;
+  model_disagreement?: BettingEnsembleEstimates | null;
   edge?: number | null;
   edge_probability?: number | null;
   expected_value?: number | null;
@@ -2625,6 +2721,42 @@ export interface BettingMarket {
   direction?: string | null;
   primary_signal?: string | null;
   opportunity?: string | null;
+  prediction?: {
+    has_prediction?: boolean;
+    market_type?: string | null;
+    selection?: string | null;
+    direction?: string | null;
+    model_projection?: number | null;
+    market_projection?: number | null;
+    raw_probability?: number | null;
+    calibrated_probability?: number | null;
+    note?: string | null;
+  } | null;
+  data_quality?: {
+    score?: number | null;
+    label?: string | null;
+    factors?: string[];
+  } | null;
+  bet_qualification?: {
+    qualified?: boolean;
+    no_bet?: boolean;
+    actionable?: boolean;
+    status?: "strong_bet" | "lean" | "pass" | string | null;
+    label?: "Strong Bet" | "Lean" | "Pass" | string | null;
+    summary?: string | null;
+    reasons_pass?: string[];
+    reasons_fail?: string[];
+    gates?: Record<string, boolean>;
+    market_movement?: {
+      invalidates?: boolean;
+      reason?: string | null;
+    } | null;
+  } | null;
+  bet_qualified?: boolean;
+  bet_status?: "strong_bet" | "lean" | "pass" | string | null;
+  bet_label?: "Strong Bet" | "Lean" | "Pass" | string | null;
+  no_bet?: boolean;
+  decision_pipeline?: string[];
   status?: string | null;
   source?: string | null;
 }
@@ -2641,7 +2773,21 @@ export interface BettingInjuryNote {
   practice_status?: string | null;
   injury_type?: string | null;
   is_starter?: boolean;
+  impact_side?: "offense" | "defense" | string | null;
+  role_multiplier?: number | null;
+  base_impact?: number | null;
+  raw_magnitude?: number | null;
+  own_score_delta?: number | null;
+  opponent_score_delta?: number | null;
   projection_impact_pts?: number | null;
+  quality_factors?: {
+    starter_quality?: number;
+    replacement_quality?: number;
+    snap_expectation?: number;
+    team_dependency?: number;
+    backup_performance?: number;
+    scheme_impact?: number;
+  } | null;
   is_expected_to_play?: boolean | null;
 }
 
@@ -2677,6 +2823,60 @@ export interface BettingEvent {
   projected_away_score?: number | null;
   projected_total?: number | null;
   model_spread?: number | null;
+  residual_home?: number | null;
+  residual_away?: number | null;
+  opening_spread?: number | null;
+  current_spread?: number | null;
+  opening_total?: number | null;
+  current_total?: number | null;
+  opening_moneyline?: number | null;
+  current_moneyline?: number | null;
+  spread_move?: number | null;
+  total_move?: number | null;
+  moneyline_move?: number | null;
+  market_movement?: {
+    opening_spread?: number | null;
+    current_spread?: number | null;
+    opening_total?: number | null;
+    current_total?: number | null;
+    opening_moneyline?: number | null;
+    current_moneyline?: number | null;
+    spread_move?: number | null;
+    total_move?: number | null;
+    moneyline_move?: number | null;
+    moved?: boolean;
+    seconds_since_move?: number | null;
+    spread_velocity?: number | null;
+    total_velocity?: number | null;
+    consensus_move?: string | null;
+    vs_model?: {
+      label?: string | null;
+      aligned?: boolean | null;
+      explanation?: string | null;
+    } | null;
+    note?: string | null;
+  } | null;
+  residuals?: {
+    architecture?: string | null;
+    residual_home?: number | null;
+    residual_away?: number | null;
+    raw_residual_home?: number | null;
+    raw_residual_away?: number | null;
+    total_residual_home?: number | null;
+    total_residual_away?: number | null;
+    shrink?: number | null;
+    confidence?: string | null;
+    situational_residual_home?: number | null;
+    situational_residual_away?: number | null;
+  } | null;
+  model_disagreement?: BettingModelDisagreement | null;
+  projection_blend?: {
+    confidence?: string | null;
+    market_weight?: number | null;
+    model_weight?: number | null;
+    mode?: string | null;
+    formula?: string | null;
+  } | null;
   game_scripts?: BettingGameScript[];
   injury_adjustment_home?: number | null;
   injury_adjustment_away?: number | null;
@@ -2700,6 +2900,10 @@ export interface BettingSlate {
   market_count: number;
   model_coverage_pct: number;
   markets_with_edge: number;
+  markets_qualified?: number;
+  markets_strong_bet?: number;
+  markets_lean?: number;
+  markets_no_bet?: number;
   average_confidence: BettingConfidence;
   events: BettingEvent[];
   markets: BettingMarket[];
@@ -2758,6 +2962,13 @@ export interface BettingModelResultRow {
   market_type?: string | null;
   selection?: string | null;
   line?: number | null;
+  bet_line?: number | null;
+  closing_line?: number | null;
+  bet_price?: number | null;
+  closing_price?: number | null;
+  clv?: number | null;
+  clv_unit?: string | null;
+  beat_close?: boolean | null;
   result?: string | null;
   model_correct?: boolean | null;
   model_probability?: number | null;
@@ -2771,10 +2982,120 @@ export interface BettingModelResultRow {
   model_spread?: number | null;
   total_error?: number | null;
   spread_error?: number | null;
-  closing_line?: number | null;
   home_team?: string | null;
   away_team?: string | null;
   projection_captured_at?: string | null;
+  units?: number | null;
+  edge_bucket?: string | null;
+  favorite_underdog?: string | null;
+  home_away?: string | null;
+  week?: number | null;
+}
+
+export interface BettingClvBreakdownRow {
+  key: string;
+  bets: number;
+  decided: number;
+  correct: number;
+  hit_rate?: number | null;
+  average_clv?: number | null;
+  median_clv?: number | null;
+  beat_close_pct?: number | null;
+  units?: number | null;
+  roi_pct?: number | null;
+  average_edge?: number | null;
+  average_closing_edge?: number | null;
+  sample_size?: number | null;
+  win_rate?: number | null;
+  lo?: number | null;
+  hi?: number | null;
+  mean_predicted_pct?: number | null;
+  calibration_gap?: number | null;
+  calibration?: {
+    mean_predicted_pct?: number | null;
+    actual_win_pct?: number | null;
+    gap_pp?: number | null;
+    n?: number | null;
+  } | null;
+}
+
+export interface BettingMarketPerformanceCard {
+  market_type?: string;
+  label?: string;
+  key?: string;
+  bets?: number;
+  sample_size?: number | null;
+  decided?: number;
+  correct?: number;
+  hit_rate?: number | null;
+  ats_win_pct?: number | null;
+  ou_win_pct?: number | null;
+  win_pct?: number | null;
+  roi_pct?: number | null;
+  units?: number | null;
+  average_clv?: number | null;
+  median_clv?: number | null;
+  mae?: number | null;
+  mean_predicted_pct?: number | null;
+  calibration_gap?: number | null;
+  brier?: number | null;
+  quality_score?: number | null;
+  confidence_weight?: number | null;
+  confidence_active?: boolean;
+  high_min?: number | null;
+  moderate_min?: number | null;
+  calibration?: {
+    mean_predicted_pct?: number | null;
+    actual_win_pct?: number | null;
+    gap_pp?: number | null;
+    brier?: number | null;
+    n?: number | null;
+  } | null;
+}
+
+export interface BettingMarketPerformance {
+  markets?: {
+    spread?: BettingMarketPerformanceCard;
+    total?: BettingMarketPerformanceCard;
+    moneyline?: BettingMarketPerformanceCard;
+    [key: string]: BettingMarketPerformanceCard | undefined;
+  };
+  ranking?: string[];
+  best_market?: string | null;
+  note?: string | null;
+  active?: boolean;
+}
+
+export interface BettingEdgeConfidenceDiagnostics {
+  thresholds?: {
+    active?: boolean;
+    method?: string | null;
+    sample_size?: number | null;
+    high_min?: number | null;
+    moderate_min?: number | null;
+    note?: string | null;
+    by_market?: Record<
+      string,
+      {
+        active?: boolean;
+        high_min?: number | null;
+        moderate_min?: number | null;
+        weight?: number | null;
+        quality_score?: number | null;
+        sample_size?: number | null;
+      }
+    >;
+  } | null;
+  baseline?: {
+    win_rate?: number | null;
+    roi_pct?: number | null;
+    average_clv?: number | null;
+    sample_size?: number | null;
+  } | null;
+  buckets?: BettingClvBreakdownRow[];
+  by_market?: Record<string, unknown>;
+  market_note?: string | null;
+  note?: string | null;
 }
 
 export interface BettingModelResultsSummary {
@@ -2784,26 +3105,43 @@ export interface BettingModelResultsSummary {
   model_incorrect: number;
   push: number;
   hit_rate?: number | null;
+  ats_win_pct?: number | null;
+  ou_win_pct?: number | null;
+  ml_win_pct?: number | null;
+  average_clv?: number | null;
+  median_clv?: number | null;
+  beat_close_pct?: number | null;
+  units?: number | null;
+  roi_pct?: number | null;
+  average_edge?: number | null;
+  average_closing_edge?: number | null;
+  clv?: {
+    bets?: number;
+    decided?: number;
+    ats_win_pct?: number | null;
+    ou_win_pct?: number | null;
+    ml_win_pct?: number | null;
+    average_clv?: number | null;
+    median_clv?: number | null;
+    beat_close_pct?: number | null;
+    units?: number | null;
+    roi_pct?: number | null;
+    average_edge?: number | null;
+    average_closing_edge?: number | null;
+    note?: string | null;
+  } | null;
   average_total_error?: number | null;
   average_spread_error?: number | null;
   average_abs_total_error?: number | null;
   average_abs_spread_error?: number | null;
-  by_market: Array<{
-    key: string;
-    bets: number;
-    decided: number;
-    correct: number;
-    hit_rate?: number | null;
-    average_edge?: number | null;
-  }>;
-  by_confidence: Array<{
-    key: string;
-    bets: number;
-    decided: number;
-    correct: number;
-    hit_rate?: number | null;
-    average_edge?: number | null;
-  }>;
+  by_market: BettingClvBreakdownRow[];
+  by_confidence: BettingClvBreakdownRow[];
+  by_edge_bucket?: BettingClvBreakdownRow[];
+  by_favorite_underdog?: BettingClvBreakdownRow[];
+  by_home_away?: BettingClvBreakdownRow[];
+  by_week?: BettingClvBreakdownRow[];
+  edge_confidence?: BettingEdgeConfidenceDiagnostics | null;
+  market_performance?: BettingMarketPerformance | null;
   calibration: Array<{
     bucket: string;
     bets: number;
@@ -2862,6 +3200,24 @@ export interface BettingResultsPayload {
   label?: string;
   model_results: BettingModelResultsSummary;
   calibration_feedback?: BettingCalibrationFeedback | null;
+  probability_calibration?: {
+    active?: boolean;
+    method?: string | null;
+    sample_size?: number | null;
+    metrics?: {
+      brier_raw?: number | null;
+      brier_calibrated?: number | null;
+      ece_raw?: number | null;
+      ece_calibrated?: number | null;
+      empirical_win_rate?: number | null;
+      mean_predicted_raw?: number | null;
+      mean_predicted_calibrated?: number | null;
+      n?: number | null;
+    } | null;
+    note?: string | null;
+  } | null;
+  edge_confidence?: BettingEdgeConfidenceDiagnostics | null;
+  market_performance?: BettingMarketPerformance | null;
   generated_at?: string | null;
 }
 

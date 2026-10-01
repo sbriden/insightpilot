@@ -2,36 +2,40 @@
 Player / injury context for Sports Betting projections.
 
 Reuses fantasy canonical facts (fact_injury, fact_depth_chart,
-dim_player) so betting totals reflect starter availability the
-same way Player Overview surfaces injury status.
+dim_player) and applies position-specific injury impacts
+(QB / RB / WR / TE / OL / DL / LB / CB / S) so a starter QB Out
+moves projections far more than a rotational linebacker.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import text
+
+from app.analysis.insights.betting.injury_impact import (
+    CANONICAL_POSITIONS,
+    DEPTH_CHART_POSITIONS,
+    canonicalize_position,
+    estimate_injury_impact,
+    material_injury,
+)
 from app.analysis.insights.betting.pricing import num
+from app.canonical.schema import FANTASY_SCHEMA
+from app.database import engine
 
 
-# Raw team-point deltas before market double-count dampening.
-# Market-implied scores often already price known outs; callers
-# apply INJURY_MARKET_WEIGHT to the summed raw delta.
+# Market-implied scores often already price known outs; dampen
+# the summed raw positional delta before applying to projections.
+INJURY_MARKET_WEIGHT = 0.45
+_MAX_OWN_ADJUSTMENT = -7.5
+_MAX_OPPONENT_ADJUSTMENT = 4.5
+
 _STATUS_WEIGHT = {
     "out": 1.0,
     "doubtful": 0.65,
     "questionable": 0.25,
 }
-
-_POSITION_IMPACT = {
-    "QB": 4.0,
-    "RB": 1.5,
-    "WR": 1.0,
-    "TE": 0.6,
-}
-
-_OFFENSE_POSITIONS = {"QB", "RB", "WR", "TE", "FB", "HB"}
-INJURY_MARKET_WEIGHT = 0.45
-_MAX_TEAM_ADJUSTMENT = -6.0
 
 
 def load_week_player_context(
@@ -42,30 +46,21 @@ def load_week_player_context(
     """
     Build a team_id → injury/depth context map for one slate week.
 
-    Returns:
-      {
-        "season": int,
-        "week": int,
-        "by_team": {
-          team_id: {
-            "adjustment_pts": float,
-            "raw_adjustment_pts": float,
-            "injuries": [InjuryNote, ...],
-            "drivers": [str, ...],
-          }
-        }
-      }
+    Returns per team:
+      adjustment_pts          — net effect on THIS team's score
+      opponent_adjustment_pts — effect on OPPONENT score (D injuries)
+      raw_adjustment_pts / raw_opponent_adjustment_pts
+      injuries / drivers
     """
 
     injuries = _load_injuries(season=season, week=week)
     if not injuries:
-        # Fall back to nearest prior week with reports.
         prior = _nearest_injury_week(season=season, week=week)
         if prior is not None and prior != week:
             injuries = _load_injuries(season=season, week=prior)
             week = prior
 
-    depth = _load_depth_starters(season=season, week=week)
+    depth = _load_depth_chart(season=season, week=week)
     names = _load_player_directory(
         {row["player_id"] for row in injuries if row.get("player_id")}
         | {row["player_id"] for row in depth if row.get("player_id")}
@@ -105,19 +100,46 @@ def load_week_player_context(
             position=position,
             depth_rows=depth,
         )
-        is_starter = depth_order == 1 or (
-            position == "QB"
-            and depth_order is not None
-            and depth_order <= 1
+        is_starter = bool(
+            depth_order == 1
+            or (
+                position == "QB"
+                and depth_order is not None
+                and depth_order <= 1
+            )
         )
 
         injury_type = _clean_text(enriched_row.get("injury_type"))
         practice = _clean_text(enriched_row.get("practice_status"))
-        raw_delta = 0.0
-        if is_starter or (
-            position == "QB" and status in {"out", "doubtful"}
-        ):
-            raw_delta = _raw_point_delta(position=position, status=status)
+        impact = estimate_injury_impact(
+            position=position,
+            status=status,
+            depth_order=depth_order,
+            is_starter=is_starter,
+        )
+        # Only apply impact for starters / high-role slots, or any
+        # QB Out/Doubtful, or material rotational outs.
+        apply = False
+        if impact.get("applies"):
+            if is_starter or (
+                position == "QB" and status in {"out", "doubtful"}
+            ):
+                apply = True
+            elif status in {"out", "doubtful"} and material_injury(
+                impact, min_magnitude=0.2
+            ):
+                apply = True
+
+        own_raw = (
+            float(impact.get("own_score_delta") or 0.0) if apply else 0.0
+        )
+        opp_raw = (
+            float(impact.get("opponent_score_delta") or 0.0)
+            if apply
+            else 0.0
+        )
+        market_own = round(own_raw * INJURY_MARKET_WEIGHT, 2)
+        market_opp = round(opp_raw * INJURY_MARKET_WEIGHT, 2)
 
         note = {
             "player_id": player_id,
@@ -133,19 +155,26 @@ def load_week_player_context(
             "practice_status": practice,
             "injury_type": injury_type,
             "is_starter": bool(is_starter),
-            "projection_impact_pts": (
-                round(raw_delta * INJURY_MARKET_WEIGHT, 2)
-                if raw_delta
-                else 0.0
+            "impact_side": impact.get("side"),
+            "role_multiplier": impact.get("role_multiplier"),
+            "base_impact": impact.get("base_impact"),
+            "raw_magnitude": (
+                impact.get("raw_magnitude") if apply else 0.0
             ),
+            "own_score_delta": market_own,
+            "opponent_score_delta": market_opp,
+            "projection_impact_pts": market_own if market_own else (
+                market_opp if market_opp else 0.0
+            ),
+            "quality_factors": impact.get("quality_factors"),
             "is_expected_to_play": enriched_row.get("is_expected_to_play"),
         }
 
-        # Keep the board focused: starters, or Out/Doubtful anyone.
         if not (
             is_starter
             or status in {"out", "doubtful"}
             or note["projection_impact_pts"]
+            or note["opponent_score_delta"]
         ):
             continue
 
@@ -153,36 +182,54 @@ def load_week_player_context(
             team_id,
             {
                 "adjustment_pts": 0.0,
+                "opponent_adjustment_pts": 0.0,
                 "raw_adjustment_pts": 0.0,
+                "raw_opponent_adjustment_pts": 0.0,
                 "injuries": [],
                 "drivers": [],
             },
         )
         bucket["injuries"].append(note)
-        if raw_delta:
-            bucket["raw_adjustment_pts"] += raw_delta
-            impact = round(raw_delta * INJURY_MARKET_WEIGHT, 2)
+        if apply and (own_raw or opp_raw):
+            bucket["raw_adjustment_pts"] += own_raw
+            bucket["raw_opponent_adjustment_pts"] += opp_raw
             label = note["depth_label"] or position or "Player"
             detail = injury_type or note["game_status"]
-            bucket["drivers"].append(
-                f"{name} ({label}) listed {note['game_status']}"
-                f"{f' — {detail}' if detail and detail != note['game_status'] else ''}"
-                f"; projection {impact:+g} pts"
-            )
+            if own_raw:
+                shown = market_own
+                bucket["drivers"].append(
+                    f"{name} ({label}) listed {note['game_status']}"
+                    f"{f' — {detail}' if detail and detail != note['game_status'] else ''}"
+                    f"; own projection {shown:+g} pts"
+                )
+            if opp_raw:
+                shown = market_opp
+                bucket["drivers"].append(
+                    f"{name} ({label}) listed {note['game_status']}"
+                    f"{f' — {detail}' if detail and detail != note['game_status'] else ''}"
+                    f"; opponent projection {shown:+g} pts"
+                )
 
     for team_id, bucket in by_team.items():
-        raw = float(bucket["raw_adjustment_pts"])
-        adjusted = max(
-            _MAX_TEAM_ADJUSTMENT,
-            round(raw * INJURY_MARKET_WEIGHT, 2),
+        raw_own = float(bucket["raw_adjustment_pts"])
+        raw_opp = float(bucket["raw_opponent_adjustment_pts"])
+        bucket["raw_adjustment_pts"] = round(raw_own, 2)
+        bucket["raw_opponent_adjustment_pts"] = round(raw_opp, 2)
+        bucket["adjustment_pts"] = max(
+            _MAX_OWN_ADJUSTMENT,
+            round(raw_own * INJURY_MARKET_WEIGHT, 2),
         )
-        bucket["raw_adjustment_pts"] = round(raw, 2)
-        bucket["adjustment_pts"] = adjusted
-        # Sort: starters first, then by absolute impact, then name.
+        bucket["opponent_adjustment_pts"] = min(
+            _MAX_OPPONENT_ADJUSTMENT,
+            round(raw_opp * INJURY_MARKET_WEIGHT, 2),
+        )
         bucket["injuries"].sort(
             key=lambda item: (
                 0 if item.get("is_starter") else 1,
-                -abs(float(item.get("projection_impact_pts") or 0)),
+                -abs(
+                    float(item.get("raw_magnitude") or 0)
+                    or float(item.get("projection_impact_pts") or 0)
+                ),
                 str(item.get("player_name") or ""),
             )
         )
@@ -191,6 +238,7 @@ def load_week_player_context(
         "season": int(season),
         "week": int(week),
         "by_team": by_team,
+        "positions_modeled": list(CANONICAL_POSITIONS),
     }
 
 
@@ -198,24 +246,42 @@ def team_injury_context(
     context: dict[str, Any] | None,
     team_id: str | None,
 ) -> dict[str, Any]:
+    empty = {
+        "adjustment_pts": 0.0,
+        "opponent_adjustment_pts": 0.0,
+        "raw_adjustment_pts": 0.0,
+        "raw_opponent_adjustment_pts": 0.0,
+        "injuries": [],
+        "drivers": [],
+    }
     if not context or not team_id:
-        return {
-            "adjustment_pts": 0.0,
-            "raw_adjustment_pts": 0.0,
-            "injuries": [],
-            "drivers": [],
-        }
-    return dict(
-        context.get("by_team", {}).get(
-            str(team_id),
-            {
-                "adjustment_pts": 0.0,
-                "raw_adjustment_pts": 0.0,
-                "injuries": [],
-                "drivers": [],
-            },
-        )
+        return dict(empty)
+    return dict(context.get("by_team", {}).get(str(team_id), empty))
+
+
+def combined_score_adjustments(
+    *,
+    home_injury: dict[str, Any] | None,
+    away_injury: dict[str, Any] | None,
+) -> tuple[float, float]:
+    """
+    Net home/away score deltas from both teams' injury reports.
+
+    Offense injuries cut that team's score; defense injuries raise
+    the opponent's score.
+    """
+
+    home = home_injury or {}
+    away = away_injury or {}
+    home_adj = (
+        float(home.get("adjustment_pts") or 0.0)
+        + float(away.get("opponent_adjustment_pts") or 0.0)
     )
+    away_adj = (
+        float(away.get("adjustment_pts") or 0.0)
+        + float(home.get("opponent_adjustment_pts") or 0.0)
+    )
+    return round(home_adj, 2), round(away_adj, 2)
 
 
 def apply_injury_adjustment(
@@ -225,17 +291,6 @@ def apply_injury_adjustment(
     if score is None:
         return None
     return round(float(score) + float(adjustment_pts or 0.0), 1)
-
-
-def _raw_point_delta(*, position: str | None, status: str) -> float:
-    pos = (position or "").upper()
-    base = _POSITION_IMPACT.get(pos)
-    if base is None:
-        return 0.0
-    weight = _STATUS_WEIGHT.get(status, 0.0)
-    if weight <= 0:
-        return 0.0
-    return -abs(base) * weight
 
 
 def _normalize_status(value: Any) -> str | None:
@@ -278,20 +333,19 @@ def _resolve_position(
     injury_row: dict[str, Any],
     starter_keys: dict[tuple[str, str], dict[str, Any]],
 ) -> str:
-    # Prefer roster/depth offense position when available.
     for key in ("position", "roster_position", "depth_position"):
         pos = _clean_text(injury_row.get(key))
         if pos:
-            upper = pos.upper()
-            if upper in {"FB", "HB"}:
-                return "RB"
-            if upper in _OFFENSE_POSITIONS:
-                return upper
+            canonical = canonicalize_position(pos)
+            if canonical:
+                return canonical
     team_id = str(injury_row.get("team_id") or "")
     player_id = str(injury_row.get("player_id") or "")
     for (tid, pos), starter in starter_keys.items():
         if tid == team_id and str(starter.get("player_id")) == player_id:
-            return pos
+            return canonicalize_position(pos) or pos
+    # Unknown skill → WR as soft default keeps prior behavior for
+    # offense-only reports without a roster position.
     return "WR"
 
 
@@ -311,10 +365,15 @@ def _resolve_depth_order(
     if not matches:
         return None
     if position:
+        canonical = canonicalize_position(position) or position.upper()
         pos_matches = [
             row
             for row in matches
-            if str(row.get("position") or "").upper() == position.upper()
+            if (
+                canonicalize_position(row.get("position"))
+                or str(row.get("position") or "").upper()
+            )
+            == canonical
         ]
         if pos_matches:
             matches = pos_matches
@@ -334,133 +393,152 @@ def _depth_label(position: str | None, depth_order: int | None) -> str | None:
     return f"{position}{depth_order}"
 
 
+def _fetch_rows(sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    with engine.connect() as connection:
+        rows = connection.execute(text(sql), params).mappings().all()
+    return [dict(row) for row in rows]
+
+
 def _load_injuries(*, season: int, week: int) -> list[dict[str, Any]]:
     try:
-        from app.canonical.fact_injury import get_fact_injury
-
-        frame = get_fact_injury(seasons=[int(season)], persist=False)
+        return _fetch_rows(
+            f"""
+            SELECT DISTINCT ON (player_id)
+              player_id,
+              team_id,
+              report_date,
+              season,
+              week,
+              injury_type,
+              practice_status,
+              game_status,
+              is_expected_to_play
+            FROM {FANTASY_SCHEMA}.fact_injury
+            WHERE season = :season
+              AND week = :week
+            ORDER BY player_id, report_date DESC NULLS LAST
+            """,
+            {"season": int(season), "week": int(week)},
+        )
     except Exception:
         return []
-    if frame is None or getattr(frame, "empty", True):
-        return []
-
-    rows = frame.to_dict(orient="records")
-    week_rows = [
-        row
-        for row in rows
-        if _as_int(row.get("season")) == int(season)
-        and _as_int(row.get("week")) == int(week)
-    ]
-    # Keep latest report_date per player.
-    latest: dict[str, dict[str, Any]] = {}
-    for row in week_rows:
-        pid = str(row.get("player_id") or "").strip()
-        if not pid:
-            continue
-        current = latest.get(pid)
-        if current is None:
-            latest[pid] = row
-            continue
-        if str(row.get("report_date") or "") >= str(
-            current.get("report_date") or ""
-        ):
-            latest[pid] = row
-    return list(latest.values())
 
 
 def _nearest_injury_week(*, season: int, week: int) -> int | None:
     try:
-        from app.canonical.fact_injury import get_fact_injury
-
-        frame = get_fact_injury(seasons=[int(season)], persist=False)
+        rows = _fetch_rows(
+            f"""
+            SELECT MAX(week) AS week
+            FROM {FANTASY_SCHEMA}.fact_injury
+            WHERE season = :season
+              AND week <= :week
+            """,
+            {"season": int(season), "week": int(week)},
+        )
     except Exception:
         return None
-    if frame is None or getattr(frame, "empty", True):
+    if not rows:
         return None
-    weeks = sorted(
-        {
-            int(value)
-            for value in frame["week"].dropna().tolist()
-            if _as_int(value) is not None and int(value) <= int(week)
-        }
+    return _as_int(rows[0].get("week"))
+
+
+def _depth_rows_for_week(
+    *,
+    season: int,
+    week: int,
+) -> list[dict[str, Any]]:
+    return _fetch_rows(
+        f"""
+        SELECT
+          team_id,
+          player_id,
+          position,
+          depth_order,
+          role,
+          week
+        FROM {FANTASY_SCHEMA}.fact_depth_chart
+        WHERE season = :season
+          AND week = :week
+          AND depth_order IS NOT NULL
+          AND depth_order <= 3
+        """,
+        {"season": int(season), "week": int(week)},
     )
-    return weeks[-1] if weeks else None
 
 
-def _load_depth_starters(
+def _load_depth_chart(
     *,
     season: int,
     week: int,
 ) -> list[dict[str, Any]]:
     try:
-        from app.canonical.fact_depth_chart import get_fact_depth_chart
-
-        frame = get_fact_depth_chart(seasons=[int(season)], persist=False)
+        week_rows = _depth_rows_for_week(season=season, week=week)
+        if not week_rows:
+            prior = _fetch_rows(
+                f"""
+                SELECT MAX(week) AS week
+                FROM {FANTASY_SCHEMA}.fact_depth_chart
+                WHERE season = :season
+                  AND week <= :week
+                """,
+                {"season": int(season), "week": int(week)},
+            )
+            target = _as_int(prior[0].get("week")) if prior else None
+            if target is None or target == week:
+                return []
+            week_rows = _depth_rows_for_week(
+                season=season,
+                week=target,
+            )
     except Exception:
         return []
-    if frame is None or getattr(frame, "empty", True):
-        return []
 
-    rows = frame.to_dict(orient="records")
-    week_rows = [
-        row
-        for row in rows
-        if _as_int(row.get("season")) == int(season)
-        and _as_int(row.get("week")) == int(week)
-    ]
-    if not week_rows:
-        # Fall back to latest week ≤ requested.
-        prior_weeks = sorted(
-            {
-                int(row["week"])
-                for row in rows
-                if _as_int(row.get("season")) == int(season)
-                and _as_int(row.get("week")) is not None
-                and int(row["week"]) <= int(week)
-            }
-        )
-        if not prior_weeks:
-            return []
-        target = prior_weeks[-1]
-        week_rows = [
-            row
-            for row in rows
-            if _as_int(row.get("season")) == int(season)
-            and _as_int(row.get("week")) == target
-        ]
-
-    offense: list[dict[str, Any]] = []
+    chart: list[dict[str, Any]] = []
     for row in week_rows:
-        pos = str(row.get("position") or "").strip().upper()
-        if pos in {"FB", "HB"}:
-            pos = "RB"
-            row = {**row, "position": pos}
-        if pos not in {"QB", "RB", "WR", "TE"}:
+        raw_pos = str(row.get("position") or "").strip().upper()
+        if raw_pos not in DEPTH_CHART_POSITIONS and not canonicalize_position(
+            raw_pos
+        ):
+            continue
+        canonical = canonicalize_position(raw_pos) or raw_pos
+        if canonical not in CANONICAL_POSITIONS:
             continue
         order = _as_int(row.get("depth_order"))
-        if order is None or order > 2:
+        # Keep starters + next two for role multipliers.
+        if order is None or order > 3:
             continue
-        offense.append(row)
-    return offense
+        chart.append({**row, "position": canonical})
+    return chart
 
 
 def _load_player_directory(
     player_ids: set[str],
 ) -> dict[str, dict[str, str]]:
-    if not player_ids:
+    ids = [str(player_id).strip() for player_id in player_ids if player_id]
+    if not ids:
         return {}
     try:
-        from app.canonical.dim_player import get_dim_player
-
-        frame = get_dim_player(persist=False)
+        params = {
+            f"id_{index}": player_id
+            for index, player_id in enumerate(ids)
+        }
+        placeholders = ", ".join(
+            f":id_{index}" for index in range(len(ids))
+        )
+        rows = _fetch_rows(
+            f"""
+            SELECT player_id, name, position
+            FROM {FANTASY_SCHEMA}.dim_player
+            WHERE player_id IN ({placeholders})
+            """,
+            params,
+        )
     except Exception:
         return {}
-    if frame is None or getattr(frame, "empty", True):
-        return {}
     out: dict[str, dict[str, str]] = {}
-    for row in frame.to_dict(orient="records"):
+    for row in rows:
         pid = str(row.get("player_id") or "").strip()
-        if pid not in player_ids:
+        if not pid:
             continue
         name = _clean_text(row.get("name"))
         position = _clean_text(row.get("position"))
@@ -468,10 +546,8 @@ def _load_player_directory(
         if name:
             entry["name"] = name
         if position:
-            upper = position.upper()
-            if upper in {"FB", "HB"}:
-                upper = "RB"
-            entry["position"] = upper
+            canonical = canonicalize_position(position) or position.upper()
+            entry["position"] = canonical
         if entry:
             out[pid] = entry
     return out

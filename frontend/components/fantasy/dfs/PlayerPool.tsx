@@ -7,8 +7,21 @@ import {
   readDfsDragData,
   setDfsDragData,
 } from "@/components/fantasy/dfs/drag";
+import MultiSelectFilter, {
+  MULTI_SELECT_NONE,
+} from "@/components/fantasy/MultiSelectFilter";
+import { SearchablePlayerMultiSelect } from "@/components/fantasy/SearchablePlayerSelect";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
 import type { DfsPlayer, DfsSignal } from "@/services/api";
+
+const ANALYZER_POSITIONS = [
+  "QB",
+  "RB",
+  "WR",
+  "TE",
+  "K",
+  "DST",
+];
 
 const POSITION_TABS = [
   "All",
@@ -23,66 +36,182 @@ const POSITION_TABS = [
 
 interface Props {
   players: DfsPlayer[];
-  positionFilter: string;
+  positionFilter?: string;
+  search?: string;
+  multiSelect?: boolean;
+  selectedPlayerIds?: string[];
+  positionSelections?: string[];
+  teamSelections?: string[];
+  showActions?: boolean;
   lockedIds: Set<string>;
   excludedIds: Set<string>;
   lineupIds: Set<string>;
-  onPositionFilter: (value: string) => void;
+  onPositionFilter?: (value: string) => void;
+  onSearch?: (value: string) => void;
+  onSelectedPlayers?: (playerIds: string[]) => void;
+  onPositionSelections?: (values: string[]) => void;
+  onTeamSelections?: (values: string[]) => void;
   onSelectPlayer: (playerId: string) => void;
   onAdd: (playerId: string) => void;
   onRemove: (playerId: string) => void;
   onExclude: (playerId: string) => void;
 }
 
+export interface DfsPoolFilter {
+  positionFilter?: string | string[];
+  search?: string;
+  teamFilter?: string[];
+  selectedPlayerIds?: string[];
+}
+
+function isCleared(values: string[] | undefined): boolean {
+  return (
+    values?.length === 1 && values[0] === MULTI_SELECT_NONE
+  );
+}
+
+function positionSelected(
+  playerPosition: string,
+  selected: string
+): boolean {
+  const pos = playerPosition.toUpperCase();
+  if (selected === "DST") {
+    return pos === "DEF" || pos === "DST";
+  }
+  if (selected === "FLEX") {
+    return pos === "RB" || pos === "WR" || pos === "TE";
+  }
+  return pos === selected;
+}
+
+export function filterDfsPool(
+  players: DfsPlayer[],
+  filters: DfsPoolFilter
+): DfsPlayer[] {
+  const selectedIds = new Set(filters.selectedPlayerIds ?? []);
+  if (selectedIds.size > 0) {
+    return players.filter((player) =>
+      selectedIds.has(player.player_id)
+    );
+  }
+
+  const needle = (filters.search ?? "").trim().toLowerCase();
+  const positions = filters.positionFilter;
+  const teams = filters.teamFilter ?? [];
+
+  return players.filter((player) => {
+    const pos = (player.position || "").toUpperCase();
+    if (typeof positions === "string") {
+      if (
+        positions !== "All"
+        && !positionSelected(pos, positions)
+      ) {
+        return false;
+      }
+    } else if (Array.isArray(positions)) {
+      if (isCleared(positions)) {
+        return false;
+      }
+      if (
+        positions.length > 0
+        && !positions.some((option) =>
+          positionSelected(pos, option)
+        )
+      ) {
+        return false;
+      }
+    }
+
+    if (isCleared(teams)) {
+      return false;
+    }
+    if (teams.length > 0) {
+      const team = (player.team || "").toUpperCase();
+      if (
+        !teams.some(
+          (option) => option.toUpperCase() === team
+        )
+      ) {
+        return false;
+      }
+    }
+
+    if (!needle) {
+      return true;
+    }
+    const haystack = [
+      player.name,
+      player.team,
+      player.opponent,
+      player.position,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(needle);
+  });
+}
+
 export default function PlayerPool({
   players,
-  positionFilter,
+  positionFilter = "All",
+  search = "",
+  multiSelect = false,
+  selectedPlayerIds = [],
+  positionSelections = [],
+  teamSelections = [],
+  showActions = true,
   lockedIds,
   excludedIds,
   lineupIds,
   onPositionFilter,
+  onSearch,
+  onSelectedPlayers,
+  onPositionSelections,
+  onTeamSelections,
   onSelectPlayer,
   onAdd,
   onRemove,
   onExclude,
 }: Props) {
-  const [search, setSearch] = useState("");
   const [dropActive, setDropActive] = useState(false);
 
-  const filtered = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    return players.filter((player) => {
-      const pos = (player.position || "").toUpperCase();
-      if (positionFilter === "DST") {
-        if (pos !== "DEF" && pos !== "DST") {
-          return false;
-        }
-      } else if (positionFilter === "FLEX") {
-        if (pos !== "RB" && pos !== "WR" && pos !== "TE") {
-          return false;
-        }
-      } else if (
-        positionFilter !== "All"
-        && pos !== positionFilter
-      ) {
-        return false;
+  const teamOptions = useMemo(() => {
+    const teams = new Set<string>();
+    for (const player of players) {
+      if (player.team) {
+        teams.add(player.team);
       }
+    }
+    return [...teams].sort((left, right) =>
+      left.localeCompare(right, undefined, {
+        sensitivity: "base",
+      })
+    );
+  }, [players]);
 
-      if (!needle) {
-        return true;
-      }
-      const haystack = [
-        player.name,
-        player.team,
-        player.opponent,
-        player.position,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(needle);
-    });
-  }, [players, positionFilter, search]);
+  const filtered = useMemo(
+    () =>
+      filterDfsPool(players, {
+        positionFilter: multiSelect
+          ? positionSelections
+          : positionFilter,
+        search: multiSelect ? "" : search,
+        teamFilter: multiSelect ? teamSelections : [],
+        selectedPlayerIds: multiSelect
+          ? selectedPlayerIds
+          : [],
+      }),
+    [
+      players,
+      multiSelect,
+      positionFilter,
+      search,
+      positionSelections,
+      teamSelections,
+      selectedPlayerIds,
+    ]
+  );
 
   return (
     <section
@@ -155,52 +284,86 @@ export default function PlayerPool({
         </p>
       </div>
 
-      <div
-        className="border-b px-3 py-2"
-        style={{ borderColor: snapshotTokens.divider }}
-      >
-        <label className="block">
-          <span className="sr-only">Search players</span>
-          <input
-            type="search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search by name, team, or opponent…"
-            className="w-full rounded-lg border bg-white px-3 py-2 text-sm outline-none"
-            style={{
-              borderColor: snapshotTokens.border,
-              color: snapshotTokens.textPrimary,
-            }}
+      {multiSelect ? (
+        <div
+          className="flex flex-wrap items-end gap-3 border-b px-4 py-3"
+          style={{ borderColor: snapshotTokens.divider }}
+        >
+          <SearchablePlayerMultiSelect
+            label="Players"
+            players={players}
+            selectedIds={selectedPlayerIds}
+            onChange={(ids) => onSelectedPlayers?.(ids)}
           />
-        </label>
-      </div>
+          <MultiSelectFilter
+            label="Position"
+            options={ANALYZER_POSITIONS}
+            selected={positionSelections}
+            onChange={(values) =>
+              onPositionSelections?.(values)
+            }
+            emptyMeansAll
+          />
+          <MultiSelectFilter
+            label="Team"
+            options={teamOptions}
+            selected={teamSelections}
+            onChange={(values) => onTeamSelections?.(values)}
+            emptyMeansAll
+          />
+        </div>
+      ) : (
+        <>
+          <div
+            className="border-b px-3 py-2"
+            style={{ borderColor: snapshotTokens.divider }}
+          >
+            <label className="block">
+              <span className="sr-only">Search players</span>
+              <input
+                type="search"
+                value={search}
+                onChange={(event) =>
+                  onSearch?.(event.target.value)
+                }
+                placeholder="Search by name, team, or opponent…"
+                className="w-full rounded-lg border bg-white px-3 py-2 text-sm outline-none"
+                style={{
+                  borderColor: snapshotTokens.border,
+                  color: snapshotTokens.textPrimary,
+                }}
+              />
+            </label>
+          </div>
 
-      <div
-        className="flex gap-1 overflow-x-auto border-b px-3 py-2"
-        style={{ borderColor: snapshotTokens.divider }}
-      >
-        {POSITION_TABS.map((tab) => {
-          const selected = positionFilter === tab;
-          return (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => onPositionFilter(tab)}
-              className="shrink-0 rounded-md px-2.5 py-1.5 text-xs font-semibold"
-              style={{
-                background: selected
-                  ? snapshotTokens.blueLight
-                  : "transparent",
-                color: selected
-                  ? snapshotTokens.blue
-                  : snapshotTokens.textSecondary,
-              }}
-            >
-              {tab}
-            </button>
-          );
-        })}
-      </div>
+          <div
+            className="flex gap-1 overflow-x-auto border-b px-3 py-2"
+            style={{ borderColor: snapshotTokens.divider }}
+          >
+            {POSITION_TABS.map((tab) => {
+              const selected = positionFilter === tab;
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => onPositionFilter?.(tab)}
+                  className="shrink-0 rounded-md px-2.5 py-1.5 text-xs font-semibold"
+                  style={{
+                    background: selected
+                      ? snapshotTokens.blueLight
+                      : "transparent",
+                    color: selected
+                      ? snapshotTokens.blue
+                      : snapshotTokens.textSecondary,
+                  }}
+                >
+                  {tab}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       <div className="max-h-[36rem] overflow-auto">
         <table className="min-w-full text-left text-sm">
@@ -234,9 +397,11 @@ export default function PlayerPool({
               <th className="px-2 py-2 text-center font-medium">
                 Signal
               </th>
-              <th className="px-3 py-2 text-right font-medium">
-                Action
-              </th>
+              {showActions && (
+                <th className="px-3 py-2 text-right font-medium">
+                  Action
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -249,9 +414,9 @@ export default function PlayerPool({
               return (
                 <tr
                   key={player.player_id}
-                  draggable={!excluded}
+                  draggable={showActions && !excluded}
                   onDragStart={(event) => {
-                    if (excluded) {
+                    if (!showActions || excluded) {
                       event.preventDefault();
                       return;
                     }
@@ -260,7 +425,11 @@ export default function PlayerPool({
                       source: "pool",
                     });
                   }}
-                  className="border-t cursor-grab active:cursor-grabbing"
+                  className={`border-t ${
+                    showActions
+                      ? "cursor-grab active:cursor-grabbing"
+                      : ""
+                  }`}
                   style={{
                     borderColor: snapshotTokens.divider,
                     opacity: excluded ? 0.55 : 1,
@@ -373,41 +542,43 @@ export default function PlayerPool({
                       signal={player.primary_signal}
                     />
                   </td>
-                  <td className="px-3 py-2 text-right">
-                    <div className="inline-flex gap-1">
-                      <button
-                        type="button"
-                        disabled={inLineup || excluded}
-                        onClick={() =>
-                          onAdd(player.player_id)
-                        }
-                        className="rounded px-2 py-1 text-[11px] font-semibold disabled:opacity-40"
-                        style={{
-                          background: snapshotTokens.blueLight,
-                          color: snapshotTokens.blue,
-                        }}
-                      >
-                        {inLineup ? "In lineup" : "+ Add"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onExclude(player.player_id)
-                        }
-                        className="rounded px-2 py-1 text-[11px] font-semibold"
-                        style={{
-                          color: excluded
-                            ? snapshotTokens.negative
-                            : snapshotTokens.textMuted,
-                          background: excluded
-                            ? "rgba(185, 28, 28, 0.08)"
-                            : "transparent",
-                        }}
-                      >
-                        {excluded ? "Excluded" : "Exclude"}
-                      </button>
-                    </div>
-                  </td>
+                  {showActions && (
+                    <td className="px-3 py-2 text-right">
+                      <div className="inline-flex gap-1">
+                        <button
+                          type="button"
+                          disabled={inLineup || excluded}
+                          onClick={() =>
+                            onAdd(player.player_id)
+                          }
+                          className="rounded px-2 py-1 text-[11px] font-semibold disabled:opacity-40"
+                          style={{
+                            background: snapshotTokens.blueLight,
+                            color: snapshotTokens.blue,
+                          }}
+                        >
+                          {inLineup ? "In lineup" : "+ Add"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onExclude(player.player_id)
+                          }
+                          className="rounded px-2 py-1 text-[11px] font-semibold"
+                          style={{
+                            color: excluded
+                              ? snapshotTokens.negative
+                              : snapshotTokens.textMuted,
+                            background: excluded
+                              ? "rgba(185, 28, 28, 0.08)"
+                              : "transparent",
+                          }}
+                        >
+                          {excluded ? "Excluded" : "Exclude"}
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               );
             })}

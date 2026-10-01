@@ -122,40 +122,64 @@ def confidence_from_edge(
     edge_points: float | None = None,
     edge_probability: float | None = None,
     model_coverage: bool = True,
+    thresholds: dict[str, Any] | None = None,
+    market_type: str | None = None,
+    market_performance: dict[str, Any] | None = None,
+    model_agreement: float | None = None,
 ) -> str:
-    if not model_coverage:
-        return "Low"
-    magnitude = 0.0
-    if edge_points is not None:
-        magnitude = max(magnitude, abs(float(edge_points)))
-    if edge_probability is not None:
-        magnitude = max(
-            magnitude,
-            abs(float(edge_probability)) * 100.0,
-        )
-    if magnitude >= 3.5:
-        return "High"
-    if magnitude >= 1.5:
-        return "Moderate"
-    return "Low"
+    """
+    Map edge magnitude → High / Moderate / Low.
+
+    When market performance is available, floors are allocated
+    per market (spread / total / moneyline) instead of one global
+    cutoff. Model disagreement shrinks effective edge so a wide
+    ensemble cannot mint High confidence from a coincidental mean.
+    """
+
+    from app.analysis.insights.betting.market_performance import (
+        apply_market_confidence_thresholds,
+    )
+    from app.analysis.insights.betting.model_disagreement import (
+        agreement_edge_factor,
+    )
+
+    factor = agreement_edge_factor(model_agreement)
+    adj_points = (
+        None
+        if edge_points is None
+        else float(edge_points) * factor
+    )
+    adj_prob = (
+        None
+        if edge_probability is None
+        else float(edge_probability) * factor
+    )
+
+    return apply_market_confidence_thresholds(
+        market_type=market_type,
+        edge_points=adj_points,
+        edge_probability=adj_prob,
+        model_coverage=model_coverage,
+        thresholds=thresholds,
+        market_performance=market_performance,
+    )
 
 
 def confidence_explanation(label: str) -> str:
     key = str(label or "").strip().lower()
     if key == "high":
         return (
-            "Model and market differ meaningfully, and the "
-            "projection is supported by available game context."
+            "Point-edge bucket historically shows useful separation "
+            "(win rate / ROI / CLV) versus smaller edges."
         )
     if key == "moderate":
         return (
-            "Model output is supported by recent form and "
-            "matchup data, but sample size or availability "
-            "uncertainty remains."
+            "Edge clears the learned noise floor but is below the "
+            "High separation band — treat size carefully."
         )
     return (
-        "Limited separation from the market or thin supporting "
-        "context — treat as directional only."
+        "Edge sits in buckets that have not historically separated "
+        "from noise — directional only."
     )
 
 

@@ -294,6 +294,15 @@ def _rank_market_candidates(
         market_type = str(market.get("market_type") or "").lower()
         if market_type and allowed_types and market_type not in allowed_types:
             continue
+        # Predictions without qualification are never portfolio bets.
+        # Pass / No Bet is excluded; Strong Bet and Lean remain eligible
+        # subject to stance edge/confidence floors.
+        if market.get("no_bet") or market.get("bet_status") == "pass":
+            continue
+        if "bet_qualified" in market and not market.get("bet_qualified"):
+            continue
+        qualification = market.get("bet_qualification") or {}
+
         edge = num(market.get("edge_probability"))
         if edge is None:
             edge = num(market.get("edge"))
@@ -303,12 +312,23 @@ def _rank_market_candidates(
         if confidence not in allowed_confidence:
             continue
         ev = num(market.get("expected_value")) or 0.0
+        quality = str(
+            (market.get("data_quality") or {}).get("label") or "Low"
+        )
         confidence_weight = {
             "High": 1.35,
             "Moderate": 1.0,
             "Low": 0.65,
         }.get(confidence, 0.65)
-        score = float(edge) * confidence_weight + max(0.0, float(ev)) * 0.25
+        quality_weight = {
+            "High": 1.15,
+            "Moderate": 1.0,
+            "Low": 0.8,
+        }.get(quality, 0.8)
+        score = (
+            float(edge) * confidence_weight * quality_weight
+            + max(0.0, float(ev)) * 0.25
+        )
         scored.append(
             {
                 "market": market,
@@ -317,6 +337,8 @@ def _rank_market_candidates(
                 "edge": float(edge),
                 "confidence": confidence,
                 "score": score,
+                "bet_qualified": bool(market.get("bet_qualified")),
+                "qualification_summary": qualification.get("summary"),
             }
         )
     scored.sort(

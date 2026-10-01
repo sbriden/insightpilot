@@ -12,6 +12,19 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
+from app.analysis.insights.betting.clv import (
+    attach_clv_fields,
+    build_clv_diagnostics,
+    event_spread_as_selection_line,
+    selection_side,
+)
+from app.analysis.insights.betting.edge_confidence import (
+    build_edge_confidence_diagnostics,
+)
+from app.analysis.insights.betting.market_performance import (
+    build_market_performance,
+    merge_edge_confidence_with_markets,
+)
 from app.analysis.insights.betting.pricing import num
 
 
@@ -52,6 +65,8 @@ def build_projection_snapshot(event: dict[str, Any]) -> dict[str, Any]:
         "market_total": num(event.get("market_total")),
         "market_home_score": num(event.get("market_home_score")),
         "market_away_score": num(event.get("market_away_score")),
+        "residual_home": num(event.get("residual_home")),
+        "residual_away": num(event.get("residual_away")),
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "frozen": False,
     }
@@ -66,6 +81,8 @@ def settle_event_markets(
     """
     Settle every market for a completed game using final scores and
     the frozen (or latest) projection snapshot.
+
+    Also records bet_line vs closing_line for CLV diagnostics.
     """
 
     if not is_game_final(event):
@@ -83,6 +100,29 @@ def settle_event_markets(
     model_home = num(snap.get("projected_home_score"))
     model_away = num(snap.get("projected_away_score"))
 
+    # Closing market lines = last known event lines at settlement.
+    closing_market_spread = num(
+        event.get("current_spread")
+        if event.get("current_spread") is not None
+        else event.get("market_spread")
+    )
+    closing_market_total = num(
+        event.get("current_total")
+        if event.get("current_total") is not None
+        else event.get("market_total")
+    )
+    # Bet-time lines prefer the frozen snapshot market.
+    bet_market_spread = num(
+        snap.get("market_spread")
+        if snap.get("market_spread") is not None
+        else event.get("opening_spread", event.get("market_spread"))
+    )
+    bet_market_total = num(
+        snap.get("market_total")
+        if snap.get("market_total") is not None
+        else event.get("opening_total", event.get("market_total"))
+    )
+
     settled: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc).isoformat()
 
@@ -93,6 +133,14 @@ def settle_event_markets(
             away_score=away_score,
             actual_total=actual_total,
             actual_spread=actual_spread,
+            bet_market_spread=bet_market_spread,
+            closing_market_spread=closing_market_spread,
+            bet_market_total=bet_market_total,
+            closing_market_total=closing_market_total,
+            closing_home_moneyline=num(
+                event.get("current_moneyline")
+            ),
+            bet_home_moneyline=num(event.get("opening_moneyline")),
         )
         if row is None:
             continue
@@ -129,7 +177,7 @@ def settle_event_markets(
                 "source": "auto_dim_game",
             }
         )
-        settled.append(row)
+        settled.append(attach_clv_fields(row))
 
     return settled
 
@@ -147,12 +195,29 @@ def summarize_model_results(
             "model_incorrect": 0,
             "push": 0,
             "hit_rate": None,
+            "ats_win_pct": None,
+            "ou_win_pct": None,
+            "ml_win_pct": None,
+            "average_clv": None,
+            "median_clv": None,
+            "beat_close_pct": None,
+            "units": None,
+            "roi_pct": None,
+            "average_edge": None,
+            "average_closing_edge": None,
+            "clv": None,
             "average_total_error": None,
             "average_spread_error": None,
             "average_abs_total_error": None,
             "average_abs_spread_error": None,
             "by_market": [],
             "by_confidence": [],
+            "by_edge_bucket": [],
+            "by_favorite_underdog": [],
+            "by_home_away": [],
+            "by_week": [],
+            "edge_confidence": None,
+            "market_performance": None,
             "calibration": [],
             "settled_markets": [],
             "games_settled": 0,
@@ -198,6 +263,47 @@ def summarize_model_results(
     te = list(game_total_errors.values())
     se = list(game_spread_errors.values())
     trend = build_performance_trend(settled)
+    clv = build_clv_diagnostics(settled)
+    clv_summary = clv.get("summary") or {}
+    market_performance = build_market_performance(settled)
+    edge_payload = build_edge_confidence_diagnostics(settled)
+    edge_payload["thresholds"] = merge_edge_confidence_with_markets(
+        edge_payload.get("thresholds"),
+        market_performance,
+    )
+    edge_payload["by_market"] = (
+        edge_payload.get("thresholds") or {}
+    ).get("by_market")
+    edge_payload["market_note"] = market_performance.get("note")
+
+    # Prefer rich market cards over the thin CLV-by-market rows.
+    by_market_rows = [
+        {
+            "key": card.get("label") or mtype,
+            "market_type": mtype,
+            "bets": card.get("bets") or 0,
+            "decided": card.get("decided") or 0,
+            "correct": card.get("correct") or 0,
+            "hit_rate": card.get("hit_rate"),
+            "ats_win_pct": card.get("ats_win_pct"),
+            "ou_win_pct": card.get("ou_win_pct"),
+            "win_pct": card.get("win_pct"),
+            "roi_pct": card.get("roi_pct"),
+            "average_clv": card.get("average_clv"),
+            "median_clv": card.get("median_clv"),
+            "mae": card.get("mae"),
+            "calibration_gap": card.get("calibration_gap"),
+            "brier": card.get("brier"),
+            "quality_score": card.get("quality_score"),
+            "confidence_weight": card.get("confidence_weight"),
+            "high_min": card.get("high_min"),
+            "moderate_min": card.get("moderate_min"),
+            "sample_size": card.get("sample_size"),
+            "units": card.get("units"),
+            "calibration": card.get("calibration"),
+        }
+        for mtype, card in (market_performance.get("markets") or {}).items()
+    ]
 
     return {
         "total_markets": len(settled),
@@ -210,6 +316,17 @@ def summarize_model_results(
             if decided
             else None
         ),
+        "ats_win_pct": clv_summary.get("ats_win_pct"),
+        "ou_win_pct": clv_summary.get("ou_win_pct"),
+        "ml_win_pct": clv_summary.get("ml_win_pct"),
+        "average_clv": clv_summary.get("average_clv"),
+        "median_clv": clv_summary.get("median_clv"),
+        "beat_close_pct": clv_summary.get("beat_close_pct"),
+        "units": clv_summary.get("units"),
+        "roi_pct": clv_summary.get("roi_pct"),
+        "average_edge": clv_summary.get("average_edge"),
+        "average_closing_edge": clv_summary.get("average_closing_edge"),
+        "clv": clv_summary,
         "average_total_error": (
             round(sum(te) / len(te), 2) if te else None
         ),
@@ -222,10 +339,23 @@ def summarize_model_results(
         "average_abs_spread_error": (
             round(sum(abs(v) for v in se) / len(se), 2) if se else None
         ),
-        "by_market": _breakdown(settled, "market_type"),
-        "by_confidence": _breakdown(settled, "confidence"),
+        "by_market": by_market_rows,
+        "by_confidence": clv.get("by_confidence") or _breakdown(
+            settled, "confidence"
+        ),
+        "by_edge_bucket": (
+            edge_payload.get("buckets")
+            or clv.get("by_edge_bucket")
+            or []
+        ),
+        "by_favorite_underdog": clv.get("by_favorite_underdog") or [],
+        "by_home_away": clv.get("by_home_away") or [],
+        "by_week": clv.get("by_week") or [],
+        "edge_confidence": edge_payload,
+        "market_performance": market_performance,
         "calibration": _calibration(settled),
-        "settled_markets": sorted(
+        "settled_markets": clv.get("settled_markets")
+        or sorted(
             settled,
             key=lambda row: (
                 str(row.get("week") or 0),
@@ -244,9 +374,10 @@ def summarize_model_results(
         "performance_trend": trend,
         "trend_summary": trend_summary_from_points(trend),
         "note": (
-            "Auto-settled from final scores vs the latest frozen "
-            "pregame InsightPilot projection. Residuals feed "
-            "forward into future projection calibration."
+            "Auto-settled from final scores vs frozen pregame "
+            "projections. Spread, total, and moneyline are scored "
+            "as separate models — CLV and market quality drive "
+            "confidence allocation more than blended win rate."
         ),
     }
 
@@ -480,22 +611,45 @@ def _settle_one_market(
     away_score: int,
     actual_total: int,
     actual_spread: float,
+    bet_market_spread: float | None = None,
+    closing_market_spread: float | None = None,
+    bet_market_total: float | None = None,
+    closing_market_total: float | None = None,
+    closing_home_moneyline: float | None = None,
+    bet_home_moneyline: float | None = None,
 ) -> dict[str, Any] | None:
     market_type = str(market.get("market_type") or "").lower()
     selection = str(market.get("selection") or "")
     home = str(market.get("home_team") or "").upper()
     away = str(market.get("away_team") or "").upper()
     line = num(market.get("line"))
+    price = num(market.get("price"))
+    side = selection_side(
+        market_type=market_type,
+        selection=selection,
+        home_team=home,
+        away_team=away,
+    )
 
     result = None
     actual_value = None
+    bet_line = line
     closing_line = None
+    bet_price = price
+    closing_price = None
 
     if market_type == "total":
         if line is None:
             return None
         actual_value = float(actual_total)
-        closing_line = float(actual_total)
+        # Closing total = last known market total (not final score).
+        closing_line = (
+            closing_market_total
+            if closing_market_total is not None
+            else line
+        )
+        if bet_market_total is not None:
+            bet_line = float(bet_market_total)
         sel_u = selection.upper()
         if "OVER" in sel_u:
             if actual_total > line:
@@ -517,25 +671,27 @@ def _settle_one_market(
     elif market_type == "spread":
         if line is None:
             return None
-        # Determine which team the selection is on.
-        side_home = bool(home and selection.upper().startswith(home))
-        side_away = bool(away and selection.upper().startswith(away))
+        side_home = side == "home"
+        side_away = side == "away"
         if not side_home and not side_away:
-            # Fallback: positive line often away underdog in our builder
-            # when selection flipped; parse from leading token.
-            token = selection.split(" ", 1)[0].upper()
-            side_home = token == home
-            side_away = token == away
+            return None
         if side_home:
-            # Home + line vs away score.
             margin = home_score + float(line) - away_score
             actual_value = float(home_score - away_score)
-        elif side_away:
+        else:
             margin = away_score + float(line) - home_score
             actual_value = float(away_score - home_score)
-        else:
-            return None
-        closing_line = actual_spread
+        # Closing = last known market spread on this selection.
+        closing_line = event_spread_as_selection_line(
+            closing_market_spread, side=side
+        )
+        if closing_line is None:
+            closing_line = line
+        snap_bet = event_spread_as_selection_line(
+            bet_market_spread, side=side
+        )
+        if snap_bet is not None:
+            bet_line = float(snap_bet)
         if margin > 0:
             result = "won"
         elif margin < 0:
@@ -544,43 +700,96 @@ def _settle_one_market(
             result = "push"
 
     elif market_type == "moneyline":
-        sel_u = selection.upper().strip()
-        if home and (sel_u == home or sel_u.startswith(home + " ")):
+        if side == "home":
             result = "won" if home_score > away_score else (
                 "push" if home_score == away_score else "lost"
             )
             actual_value = float(home_score - away_score)
-        elif away and (sel_u == away or sel_u.startswith(away + " ")):
+            closing_price = closing_home_moneyline
+            bet_price = (
+                bet_home_moneyline
+                if bet_home_moneyline is not None
+                else price
+            )
+        elif side == "away":
             result = "won" if away_score > home_score else (
                 "push" if home_score == away_score else "lost"
             )
             actual_value = float(away_score - home_score)
+            # Away ML ≈ inverse of home implied when only home stored.
+            if closing_home_moneyline is not None:
+                home_imp = None
+                from app.analysis.insights.betting.pricing import (
+                    american_to_implied_prob,
+                    implied_prob_to_american,
+                )
+
+                home_imp = american_to_implied_prob(
+                    closing_home_moneyline
+                )
+                if home_imp is not None:
+                    closing_price = implied_prob_to_american(
+                        1.0 - float(home_imp)
+                    )
+            if bet_home_moneyline is not None:
+                from app.analysis.insights.betting.pricing import (
+                    american_to_implied_prob,
+                    implied_prob_to_american,
+                )
+
+                home_imp = american_to_implied_prob(bet_home_moneyline)
+                if home_imp is not None:
+                    bet_price = implied_prob_to_american(
+                        1.0 - float(home_imp)
+                    )
+            if bet_price is None:
+                bet_price = price
         else:
             return None
-        closing_line = actual_spread
+        # Moneyline closing_line keeps signed margin for reference;
+        # CLV uses prices.
+        closing_line = None
+        bet_line = None
 
     else:
         return None
 
     model_correct = result == "won"
+    edge_points = num(market.get("edge"))
+    edge_probability = (
+        num(market.get("edge_probability"))
+        if market.get("edge_probability") is not None
+        else None
+    )
     return {
         "market_id": market.get("market_id"),
         "market_type": market_type,
         "selection": selection,
         "line": line,
-        "price": num(market.get("price")),
+        "bet_line": bet_line,
+        "price": price,
+        "bet_price": bet_price,
+        "closing_price": closing_price,
         "model_probability": num(market.get("model_probability")),
-        "market_probability": num(market.get("market_probability")),
-        "edge": (
-            num(market.get("edge_probability"))
-            if market.get("edge_probability") is not None
-            else num(market.get("edge"))
+        "raw_model_probability": num(
+            market.get("raw_model_probability")
+            if market.get("raw_model_probability") is not None
+            else market.get("model_probability")
         ),
+        "market_probability": num(market.get("market_probability")),
+        "edge_points": edge_points,
+        "edge": (
+            edge_probability
+            if edge_probability is not None
+            else edge_points
+        ),
+        "edge_probability": edge_probability,
         "confidence": market.get("confidence") or "Low",
         "result": result,
         "model_correct": model_correct if result != "push" else None,
         "actual_value": actual_value,
         "closing_line": closing_line,
+        "bet_side": side,
     }
 
 

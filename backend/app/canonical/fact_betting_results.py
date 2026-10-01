@@ -87,16 +87,79 @@ CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.fact_betting_calibration (
     note TEXT,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.fact_betting_probability_calibration (
+    season INTEGER NOT NULL,
+    market_type TEXT NOT NULL DEFAULT 'all',
+    method TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT FALSE,
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    model_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    brier_raw DOUBLE PRECISION,
+    brier_calibrated DOUBLE PRECISION,
+    ece_raw DOUBLE PRECISION,
+    ece_calibrated DOUBLE PRECISION,
+    note TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (season, market_type)
+);
+
+CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.fact_betting_edge_confidence (
+    season INTEGER NOT NULL PRIMARY KEY,
+    method TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT FALSE,
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    high_min DOUBLE PRECISION,
+    moderate_min DOUBLE PRECISION,
+    model_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    note TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS raw_model_probability DOUBLE PRECISION;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS bet_line DOUBLE PRECISION;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS bet_price DOUBLE PRECISION;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS closing_price DOUBLE PRECISION;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS clv DOUBLE PRECISION;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS clv_unit TEXT;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS beat_close BOOLEAN;
 """
 
 
+_betting_tables_ready = False
+
+
 def ensure_betting_results_tables() -> None:
+    """
+    Create betting result tables once per process.
+
+    Replaying this DDL on every snapshot read made the slate
+    endpoint spend most of its time in schema setup.
+    """
+
+    global _betting_tables_ready
+    if _betting_tables_ready:
+        return
     ensure_canonical_schema()
     with engine.begin() as connection:
         for statement in _TABLE_SQL.split(";"):
             sql = statement.strip()
             if sql:
                 connection.execute(text(sql))
+    _betting_tables_ready = True
 
 
 def upsert_projection_snapshot(
@@ -208,20 +271,45 @@ def freeze_projection_snapshot(game_id: str) -> dict[str, Any] | None:
 def get_projection_snapshot(game_id: str) -> dict[str, Any] | None:
     if not game_id:
         return None
+    found = get_projection_snapshots([game_id])
+    return found.get(str(game_id))
+
+
+def get_projection_snapshots(
+    game_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    ids = [
+        str(game_id).strip()
+        for game_id in game_ids
+        if str(game_id or "").strip()
+    ]
+    if not ids:
+        return {}
     try:
         ensure_betting_results_tables()
+        params = {
+            f"id_{index}": game_id
+            for index, game_id in enumerate(ids)
+        }
+        placeholders = ", ".join(
+            f":id_{index}" for index in range(len(ids))
+        )
         sql = f"""
             SELECT *
             FROM {FANTASY_SCHEMA}.fact_betting_projection_snapshot
-            WHERE game_id = :game_id
+            WHERE game_id IN ({placeholders})
         """
         with engine.connect() as connection:
-            row = connection.execute(
-                text(sql), {"game_id": game_id}
-            ).mappings().first()
-            return dict(row) if row else None
+            rows = connection.execute(
+                text(sql), params
+            ).mappings().all()
+            return {
+                str(row["game_id"]): dict(row)
+                for row in rows
+                if row.get("game_id")
+            }
     except Exception:
-        return None
+        return {}
 
 
 def upsert_market_results(rows: list[dict[str, Any]]) -> int:
@@ -234,19 +322,23 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
     sql = f"""
         INSERT INTO {FANTASY_SCHEMA}.fact_betting_market_result (
             market_id, game_id, season, week, market_type, selection,
-            line, price, model_probability, market_probability, edge,
+            line, price, model_probability, raw_model_probability,
+            market_probability, edge,
             confidence, result, model_correct, home_score, away_score,
             actual_total, actual_spread, model_home_score, model_away_score,
             model_total, model_spread, market_spread, market_total,
-            total_error, spread_error, closing_line, event_label,
+            total_error, spread_error, closing_line, bet_line, bet_price,
+            closing_price, clv, clv_unit, beat_close, event_label,
             home_team, away_team, projection_captured_at, settled_at, source
         ) VALUES (
             :market_id, :game_id, :season, :week, :market_type, :selection,
-            :line, :price, :model_probability, :market_probability, :edge,
+            :line, :price, :model_probability, :raw_model_probability,
+            :market_probability, :edge,
             :confidence, :result, :model_correct, :home_score, :away_score,
             :actual_total, :actual_spread, :model_home_score, :model_away_score,
             :model_total, :model_spread, :market_spread, :market_total,
-            :total_error, :spread_error, :closing_line, :event_label,
+            :total_error, :spread_error, :closing_line, :bet_line, :bet_price,
+            :closing_price, :clv, :clv_unit, :beat_close, :event_label,
             :home_team, :away_team,
             CAST(:projection_captured_at AS TIMESTAMP),
             CAST(:settled_at AS TIMESTAMP), :source
@@ -254,6 +346,14 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
         ON CONFLICT (market_id) DO UPDATE SET
             result = EXCLUDED.result,
             model_correct = EXCLUDED.model_correct,
+            model_probability = COALESCE(
+                EXCLUDED.model_probability,
+                {FANTASY_SCHEMA}.fact_betting_market_result.model_probability
+            ),
+            raw_model_probability = COALESCE(
+                EXCLUDED.raw_model_probability,
+                {FANTASY_SCHEMA}.fact_betting_market_result.raw_model_probability
+            ),
             home_score = EXCLUDED.home_score,
             away_score = EXCLUDED.away_score,
             actual_total = EXCLUDED.actual_total,
@@ -261,6 +361,12 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
             total_error = EXCLUDED.total_error,
             spread_error = EXCLUDED.spread_error,
             closing_line = EXCLUDED.closing_line,
+            bet_line = EXCLUDED.bet_line,
+            bet_price = EXCLUDED.bet_price,
+            closing_price = EXCLUDED.closing_price,
+            clv = EXCLUDED.clv,
+            clv_unit = EXCLUDED.clv_unit,
+            beat_close = EXCLUDED.beat_close,
             settled_at = EXCLUDED.settled_at,
             source = EXCLUDED.source
     """
@@ -278,6 +384,9 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
                     "line": row.get("line"),
                     "price": row.get("price"),
                     "model_probability": row.get("model_probability"),
+                    "raw_model_probability": row.get(
+                        "raw_model_probability"
+                    ),
                     "market_probability": row.get("market_probability"),
                     "edge": row.get("edge"),
                     "confidence": row.get("confidence"),
@@ -296,6 +405,12 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
                     "total_error": row.get("total_error"),
                     "spread_error": row.get("spread_error"),
                     "closing_line": row.get("closing_line"),
+                    "bet_line": row.get("bet_line"),
+                    "bet_price": row.get("bet_price"),
+                    "closing_price": row.get("closing_price"),
+                    "clv": row.get("clv"),
+                    "clv_unit": row.get("clv_unit"),
+                    "beat_close": row.get("beat_close"),
                     "event_label": row.get("event_label"),
                     "home_team": row.get("home_team"),
                     "away_team": row.get("away_team"),
@@ -408,5 +523,207 @@ def get_calibration_feedback(season: int) -> dict[str, Any] | None:
                 text(sql), {"season": int(season)}
             ).mappings().first()
             return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_probability_calibration(
+    model: dict[str, Any],
+    *,
+    season: int,
+    market_type: str = "all",
+) -> None:
+    if not model:
+        return
+    try:
+        ensure_betting_results_tables()
+    except Exception:
+        return
+    metrics = model.get("metrics") or {}
+    mtype = str(
+        market_type or model.get("market_type") or "all"
+    ).lower()
+    sql = f"""
+        INSERT INTO {FANTASY_SCHEMA}.fact_betting_probability_calibration (
+            season, market_type, method, active, sample_size,
+            model_json, brier_raw, brier_calibrated,
+            ece_raw, ece_calibrated, note, updated_at
+        ) VALUES (
+            :season, :market_type, :method, :active, :sample_size,
+            CAST(:model_json AS JSONB), :brier_raw, :brier_calibrated,
+            :ece_raw, :ece_calibrated, :note, CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (season, market_type) DO UPDATE SET
+            method = EXCLUDED.method,
+            active = EXCLUDED.active,
+            sample_size = EXCLUDED.sample_size,
+            model_json = EXCLUDED.model_json,
+            brier_raw = EXCLUDED.brier_raw,
+            brier_calibrated = EXCLUDED.brier_calibrated,
+            ece_raw = EXCLUDED.ece_raw,
+            ece_calibrated = EXCLUDED.ece_calibrated,
+            note = EXCLUDED.note,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    import json
+
+    params = {
+        "season": int(season),
+        "market_type": mtype,
+        "method": str(model.get("method") or "identity"),
+        "active": bool(model.get("active")),
+        "sample_size": int(model.get("sample_size") or 0),
+        "model_json": json.dumps(model, sort_keys=True, default=str),
+        "brier_raw": metrics.get("brier_raw"),
+        "brier_calibrated": metrics.get("brier_calibrated"),
+        "ece_raw": metrics.get("ece_raw"),
+        "ece_calibrated": metrics.get("ece_calibrated"),
+        "note": model.get("note"),
+    }
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(sql), params)
+    except Exception:
+        return
+
+
+def get_probability_calibration(
+    season: int,
+    *,
+    market_type: str = "all",
+) -> dict[str, Any] | None:
+    try:
+        ensure_betting_results_tables()
+        sql = f"""
+            SELECT *
+            FROM {FANTASY_SCHEMA}.fact_betting_probability_calibration
+            WHERE season = :season
+              AND market_type = :market_type
+        """
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(sql),
+                {
+                    "season": int(season),
+                    "market_type": str(market_type or "all").lower(),
+                },
+            ).mappings().first()
+            if not row:
+                return None
+            payload = dict(row)
+            model_json = payload.get("model_json")
+            if isinstance(model_json, str):
+                import json
+
+                try:
+                    model_json = json.loads(model_json)
+                except json.JSONDecodeError:
+                    model_json = {}
+            if isinstance(model_json, dict):
+                return {
+                    **model_json,
+                    "season": payload.get("season"),
+                    "market_type": payload.get("market_type"),
+                    "updated_at": (
+                        payload.get("updated_at").isoformat()
+                        if hasattr(payload.get("updated_at"), "isoformat")
+                        else payload.get("updated_at")
+                    ),
+                }
+            return None
+    except Exception:
+        return None
+
+def upsert_edge_confidence(
+    model: dict[str, Any],
+    *,
+    season: int,
+) -> None:
+    if not model:
+        return
+    try:
+        ensure_betting_results_tables()
+    except Exception:
+        return
+    import json
+
+    sql = f"""
+        INSERT INTO {FANTASY_SCHEMA}.fact_betting_edge_confidence (
+            season, method, active, sample_size,
+            high_min, moderate_min, model_json, note, updated_at
+        ) VALUES (
+            :season, :method, :active, :sample_size,
+            :high_min, :moderate_min, CAST(:model_json AS JSONB),
+            :note, CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (season) DO UPDATE SET
+            method = EXCLUDED.method,
+            active = EXCLUDED.active,
+            sample_size = EXCLUDED.sample_size,
+            high_min = EXCLUDED.high_min,
+            moderate_min = EXCLUDED.moderate_min,
+            model_json = EXCLUDED.model_json,
+            note = EXCLUDED.note,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    params = {
+        "season": int(season),
+        "method": str(model.get("method") or "fallback"),
+        "active": bool(model.get("active")),
+        "sample_size": int(model.get("sample_size") or 0),
+        "high_min": model.get("high_min"),
+        "moderate_min": model.get("moderate_min"),
+        "model_json": json.dumps(model, sort_keys=True, default=str),
+        "note": model.get("note"),
+    }
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(sql), params)
+    except Exception:
+        return
+
+
+def get_edge_confidence(season: int) -> dict[str, Any] | None:
+    try:
+        ensure_betting_results_tables()
+        sql = f"""
+            SELECT *
+            FROM {FANTASY_SCHEMA}.fact_betting_edge_confidence
+            WHERE season = :season
+        """
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(sql), {"season": int(season)}
+            ).mappings().first()
+            if not row:
+                return None
+            payload = dict(row)
+            model_json = payload.get("model_json")
+            if isinstance(model_json, str):
+                import json
+
+                try:
+                    model_json = json.loads(model_json)
+                except json.JSONDecodeError:
+                    model_json = {}
+            if isinstance(model_json, dict):
+                return {
+                    **model_json,
+                    "season": payload.get("season"),
+                    "updated_at": (
+                        payload.get("updated_at").isoformat()
+                        if hasattr(payload.get("updated_at"), "isoformat")
+                        else payload.get("updated_at")
+                    ),
+                }
+            return {
+                "active": bool(payload.get("active")),
+                "method": payload.get("method"),
+                "sample_size": payload.get("sample_size"),
+                "high_min": payload.get("high_min"),
+                "moderate_min": payload.get("moderate_min"),
+                "note": payload.get("note"),
+                "season": payload.get("season"),
+            }
     except Exception:
         return None

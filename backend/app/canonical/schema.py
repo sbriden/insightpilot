@@ -577,6 +577,12 @@ SCHEMA_STATEMENTS = [
         over_under DOUBLE PRECISION,
         home_implied_total DOUBLE PRECISION,
         away_implied_total DOUBLE PRECISION,
+        opening_spread DOUBLE PRECISION,
+        opening_over_under DOUBLE PRECISION,
+        opening_home_implied_total DOUBLE PRECISION,
+        opening_away_implied_total DOUBLE PRECISION,
+        opening_captured_at TIMESTAMP,
+        line_moved_at TIMESTAMP,
         season INTEGER,
         week INTEGER,
         season_type TEXT,
@@ -586,6 +592,36 @@ SCHEMA_STATEMENTS = [
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (resolution_key)
     )
+    """,
+
+    # Opening / line-move columns on existing installs.
+    f"""
+    ALTER TABLE {FANTASY_SCHEMA}.fact_game_market
+      ADD COLUMN IF NOT EXISTS opening_spread DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS opening_over_under DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS opening_home_implied_total DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS opening_away_implied_total DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS opening_captured_at TIMESTAMP,
+      ADD COLUMN IF NOT EXISTS line_moved_at TIMESTAMP
+    """,
+
+    # Seed opening from the earliest known current line.
+    f"""
+    UPDATE {FANTASY_SCHEMA}.fact_game_market
+    SET
+      opening_spread = COALESCE(opening_spread, spread),
+      opening_over_under = COALESCE(opening_over_under, over_under),
+      opening_home_implied_total = COALESCE(
+        opening_home_implied_total, home_implied_total
+      ),
+      opening_away_implied_total = COALESCE(
+        opening_away_implied_total, away_implied_total
+      ),
+      opening_captured_at = COALESCE(
+        opening_captured_at, created_at, CURRENT_TIMESTAMP
+      )
+    WHERE opening_spread IS NULL
+       OR opening_over_under IS NULL
     """,
 
     f"""
@@ -901,7 +937,20 @@ SCHEMA_STATEMENTS = [
 ]
 
 
+_schema_ready = False
+
+
 def ensure_canonical_schema() -> None:
+    """
+    Create canonical tables once per process.
+
+    Slate reads used to replay every CREATE statement on each
+    lookup, which dominated Sports Betting load time.
+    """
+
+    global _schema_ready
+    if _schema_ready:
+        return
 
     with engine.begin() as connection:
 
@@ -910,3 +959,5 @@ def ensure_canonical_schema() -> None:
             connection.execute(
                 text(statement)
             )
+
+    _schema_ready = True

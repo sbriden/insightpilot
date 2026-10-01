@@ -3,6 +3,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -84,6 +85,7 @@ export default function SportsBettingAnalyzer({
   const [portfolioImpact, setPortfolioImpact] = useState<
     string | null
   >(null);
+  const loadedSlateKey = useRef<string | null>(null);
 
   useEffect(() => {
     setTab(initialTab);
@@ -113,15 +115,27 @@ export default function SportsBettingAnalyzer({
     let cancelled = false;
     (async () => {
       try {
-        const result = await listBettingWeeks();
+        const [weekResult, slateResult] = await Promise.all([
+          listBettingWeeks(),
+          getBettingSlate(),
+        ]);
         if (cancelled) return;
-        setSeason(result.season);
-        setWeeks(result.weeks || []);
-        setWeek(
-          result.current_week
-          ?? result.weeks?.[result.weeks.length - 1]
-          ?? null
-        );
+        setSeason(weekResult.season);
+        setWeeks(weekResult.weeks || []);
+        const nextWeek =
+          weekResult.current_week
+          ?? weekResult.weeks?.[weekResult.weeks.length - 1]
+          ?? null;
+        setWeek(nextWeek);
+        if (
+          nextWeek != null
+          && slateResult.season === weekResult.season
+          && slateResult.week === nextWeek
+        ) {
+          loadedSlateKey.current = `${weekResult.season}:${nextWeek}:0`;
+          setSlate(slateResult);
+          setLoading(false);
+        }
       } catch (err) {
         if (!cancelled) {
           setError(
@@ -139,7 +153,9 @@ export default function SportsBettingAnalyzer({
   }, []);
 
   useEffect(() => {
-    if (week == null) return;
+    if (week == null || season == null) return;
+    const key = `${season}:${week}:${slateReloadKey}`;
+    if (loadedSlateKey.current === key) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -150,6 +166,7 @@ export default function SportsBettingAnalyzer({
           week,
         });
         if (cancelled) return;
+        loadedSlateKey.current = key;
         setSlate(result);
       } catch (err) {
         if (!cancelled) {
@@ -630,13 +647,25 @@ function SlateSummaryBar({ slate }: { slate: BettingSlate }) {
       value: String(slate.markets_with_edge),
     },
     {
+      label: "Strong Bets",
+      value: String(slate.markets_strong_bet ?? 0),
+    },
+    {
+      label: "Leans",
+      value: String(slate.markets_lean ?? 0),
+    },
+    {
+      label: "No Bet / Pass",
+      value: String(slate.markets_no_bet ?? 0),
+    },
+    {
       label: "Avg Confidence",
       value: slate.average_confidence || "—",
     },
   ];
   return (
     <div
-      className="grid gap-3 rounded-xl border bg-white p-4 sm:grid-cols-2 lg:grid-cols-5"
+      className="grid gap-3 rounded-xl border bg-white p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-8"
       style={{ borderColor: snapshotTokens.border }}
     >
       {items.map((item) => (

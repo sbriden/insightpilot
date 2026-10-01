@@ -21,6 +21,10 @@ import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
 import {
   analyzeBettingPortfolio,
   BettingCalibrationFeedback,
+  BettingClvBreakdownRow,
+  BettingEdgeConfidenceDiagnostics,
+  BettingMarketPerformance,
+  BettingMarketPerformanceCard,
   BettingModelResultsSummary,
   BettingPerformanceTrendPoint,
   BettingPerformanceTrendSummary,
@@ -39,6 +43,17 @@ interface Props {
 type ResultsView = "model" | "portfolio";
 
 const SETTLED_TABLE_MAX_HEIGHT = 360;
+
+function formatSettledLine(
+  line: number | null | undefined,
+  marketType?: string | null,
+): string {
+  if (line == null) return "—";
+  if (marketType === "spread") {
+    return `${line > 0 ? "+" : ""}${line}`;
+  }
+  return String(line);
+}
 
 export default function BettingResults({
   slate,
@@ -98,6 +113,7 @@ export default function BettingResults({
 
   const model = modelPayload?.model_results;
   const feedback = modelPayload?.calibration_feedback;
+  const probCal = modelPayload?.probability_calibration;
 
   return (
     <div className="space-y-6">
@@ -177,14 +193,39 @@ export default function BettingResults({
             summary={model?.trend_summary}
           />
           <FeedbackPanel feedback={feedback} />
+          <ProbabilityCalibrationPanel calibration={probCal} />
+          <EdgeConfidencePanel
+            diagnostics={
+              model?.edge_confidence
+              ?? modelPayload?.edge_confidence
+              ?? null
+            }
+            buckets={model?.by_edge_bucket ?? []}
+          />
+          <MarketPerformancePanel
+            performance={
+              model?.market_performance
+              ?? modelPayload?.market_performance
+              ?? null
+            }
+            rows={model?.by_market ?? []}
+          />
           <div className="grid gap-4 lg:grid-cols-2">
-            <ModelBreakdown
-              title="By Market Type"
-              rows={model?.by_market ?? []}
-            />
             <ModelBreakdown
               title="By Confidence"
               rows={model?.by_confidence ?? []}
+            />
+            <ModelBreakdown
+              title="By Favorite / Underdog"
+              rows={model?.by_favorite_underdog ?? []}
+            />
+            <ModelBreakdown
+              title="By Home / Away"
+              rows={model?.by_home_away ?? []}
+            />
+            <ModelBreakdown
+              title="By Week"
+              rows={model?.by_week ?? []}
             />
           </div>
           <CalibrationPanel
@@ -222,21 +263,53 @@ function ModelSummaryGrid({
         model?.hit_rate != null ? `${model.hit_rate}%` : "—",
     },
     {
-      label: "Correct / incorrect",
-      value: `${model?.model_correct ?? 0} / ${model?.model_incorrect ?? 0}`,
-    },
-    {
-      label: "Avg total error",
+      label: "Avg CLV",
       value:
-        model?.average_total_error != null
-          ? `${model.average_total_error > 0 ? "+" : ""}${model.average_total_error}`
+        model?.average_clv != null
+          ? `${model.average_clv > 0 ? "+" : ""}${model.average_clv}`
           : "—",
     },
     {
-      label: "Avg |spread| error",
+      label: "Median CLV",
       value:
-        model?.average_abs_spread_error != null
-          ? String(model.average_abs_spread_error)
+        model?.median_clv != null
+          ? `${model.median_clv > 0 ? "+" : ""}${model.median_clv}`
+          : "—",
+    },
+    {
+      label: "Beat close %",
+      value:
+        model?.beat_close_pct != null
+          ? `${model.beat_close_pct}%`
+          : "—",
+    },
+    {
+      label: "ROI / Units",
+      value:
+        model?.roi_pct != null && model?.units != null
+          ? `${model.roi_pct > 0 ? "+" : ""}${model.roi_pct}% / ${model.units > 0 ? "+" : ""}${model.units}u`
+          : "—",
+    },
+    {
+      label: "ATS / O-U / ML",
+      value: [
+        model?.ats_win_pct != null ? `${model.ats_win_pct}%` : "—",
+        model?.ou_win_pct != null ? `${model.ou_win_pct}%` : "—",
+        model?.ml_win_pct != null ? `${model.ml_win_pct}%` : "—",
+      ].join(" · "),
+    },
+    {
+      label: "Avg edge",
+      value:
+        model?.average_edge != null
+          ? `${model.average_edge > 0 ? "+" : ""}${model.average_edge}`
+          : "—",
+    },
+    {
+      label: "Avg closing edge",
+      value:
+        model?.average_closing_edge != null
+          ? `${model.average_closing_edge > 0 ? "+" : ""}${model.average_closing_edge}`
           : "—",
     },
   ];
@@ -595,6 +668,391 @@ function FeedbackPanel({
   );
 }
 
+function MarketPerformancePanel({
+  performance,
+  rows,
+}: {
+  performance?: BettingMarketPerformance | null;
+  rows: BettingClvBreakdownRow[];
+}) {
+  const cards: BettingMarketPerformanceCard[] = performance?.markets
+    ? (["spread", "total", "moneyline"] as const).map((key) => {
+        const card = performance.markets?.[key];
+        return (
+          card || {
+            market_type: key,
+            label:
+              key === "spread"
+                ? "Spread"
+                : key === "total"
+                  ? "Total"
+                  : "Moneyline",
+            sample_size: 0,
+          }
+        );
+      })
+    : rows.map((row) => ({
+        ...row,
+        label: row.key,
+        market_type: row.key,
+      }));
+
+  const winLabel = (card: BettingMarketPerformanceCard) => {
+    if (card.market_type === "spread" || card.ats_win_pct != null) {
+      return {
+        label: "ATS %",
+        value: card.ats_win_pct ?? card.hit_rate,
+      };
+    }
+    if (card.market_type === "total" || card.ou_win_pct != null) {
+      return {
+        label: "O/U %",
+        value: card.ou_win_pct ?? card.hit_rate,
+      };
+    }
+    return {
+      label: "Win %",
+      value: card.win_pct ?? card.hit_rate,
+    };
+  };
+
+  return (
+    <section
+      className="rounded-[10px] border bg-white p-4"
+      style={{ borderColor: snapshotTokens.border }}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3
+            className="text-sm font-semibold"
+            style={{ color: snapshotTokens.navy }}
+          >
+            Model performance by market
+          </h3>
+          <p
+            className="mt-1 max-w-3xl text-sm"
+            style={{ color: snapshotTokens.textSecondary }}
+          >
+            {performance?.note
+              || "Spread, total, and moneyline are scored as separate models. Confidence floors follow market quality."}
+          </p>
+        </div>
+        {performance?.best_market ? (
+          <div
+            className="text-sm"
+            style={{ color: snapshotTokens.textMuted }}
+          >
+            Leading:{" "}
+            <strong style={{ color: snapshotTokens.textPrimary }}>
+              {performance.best_market}
+            </strong>
+          </div>
+        ) : null}
+      </div>
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        {cards.map((card) => {
+          const win = winLabel(card);
+          const showMae = card.market_type !== "moneyline";
+          return (
+            <div
+              key={card.market_type || card.label || card.key}
+              className="rounded-[10px] border px-3 py-3"
+              style={{ borderColor: snapshotTokens.divider }}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <h4
+                  className="text-sm font-semibold"
+                  style={{ color: snapshotTokens.navy }}
+                >
+                  {card.label || card.market_type}
+                </h4>
+                <span
+                  className="text-xs tabular-nums"
+                  style={{ color: snapshotTokens.textMuted }}
+                >
+                  n={card.sample_size ?? card.decided ?? card.bets ?? 0}
+                </span>
+              </div>
+              <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+                <div>
+                  <dt style={{ color: snapshotTokens.textMuted }}>
+                    {win.label}
+                  </dt>
+                  <dd className="font-medium tabular-nums">
+                    {win.value != null ? `${win.value}%` : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt style={{ color: snapshotTokens.textMuted }}>
+                    ROI
+                  </dt>
+                  <dd className="font-medium tabular-nums">
+                    {card.roi_pct != null
+                      ? `${card.roi_pct > 0 ? "+" : ""}${card.roi_pct}%`
+                      : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt style={{ color: snapshotTokens.textMuted }}>
+                    CLV
+                  </dt>
+                  <dd className="font-medium tabular-nums">
+                    {card.average_clv != null
+                      ? `${card.average_clv > 0 ? "+" : ""}${card.average_clv.toFixed(2)}`
+                      : "—"}
+                  </dd>
+                </div>
+                {showMae ? (
+                  <div>
+                    <dt style={{ color: snapshotTokens.textMuted }}>
+                      MAE
+                    </dt>
+                    <dd className="font-medium tabular-nums">
+                      {card.mae != null ? card.mae.toFixed(2) : "—"}
+                    </dd>
+                  </div>
+                ) : (
+                  <div>
+                    <dt style={{ color: snapshotTokens.textMuted }}>
+                      Brier
+                    </dt>
+                    <dd className="font-medium tabular-nums">
+                      {card.brier != null
+                        ? card.brier.toFixed(3)
+                        : "—"}
+                    </dd>
+                  </div>
+                )}
+                <div>
+                  <dt style={{ color: snapshotTokens.textMuted }}>
+                    Cal gap
+                  </dt>
+                  <dd className="font-medium tabular-nums">
+                    {card.calibration_gap != null
+                      ? `${card.calibration_gap > 0 ? "+" : ""}${card.calibration_gap}`
+                      : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt style={{ color: snapshotTokens.textMuted }}>
+                    Conf weight
+                  </dt>
+                  <dd className="font-medium tabular-nums">
+                    {card.confidence_weight != null
+                      ? card.confidence_weight.toFixed(2)
+                      : "—"}
+                  </dd>
+                </div>
+              </dl>
+              {card.high_min != null || card.moderate_min != null ? (
+                <p
+                  className="mt-3 text-xs"
+                  style={{ color: snapshotTokens.textMuted }}
+                >
+                  Floors · High ≥ {card.high_min ?? "—"} · Moderate ≥{" "}
+                  {card.moderate_min ?? "—"}
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function EdgeConfidencePanel({
+  diagnostics,
+  buckets,
+}: {
+  diagnostics?: BettingEdgeConfidenceDiagnostics | null;
+  buckets: BettingClvBreakdownRow[];
+}) {
+  const thresholds = diagnostics?.thresholds;
+  const rows =
+    (diagnostics?.buckets && diagnostics.buckets.length > 0
+      ? diagnostics.buckets
+      : buckets) ?? [];
+  const active = Boolean(thresholds?.active);
+  return (
+    <section
+      className="rounded-[10px] border bg-white p-4"
+      style={{ borderColor: snapshotTokens.border }}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3
+            className="text-sm font-semibold"
+            style={{ color: snapshotTokens.navy }}
+          >
+            Point-edge backtest
+            {active
+              ? " · thresholds learned"
+              : " · learning"}
+          </h3>
+          <p
+            className="mt-1 max-w-3xl text-sm"
+            style={{ color: snapshotTokens.textSecondary }}
+          >
+            {diagnostics?.note
+              || thresholds?.note
+              || "Confidence is learned from historical win rate, ROI, CLV, and calibration by point-edge bucket — not fixed 1.5 / 3.5 cutoffs."}
+          </p>
+        </div>
+        <div className="text-right text-sm tabular-nums">
+          <div style={{ color: snapshotTokens.textMuted }}>
+            High ≥{" "}
+            <strong style={{ color: snapshotTokens.textPrimary }}>
+              {thresholds?.high_min != null
+                ? thresholds.high_min
+                : "3.5"}
+            </strong>
+            {" · "}
+            Moderate ≥{" "}
+            <strong style={{ color: snapshotTokens.textPrimary }}>
+              {thresholds?.moderate_min != null
+                ? thresholds.moderate_min
+                : "1.5"}
+            </strong>
+          </div>
+          <div
+            className="mt-1 text-xs"
+            style={{ color: snapshotTokens.textMuted }}
+          >
+            n={thresholds?.sample_size ?? 0}
+          </div>
+        </div>
+      </div>
+      <div className="mt-4 overflow-x-auto">
+        <table className="min-w-full text-left text-sm">
+          <thead>
+            <tr
+              className="text-xs uppercase tracking-[0.12em]"
+              style={{ color: snapshotTokens.textMuted }}
+            >
+              <th className="py-2 pr-3 font-semibold">Edge pts</th>
+              <th className="py-2 pr-3 font-semibold text-right">n</th>
+              <th className="py-2 pr-3 font-semibold text-right">
+                Win %
+              </th>
+              <th className="py-2 pr-3 font-semibold text-right">
+                ROI
+              </th>
+              <th className="py-2 pr-3 font-semibold text-right">
+                Avg CLV
+              </th>
+              <th className="py-2 font-semibold text-right">
+                Cal gap
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr
+                key={row.key}
+                className="border-t"
+                style={{ borderColor: snapshotTokens.divider }}
+              >
+                <td className="py-2 pr-3">{row.key}</td>
+                <td className="py-2 pr-3 text-right tabular-nums">
+                  {row.sample_size ?? row.decided ?? row.bets ?? 0}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums">
+                  {row.win_rate != null
+                    ? `${row.win_rate}%`
+                    : row.hit_rate != null
+                      ? `${row.hit_rate}%`
+                      : "—"}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums">
+                  {row.roi_pct != null
+                    ? `${row.roi_pct > 0 ? "+" : ""}${row.roi_pct}%`
+                    : "—"}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums">
+                  {row.average_clv != null
+                    ? `${row.average_clv > 0 ? "+" : ""}${row.average_clv.toFixed(2)}`
+                    : "—"}
+                </td>
+                <td className="py-2 text-right tabular-nums">
+                  {row.calibration_gap != null
+                    ? `${row.calibration_gap > 0 ? "+" : ""}${row.calibration_gap}`
+                    : row.calibration?.gap_pp != null
+                      ? `${row.calibration.gap_pp > 0 ? "+" : ""}${row.calibration.gap_pp}`
+                      : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function ProbabilityCalibrationPanel({
+  calibration,
+}: {
+  calibration?: BettingResultsPayload["probability_calibration"];
+}) {
+  if (!calibration) return null;
+  const metrics = calibration.metrics;
+  return (
+    <section
+      className="rounded-[10px] border px-4 py-3"
+      style={{
+        borderColor: calibration.active
+          ? "#BBF7D0"
+          : snapshotTokens.border,
+        background: calibration.active
+          ? snapshotTokens.successLight
+          : snapshotTokens.background,
+      }}
+    >
+      <h3
+        className="text-sm font-semibold"
+        style={{ color: snapshotTokens.navy }}
+      >
+        Probability Calibration
+        {calibration.active
+          ? ` · ${calibration.method || "active"}`
+          : " · Warming up"}
+      </h3>
+      <p
+        className="mt-1 text-sm"
+        style={{ color: snapshotTokens.textSecondary }}
+      >
+        {calibration.note
+          || "Maps raw logistic probabilities onto historical win rates (Platt / isotonic)."}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-4 text-sm">
+        <span style={{ color: snapshotTokens.textPrimary }}>
+          Sample bets:{" "}
+          <strong>{calibration.sample_size ?? 0}</strong>
+        </span>
+        <span style={{ color: snapshotTokens.textPrimary }}>
+          Brier:{" "}
+          <strong>
+            {metrics?.brier_raw != null
+              && metrics?.brier_calibrated != null
+              ? `${metrics.brier_raw.toFixed(3)} → ${metrics.brier_calibrated.toFixed(3)}`
+              : "—"}
+          </strong>
+        </span>
+        <span style={{ color: snapshotTokens.textPrimary }}>
+          ECE:{" "}
+          <strong>
+            {metrics?.ece_raw != null
+              && metrics?.ece_calibrated != null
+              ? `${metrics.ece_raw.toFixed(3)} → ${metrics.ece_calibrated.toFixed(3)}`
+              : "—"}
+          </strong>
+        </span>
+      </div>
+    </section>
+  );
+}
+
 function ModelBreakdown({
   title,
   rows,
@@ -626,8 +1084,11 @@ function ModelBreakdown({
             <th className="py-2 pr-3 font-semibold text-right">
               Hit %
             </th>
+            <th className="py-2 pr-3 font-semibold text-right">
+              Avg CLV
+            </th>
             <th className="py-2 font-semibold text-right">
-              Avg edge
+              ROI
             </th>
           </tr>
         </thead>
@@ -645,9 +1106,14 @@ function ModelBreakdown({
               <td className="py-2 pr-3 text-right tabular-nums">
                 {row.hit_rate != null ? `${row.hit_rate}%` : "—"}
               </td>
+              <td className="py-2 pr-3 text-right tabular-nums">
+                {row.average_clv != null
+                  ? `${row.average_clv > 0 ? "+" : ""}${row.average_clv.toFixed(2)}`
+                  : "—"}
+              </td>
               <td className="py-2 text-right tabular-nums">
-                {row.average_edge != null
-                  ? `${row.average_edge > 0 ? "+" : ""}${row.average_edge.toFixed(1)}%`
+                {row.roi_pct != null
+                  ? `${row.roi_pct > 0 ? "+" : ""}${row.roi_pct.toFixed(1)}%`
                   : "—"}
               </td>
             </tr>
@@ -655,7 +1121,7 @@ function ModelBreakdown({
           {rows.length === 0 ? (
             <tr>
               <td
-                colSpan={4}
+                colSpan={5}
                 className="py-4 text-sm"
                 style={{ color: snapshotTokens.textMuted }}
               >
@@ -774,13 +1240,13 @@ function SettledMarketsTable({
               <th className="px-4 py-2 font-semibold">Game</th>
               <th className="px-3 py-2 font-semibold">Market</th>
               <th className="px-3 py-2 font-semibold text-right">
-                Final
+                Bet
               </th>
               <th className="px-3 py-2 font-semibold text-right">
-                Model
+                Close
               </th>
               <th className="px-3 py-2 font-semibold text-right">
-                Error
+                CLV
               </th>
               <th className="px-3 py-2 font-semibold">Result</th>
             </tr>
@@ -819,27 +1285,25 @@ function SettledMarketsTable({
                   </span>
                 </td>
                 <td className="px-3 py-2.5 text-right tabular-nums">
-                  {row.market_type === "total"
-                    ? row.actual_total
-                    : row.actual_spread != null
-                      ? `${row.actual_spread > 0 ? "+" : ""}${row.actual_spread}`
-                      : "—"}
+                  {formatSettledLine(row.bet_line ?? row.line, row.market_type)}
                 </td>
                 <td className="px-3 py-2.5 text-right tabular-nums">
-                  {row.market_type === "total"
-                    ? row.model_total
-                    : row.model_spread != null
-                      ? `${row.model_spread > 0 ? "+" : ""}${row.model_spread}`
-                      : "—"}
+                  {formatSettledLine(row.closing_line, row.market_type)}
                 </td>
-                <td className="px-3 py-2.5 text-right tabular-nums">
-                  {row.market_type === "total"
-                    ? row.total_error != null
-                      ? `${row.total_error > 0 ? "+" : ""}${row.total_error}`
-                      : "—"
-                    : row.spread_error != null
-                      ? `${row.spread_error > 0 ? "+" : ""}${row.spread_error}`
-                      : "—"}
+                <td
+                  className="px-3 py-2.5 text-right tabular-nums font-medium"
+                  style={{
+                    color:
+                      row.clv != null && row.clv > 0
+                        ? snapshotTokens.success
+                        : row.clv != null && row.clv < 0
+                          ? snapshotTokens.negative
+                          : snapshotTokens.textPrimary,
+                  }}
+                >
+                  {row.clv != null
+                    ? `${row.clv > 0 ? "+" : ""}${row.clv}`
+                    : "—"}
                 </td>
                 <td
                   className="px-3 py-2.5 capitalize font-medium"

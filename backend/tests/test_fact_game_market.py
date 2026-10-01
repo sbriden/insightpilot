@@ -95,6 +95,8 @@ class FactGameMarketTests(unittest.TestCase):
         self.assertEqual(kc["timestamp"], "2024-09-05T20:20:00")
         self.assertEqual(kc["spread"], 3.0)
         self.assertEqual(kc["over_under"], 46.0)
+        self.assertEqual(kc["opening_spread"], 3.0)
+        self.assertEqual(kc["opening_over_under"], 46.0)
         # home favored by 3 → home 24.5, away 21.5
         self.assertAlmostEqual(kc["home_implied_total"], 24.5)
         self.assertAlmostEqual(kc["away_implied_total"], 21.5)

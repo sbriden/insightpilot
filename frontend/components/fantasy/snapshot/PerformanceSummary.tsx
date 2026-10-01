@@ -64,20 +64,20 @@ export default function PerformanceSummary({
           {metrics.map((metric) => (
             <div
               key={metric.key}
-              className="rounded-lg border px-3 py-3"
+              className="flex h-full flex-col rounded-lg border px-3 py-3"
               style={{
                 borderColor: snapshotTokens.divider,
                 background: snapshotTokens.background,
               }}
             >
               <p
-                className="text-[11px] font-medium uppercase tracking-wide"
+                className="text-[11px] font-medium uppercase leading-4 tracking-wide"
                 style={{ color: snapshotTokens.textMuted }}
               >
                 {metric.label}
               </p>
               <p
-                className="mt-1.5 text-[22px] font-bold tabular-nums leading-none"
+                className="mt-auto pt-2 text-[22px] font-bold tabular-nums leading-none"
                 style={{ color: snapshotTokens.textPrimary }}
               >
                 {formatMetricValue(metric.value)}

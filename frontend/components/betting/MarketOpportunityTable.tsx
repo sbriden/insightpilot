@@ -116,6 +116,22 @@ export default function MarketOpportunityTable({
                   style={{ color: snapshotTokens.textSecondary }}
                 >
                   {market.confidence || "—"}
+                  {(market.bet_label || market.bet_status) ? (
+                    <span
+                      className="ml-2 text-[10px] font-semibold uppercase tracking-wide"
+                      style={{
+                        color:
+                          market.bet_status === "strong_bet"
+                            ? snapshotTokens.success
+                            : market.bet_status === "lean"
+                              ? snapshotTokens.blue
+                              : snapshotTokens.textMuted,
+                      }}
+                    >
+                      {market.bet_label
+                        || (market.no_bet ? "Pass" : market.bet_status)}
+                    </span>
+                  ) : null}
                 </td>
                 <td
                   className="max-w-md px-3 py-2.5 text-xs leading-relaxed"

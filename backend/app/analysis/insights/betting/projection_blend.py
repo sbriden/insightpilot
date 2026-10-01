@@ -1,18 +1,23 @@
 """
-Confidence-dependent market ↔ model projection blending.
+Confidence-dependent market residual shrink.
 
 Projection structure:
   market baseline
-  + InsightPilot team-strength adjustment
-  + situational adjustment (injuries, calibration)
+       +
+  shrink(confidence) * (team_strength - market)
+       +
+  situational residual (injuries, calibration)
+       =
+  InsightPilot projection
 
-The market remains the anchor. Model influence scales with
+The market remains the baseline. Model influence scales with
 projection confidence so the model must earn the right to
 move farther from the market.
 
-Blend weights below are provisional priors. They should be
-replaced by historically backtested / learned weights via
-``load_blend_policy`` once enough settled residuals exist.
+Blend weights below are provisional priors used as residual
+shrink factors. They should be replaced by historically
+backtested / learned weights via ``load_blend_policy`` once
+enough settled residuals exist.
 """
 
 from __future__ import annotations

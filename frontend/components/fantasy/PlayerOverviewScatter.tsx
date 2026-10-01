@@ -137,13 +137,13 @@ function OwnershipRangeSlider({
   const spanRight = Math.max(min, max);
 
   return (
-    <div className="relative h-7 w-full">
+    <div className="relative h-5 w-full">
       <div
-        className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full"
+        className="absolute left-0 right-0 top-1/2 h-1 -translate-y-1/2 rounded-full"
         style={{ background: snapshotTokens.divider }}
       />
       <div
-        className="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-full"
+        className="absolute top-1/2 h-1 -translate-y-1/2 rounded-full"
         style={{
           left: `${spanLeft}%`,
           width: `${Math.max(spanRight - spanLeft, 0)}%`,
@@ -187,26 +187,26 @@ function OwnershipRangeSlider({
       <style>{`
         .ownership-range-thumb {
           pointer-events: none;
-          height: 1.75rem;
+          height: 1.25rem;
           margin: 0;
         }
         .ownership-range-thumb::-webkit-slider-thumb {
           pointer-events: auto;
           -webkit-appearance: none;
           appearance: none;
-          width: 1rem;
-          height: 1rem;
+          width: 0.7rem;
+          height: 0.7rem;
           border-radius: 9999px;
           background: #1677FF;
-          border: 2px solid #FFFFFF;
+          border: 1.5px solid #FFFFFF;
           box-shadow: 0 0 0 1px #DCE3EC;
           cursor: pointer;
         }
         .ownership-range-thumb::-moz-range-thumb {
           pointer-events: auto;
-          width: 1rem;
-          height: 1rem;
-          border: 2px solid #FFFFFF;
+          width: 0.7rem;
+          height: 0.7rem;
+          border: 1.5px solid #FFFFFF;
           border-radius: 9999px;
           background: #1677FF;
           box-shadow: 0 0 0 1px #DCE3EC;
@@ -214,11 +214,11 @@ function OwnershipRangeSlider({
         }
         .ownership-range-thumb::-webkit-slider-runnable-track {
           background: transparent;
-          height: 1.75rem;
+          height: 1.25rem;
         }
         .ownership-range-thumb::-moz-range-track {
           background: transparent;
-          height: 1.75rem;
+          height: 1.25rem;
           border: none;
         }
       `}</style>
@@ -419,43 +419,33 @@ export default function PlayerOverviewScatter({
         </p>
       </div>
 
-      <div
-        className="mt-4 rounded-lg border px-4 py-3"
-        style={{
-          borderColor: snapshotTokens.divider,
-          background: snapshotTokens.background,
-        }}
-      >
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p
-            className="text-[11px] font-semibold uppercase tracking-wide"
-            style={{ color: snapshotTokens.textMuted }}
+      <div className="mt-3 flex max-w-xs flex-wrap items-center gap-x-3 gap-y-1">
+        <p
+          className="text-[10px] font-semibold uppercase tracking-wide"
+          style={{ color: snapshotTokens.textMuted }}
+        >
+          Ownership
+        </p>
+        <p
+          className="text-[11px] tabular-nums"
+          style={{ color: snapshotTokens.textSecondary }}
+        >
+          {ownershipMin}%–{ownershipMax}%
+        </p>
+        {filterActive && (
+          <button
+            type="button"
+            onClick={() => {
+              setOwnershipMin(0);
+              setOwnershipMax(100);
+            }}
+            className="text-[11px] font-medium"
+            style={{ color: snapshotTokens.blue }}
           >
-            Ownership
-          </p>
-          <div className="flex items-center gap-2">
-            <p
-              className="text-sm tabular-nums font-semibold"
-              style={{ color: snapshotTokens.textPrimary }}
-            >
-              {ownershipMin}% – {ownershipMax}%
-            </p>
-            {filterActive && (
-              <button
-                type="button"
-                onClick={() => {
-                  setOwnershipMin(0);
-                  setOwnershipMax(100);
-                }}
-                className="text-xs font-medium"
-                style={{ color: snapshotTokens.blue }}
-              >
-                Reset
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="mt-3 px-1">
+            Reset
+          </button>
+        )}
+        <div className="w-full">
           <OwnershipRangeSlider
             min={ownershipMin}
             max={ownershipMax}
@@ -464,22 +454,13 @@ export default function PlayerOverviewScatter({
               setOwnershipMax(max);
             }}
           />
-          <div
-            className="mt-1 flex justify-between text-[11px] tabular-nums"
-            style={{ color: snapshotTokens.textMuted }}
-          >
-            <span>0%</span>
-            <span>100%</span>
-          </div>
         </div>
         {!hasOwnershipData && (
           <p
-            className="mt-2 text-xs"
+            className="text-[11px]"
             style={{ color: snapshotTokens.textSecondary }}
           >
-            Ownership is not on the current player list yet —
-            restart the backend if this stays empty after a
-            refresh.
+            Ownership is not on the current player list yet.
           </p>
         )}
       </div>

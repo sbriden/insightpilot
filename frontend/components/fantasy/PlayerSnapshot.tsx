@@ -25,6 +25,7 @@ import {
 import MultiSelectFilter, {
   MULTI_SELECT_NONE,
 } from "@/components/fantasy/MultiSelectFilter";
+import { SearchablePlayerMultiSelect } from "@/components/fantasy/SearchablePlayerSelect";
 import PlayerOverviewCompare from "@/components/fantasy/PlayerOverviewCompare";
 import PlayerOverviewScatter from "@/components/fantasy/PlayerOverviewScatter";
 import PlayerOverviewTeamStats from "@/components/fantasy/PlayerOverviewTeamStats";
@@ -315,7 +316,8 @@ export default function PlayerSnapshot({
 
   const [overviewTab, setOverviewTab] =
     useState<OverviewTab>("table");
-  const [search, setSearch] = useState("");
+  const [selectedPlayerIds, setSelectedPlayerIds] =
+    useState<string[]>([]);
   const [positionFilter, setPositionFilter] =
     useState<string[]>([]);
   const [teamFilter, setTeamFilter] =
@@ -492,10 +494,17 @@ export default function PlayerSnapshot({
     });
   }, [players]);
 
-  const rows = useMemo(() => {
-    const needle = search.trim().toLowerCase();
+  const selectedPlayerSet = useMemo(
+    () => new Set(selectedPlayerIds),
+    [selectedPlayerIds]
+  );
 
+  const rows = useMemo(() => {
     const filtered = players.filter((player) => {
+      if (selectedPlayerSet.size > 0) {
+        return selectedPlayerSet.has(player.player_id);
+      }
+
       if (
         positionFilter.length === 1
         && positionFilter[0] === MULTI_SELECT_NONE
@@ -536,21 +545,7 @@ export default function PlayerSnapshot({
         return false;
       }
 
-      if (!needle) {
-        return true;
-      }
-
-      const haystack = [
-        player.name,
-        player.position,
-        player.team,
-        player.status,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      return haystack.includes(needle);
+      return true;
     });
 
     const sorted = [...filtered].sort((left, right) => {
@@ -590,7 +585,7 @@ export default function PlayerSnapshot({
     return sorted;
   }, [
     players,
-    search,
+    selectedPlayerSet,
     positionFilter,
     teamFilter,
     statusFilter,
@@ -632,7 +627,7 @@ export default function PlayerSnapshot({
 
   return (
     <section
-      className="overflow-hidden rounded-[10px] border bg-white"
+      className="rounded-[10px] border bg-white"
       style={{ borderColor: snapshotTokens.border }}
     >
       <div
@@ -697,33 +692,17 @@ export default function PlayerSnapshot({
 
       {overviewTab !== "teams" && (
       <div
-        className="flex flex-wrap items-center gap-3 border-b bg-white px-4 py-3 sm:px-5"
+        className="flex flex-wrap items-end gap-3 border-b bg-white px-4 py-3 sm:px-5"
         style={{ borderColor: snapshotTokens.divider }}
       >
-        <label
-          className="sr-only"
-          htmlFor="player-table-search"
-        >
-          Search players
-        </label>
-        <input
-          id="player-table-search"
-          type="search"
-          value={search}
-          onChange={(event) =>
-            setSearch(event.target.value)
-          }
-          placeholder="Search name, position, team…"
-          className="min-w-[12rem] flex-1 rounded-lg border bg-white px-3 py-2 text-sm outline-none focus:ring-2"
-          style={{
-            borderColor: snapshotTokens.border,
-            color: snapshotTokens.textPrimary,
-          }}
-          autoComplete="off"
+        <SearchablePlayerMultiSelect
+          label="Players"
+          players={players}
+          selectedIds={selectedPlayerIds}
+          onChange={setSelectedPlayerIds}
         />
-
         <MultiSelectFilter
-          label="Pos"
+          label="Position"
           options={[...POSITIONS]}
           selected={positionFilter}
           onChange={setPositionFilter}
@@ -772,7 +751,7 @@ export default function PlayerSnapshot({
         </label>
 
         <p
-          className="ml-auto text-xs"
+          className="mb-2 ml-auto text-xs"
           style={{ color: snapshotTokens.textMuted }}
         >
           {loadingList
