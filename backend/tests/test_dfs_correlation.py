@@ -384,13 +384,19 @@ class TestDfsCorrelationEngine(unittest.TestCase):
         self.assertTrue(scored["negative_pairs"])
 
         summary = summarize_portfolio_correlations(
-            [{"players": lineup}, {"players": lineup}],
+            [
+                {"players": lineup, "portfolio_index": 2},
+                {"players": lineup, "portfolio_index": 5},
+            ],
             self.ctx,
         )
         self.assertTrue(
             summary["positive_correlation_exposure"]
         )
         self.assertIsNotNone(summary["narrative"])
+        top = summary["positive_correlation_exposure"][0]
+        self.assertEqual(top["lineup_indexes"], [2, 5])
+        self.assertEqual(top["lineups"], 2)
 
 
 if __name__ == "__main__":

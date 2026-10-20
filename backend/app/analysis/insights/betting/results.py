@@ -48,6 +48,11 @@ def is_game_final(event: dict[str, Any]) -> bool:
     return home is not None and away is not None
 
 
+# Learning / calibration only on actionable recommendations.
+ACTIONABLE_BET_STATUSES = frozenset({"strong_bet", "lean"})
+MIN_ACTIONABLE_LEARNING_ROWS = 15
+
+
 def build_projection_snapshot(event: dict[str, Any]) -> dict[str, Any]:
     """Capture the latest model/market view for a game."""
 
@@ -67,9 +72,83 @@ def build_projection_snapshot(event: dict[str, Any]) -> dict[str, Any]:
         "market_away_score": num(event.get("market_away_score")),
         "residual_home": num(event.get("residual_home")),
         "residual_away": num(event.get("residual_away")),
+        "tape_source": "live",
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "frozen": False,
+        "model_version": (
+            event.get("game_forecast") or {}
+        ).get("model_version")
+        if isinstance(event.get("game_forecast"), dict)
+        else None,
+        "payload": (
+            {"game_forecast": event.get("game_forecast")}
+            if isinstance(event.get("game_forecast"), dict)
+            else {}
+        ),
     }
+
+
+def build_bet_tape_snapshot(
+    event: dict[str, Any],
+    *,
+    prefer_opening: bool = False,
+) -> dict[str, Any]:
+    """
+    Build the bet-time market tape for CLV / settlement grading.
+
+    ``prefer_opening=True`` is used when a game reaches Final with no
+    pregame snapshot — never treat closing/current as the bet line.
+    """
+
+    snap = build_projection_snapshot(event)
+    if prefer_opening:
+        opening_spread = num(event.get("opening_spread"))
+        opening_total = num(event.get("opening_total"))
+        if opening_spread is not None:
+            snap["market_spread"] = opening_spread
+        if opening_total is not None:
+            snap["market_total"] = opening_total
+        snap["tape_source"] = "opening_fallback"
+    else:
+        snap["tape_source"] = "first_publish"
+    return snap
+
+
+def filter_learning_rows(
+    rows: list[dict[str, Any]] | None,
+    *,
+    min_actionable: int = MIN_ACTIONABLE_LEARNING_ROWS,
+) -> tuple[list[dict[str, Any]], str]:
+    """
+    Prefer Strong Bet / Lean rows for calibration learners.
+
+    Falls back to the full corpus when actionable sample is thin or
+    legacy rows lack ``bet_status``.
+    """
+
+    all_rows = list(rows or [])
+    if not all_rows:
+        return [], "empty"
+
+    actionable = [
+        row
+        for row in all_rows
+        if str(row.get("bet_status") or "").lower()
+        in ACTIONABLE_BET_STATUSES
+    ]
+    if len(actionable) >= min_actionable:
+        return actionable, "strong_lean"
+
+    tagged = [
+        row for row in all_rows if row.get("bet_status") is not None
+    ]
+    if not tagged:
+        # Pre-bet_status history — keep prior behavior.
+        return all_rows, "all_legacy"
+
+    if actionable:
+        return actionable, "strong_lean_thin"
+    return all_rows, "all_fallback"
 
 
 def settle_event_markets(
@@ -111,17 +190,41 @@ def settle_event_markets(
         if event.get("current_total") is not None
         else event.get("market_total")
     )
-    # Bet-time lines prefer the frozen snapshot market.
-    bet_market_spread = num(
-        snap.get("market_spread")
-        if snap.get("market_spread") is not None
-        else event.get("opening_spread", event.get("market_spread"))
-    )
-    bet_market_total = num(
-        snap.get("market_total")
-        if snap.get("market_total") is not None
-        else event.get("opening_total", event.get("market_total"))
-    )
+    # Bet-time lines: frozen tape first, then opening — never silently
+    # equate bet to close when opening exists.
+    opening_spread = num(event.get("opening_spread"))
+    opening_total = num(event.get("opening_total"))
+    snap_spread = num(snap.get("market_spread"))
+    snap_total = num(snap.get("market_total"))
+    tape_source = str(snap.get("tape_source") or "")
+    if tape_source == "opening_fallback":
+        bet_market_spread = (
+            snap_spread
+            if snap_spread is not None
+            else opening_spread
+        )
+        bet_market_total = (
+            snap_total if snap_total is not None else opening_total
+        )
+    else:
+        bet_market_spread = (
+            snap_spread
+            if snap_spread is not None
+            else (
+                opening_spread
+                if opening_spread is not None
+                else closing_market_spread
+            )
+        )
+        bet_market_total = (
+            snap_total
+            if snap_total is not None
+            else (
+                opening_total
+                if opening_total is not None
+                else closing_market_total
+            )
+        )
 
     settled: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc).isoformat()
@@ -320,6 +423,8 @@ def summarize_model_results(
         "ou_win_pct": clv_summary.get("ou_win_pct"),
         "ml_win_pct": clv_summary.get("ml_win_pct"),
         "average_clv": clv_summary.get("average_clv"),
+        "average_clv_points": clv_summary.get("average_clv_points"),
+        "average_clv_prob_pp": clv_summary.get("average_clv_prob_pp"),
         "median_clv": clv_summary.get("median_clv"),
         "beat_close_pct": clv_summary.get("beat_close_pct"),
         "units": clv_summary.get("units"),
@@ -533,9 +638,10 @@ def calibration_feedback_from_results(
     for future projections.
     """
 
+    cohort, cohort_label = filter_learning_rows(settled)
     game_total: dict[str, float] = {}
     game_spread: dict[str, float] = {}
-    for row in settled:
+    for row in cohort:
         eid = str(row.get("event_id") or "")
         if not eid:
             continue
@@ -551,6 +657,7 @@ def calibration_feedback_from_results(
             "total_bias": 0.0,
             "spread_bias": 0.0,
             "active": False,
+            "learning_cohort": cohort_label,
             "note": (
                 f"Need at least {min_games} settled games before "
                 "projection feedback activates."
@@ -576,9 +683,10 @@ def calibration_feedback_from_results(
         "raw_mean_spread_error": round(mean_spread, 3),
         "active": True,
         "dampen": dampen,
+        "learning_cohort": cohort_label,
         "note": (
             "Future projections subtract dampened mean residual "
-            "error observed on auto-settled games."
+            f"error observed on {cohort_label} auto-settled games."
         ),
     }
 
@@ -639,29 +747,32 @@ def _settle_one_market(
     closing_price = None
 
     if market_type == "total":
-        if line is None:
+        # Resolve bet tape first — grade on bet_line, not close.
+        if bet_market_total is not None:
+            bet_line = float(bet_market_total)
+        elif line is not None:
+            bet_line = float(line)
+        else:
             return None
         actual_value = float(actual_total)
-        # Closing total = last known market total (not final score).
         closing_line = (
             closing_market_total
             if closing_market_total is not None
-            else line
+            else bet_line
         )
-        if bet_market_total is not None:
-            bet_line = float(bet_market_total)
+        grade_line = float(bet_line)
         sel_u = selection.upper()
         if "OVER" in sel_u:
-            if actual_total > line:
+            if actual_total > grade_line:
                 result = "won"
-            elif actual_total < line:
+            elif actual_total < grade_line:
                 result = "lost"
             else:
                 result = "push"
         elif "UNDER" in sel_u:
-            if actual_total < line:
+            if actual_total < grade_line:
                 result = "won"
-            elif actual_total > line:
+            elif actual_total > grade_line:
                 result = "lost"
             else:
                 result = "push"
@@ -669,29 +780,32 @@ def _settle_one_market(
             return None
 
     elif market_type == "spread":
-        if line is None:
-            return None
         side_home = side == "home"
         side_away = side == "away"
         if not side_home and not side_away:
             return None
+        snap_bet = event_spread_as_selection_line(
+            bet_market_spread, side=side
+        )
+        if snap_bet is not None:
+            bet_line = float(snap_bet)
+        elif line is not None:
+            bet_line = float(line)
+        else:
+            return None
+        grade_line = float(bet_line)
         if side_home:
-            margin = home_score + float(line) - away_score
+            margin = home_score + grade_line - away_score
             actual_value = float(home_score - away_score)
         else:
-            margin = away_score + float(line) - home_score
+            margin = away_score + grade_line - home_score
             actual_value = float(away_score - home_score)
         # Closing = last known market spread on this selection.
         closing_line = event_spread_as_selection_line(
             closing_market_spread, side=side
         )
         if closing_line is None:
-            closing_line = line
-        snap_bet = event_spread_as_selection_line(
-            bet_market_spread, side=side
-        )
-        if snap_bet is not None:
-            bet_line = float(snap_bet)
+            closing_line = line if line is not None else grade_line
         if margin > 0:
             result = "won"
         elif margin < 0:
@@ -746,8 +860,15 @@ def _settle_one_market(
                 bet_price = price
         else:
             return None
-        # Moneyline closing_line keeps signed margin for reference;
-        # CLV uses prices.
+        # Moneyline quotes are American prices, not point lines.
+        # Fall back to the market's own price when the event only
+        # stored a spread-derived home number for the other side.
+        if closing_price is None:
+            closing_price = price
+        if bet_price is None:
+            bet_price = num(market.get("opening_price"))
+            if bet_price is None:
+                bet_price = price
         closing_line = None
         bet_line = None
 
@@ -765,7 +886,7 @@ def _settle_one_market(
         "market_id": market.get("market_id"),
         "market_type": market_type,
         "selection": selection,
-        "line": line,
+        "line": bet_line if bet_line is not None else line,
         "bet_line": bet_line,
         "price": price,
         "bet_price": bet_price,
@@ -785,6 +906,10 @@ def _settle_one_market(
         ),
         "edge_probability": edge_probability,
         "confidence": market.get("confidence") or "Low",
+        "bet_status": (
+            str(market.get("bet_status") or "").lower() or "pass"
+        ),
+        "bet_label": market.get("bet_label"),
         "result": result,
         "model_correct": model_correct if result != "push" else None,
         "actual_value": actual_value,

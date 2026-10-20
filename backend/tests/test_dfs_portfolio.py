@@ -676,6 +676,334 @@ class PortfolioTests(unittest.TestCase):
             counts.get("low_scoring", 0),
         )
 
+    def test_trim_classic_candidate_pool_keeps_top_by_position(self):
+        from app.analysis.insights.dfs.portfolio import (
+            _trim_classic_candidate_pool,
+        )
+
+        players = []
+        for index in range(80):
+            position = (
+                "QB"
+                if index < 20
+                else "RB"
+                if index < 50
+                else "WR"
+            )
+            players.append(
+                {
+                    "player_id": f"p{index}",
+                    "position": position,
+                    "projection": 30.0 - index * 0.2,
+                    "_base_opt_score": 100.0 - index,
+                }
+            )
+        trimmed = _trim_classic_candidate_pool(
+            players,
+            protect_ids={"p19"},
+        )
+        by_pos = {}
+        for row in trimmed:
+            by_pos[row["position"]] = by_pos.get(row["position"], 0) + 1
+        self.assertLessEqual(by_pos.get("QB", 0), 15)
+        self.assertLessEqual(by_pos.get("RB", 0), 34)
+        self.assertLessEqual(by_pos.get("WR", 0), 48)
+        self.assertIn("p19", {row["player_id"] for row in trimmed})
+        self.assertLess(len(trimmed), len(players))
+
+    def test_showdown_weights_keep_projection_and_cut_value(self):
+        from app.analysis.insights.dfs.portfolio import (
+            CANDIDATE_WEIGHTS,
+            CLASSIC_CANDIDATE_WEIGHTS,
+            SHOWDOWN_CANDIDATE_WEIGHTS,
+        )
+
+        self.assertLess(
+            SHOWDOWN_CANDIDATE_WEIGHTS["projection"],
+            CANDIDATE_WEIGHTS["projection"],
+        )
+        self.assertGreater(
+            SHOWDOWN_CANDIDATE_WEIGHTS["projection"], 0.25
+        )
+        self.assertLess(
+            SHOWDOWN_CANDIDATE_WEIGHTS["value"],
+            CANDIDATE_WEIGHTS["value"],
+        )
+        self.assertAlmostEqual(
+            sum(SHOWDOWN_CANDIDATE_WEIGHTS.values()), 1.0, places=6
+        )
+        self.assertLess(
+            CLASSIC_CANDIDATE_WEIGHTS["projection"],
+            CANDIDATE_WEIGHTS["projection"],
+        )
+        self.assertGreater(
+            CLASSIC_CANDIDATE_WEIGHTS["projection"], 0.25
+        )
+        self.assertGreater(
+            CLASSIC_CANDIDATE_WEIGHTS["correlation"],
+            CANDIDATE_WEIGHTS["correlation"],
+        )
+        self.assertGreaterEqual(
+            CLASSIC_CANDIDATE_WEIGHTS["correlation"], 0.25
+        )
+        self.assertAlmostEqual(
+            sum(CLASSIC_CANDIDATE_WEIGHTS.values()), 1.0, places=6
+        )
+
+    @patch(
+        "app.analysis.insights.dfs.portfolio.build_dfs_slate",
+        return_value=_fake_slate(),
+    )
+    def test_classic_fills_requested_lineup_count_under_exposure_cap(
+        self, _mock_slate
+    ):
+        """
+        Tournament 55% max exposure is floor(0.55*20)=11 appearances.
+        Selection must still finish all 20 lineups by rotating off
+        capped chalk instead of stopping at 11.
+        """
+        result = generate_portfolio(
+            slate_id="nfl-test-main",
+            lineup_count=20,
+            strategy="tournament",
+            default_max_exposure=0.55,
+            min_unique_players=2,
+            max_lineup_similarity=0.7,
+            seed=9,
+        )
+        self.assertEqual(len(result["lineups"]), 20)
+        self.assertEqual(
+            result["portfolio"]["requested_lineup_count"], 20
+        )
+        self.assertEqual(result["portfolio"]["lineup_count"], 20)
+        for row in result["exposure"]["players"]:
+            self.assertLessEqual(row["exposure"], 0.55 + 1e-9)
+
+    @patch(
+        "app.analysis.insights.dfs.portfolio.build_dfs_slate",
+        return_value=_fake_slate(),
+    )
+    def test_classic_tournament_covers_more_players_than_max_proj(
+        self, _mock_slate
+    ):
+        tournament = generate_portfolio(
+            slate_id="nfl-test-main",
+            lineup_count=12,
+            strategy="tournament",
+            default_max_exposure=0.55,
+            min_unique_players=2,
+            seed=17,
+        )
+        max_proj = generate_portfolio(
+            slate_id="nfl-test-main",
+            lineup_count=12,
+            strategy="max_projection",
+            default_max_exposure=0.9,
+            min_unique_players=1,
+            seed=17,
+        )
+        self.assertGreaterEqual(
+            tournament["portfolio"]["unique_players"],
+            max_proj["portfolio"]["unique_players"],
+        )
+        self.assertGreaterEqual(
+            tournament["portfolio"]["unique_players"], 12
+        )
+
+    def test_passing_scripts_do_not_fade_primary_running_back(self):
+        from app.analysis.insights.dfs.showdown_scripts import (
+            build_script_hints,
+        )
+
+        players = [
+            _fake_player(
+                player_id="tb_rb1",
+                name="Bucky Irving",
+                position="RB",
+                salary=8400,
+                projection=15.2,
+                team="TB",
+            ),
+            _fake_player(
+                player_id="tb_wr1",
+                name="TB WR",
+                position="WR",
+                salary=6200,
+                projection=16.0,
+                team="TB",
+            ),
+            _fake_player(
+                player_id="atl_rb1",
+                name="ATL RB",
+                position="RB",
+                salary=7000,
+                projection=12.0,
+                team="ATL",
+            ),
+        ]
+        for script_id in (
+            "shootout",
+            "favorite_passing_win",
+            "underdog_comeback",
+        ):
+            hints = build_script_hints(
+                script_id,
+                favorite="TB",
+                underdog="ATL",
+                players=players,
+            )
+            self.assertNotIn("tb_rb1", hints["soft_exclude"])
+            self.assertGreaterEqual(
+                float(hints["score_boosts"].get("tb_rb1") or 0.0),
+                0.0,
+            )
+            self.assertIn("tb_rb1", hints["captain_pool"])
+
+    @patch(
+        "app.analysis.insights.dfs.portfolio.load_showdown_script_context"
+    )
+    @patch("app.analysis.insights.dfs.portfolio.build_dfs_slate")
+    def test_showdown_covers_expensive_primary_back(
+        self,
+        mock_slate,
+        mock_scripts,
+    ):
+        """
+        An RB1 priced like a stud, with a solid projection but a
+        poor points-per-dollar, should appear in more than a
+        single showdown lineup even when the script mix is passing.
+        """
+
+        site = get_site_config("draftkings", contest_type="showdown")
+        specs = [
+            ("tb_qb", "QB", "TB", 7200, 21.0),
+            ("tb_rb1", "RB", "TB", 8400, 15.2),
+            ("tb_wr1", "WR", "TB", 6400, 16.4),
+            ("tb_wr2", "WR", "TB", 5100, 12.2),
+            ("tb_te", "TE", "TB", 4200, 9.4),
+            ("tb_wr_punt", "WR", "TB", 2800, 8.4),
+            ("atl_qb", "QB", "ATL", 6800, 19.0),
+            ("atl_rb1", "RB", "ATL", 7600, 13.4),
+            ("atl_wr1", "WR", "ATL", 5900, 14.2),
+            ("atl_wr2", "WR", "ATL", 4600, 11.0),
+            ("atl_te", "TE", "ATL", 3800, 8.8),
+            ("atl_wr_punt", "WR", "ATL", 2600, 8.0),
+            ("tb_def", "DEF", "TB", 3000, 6.5),
+            ("atl_def", "DEF", "ATL", 2800, 5.8),
+        ]
+        players = [
+            _fake_player(
+                player_id=player_id,
+                name=player_id,
+                position=position,
+                salary=salary,
+                projection=projection,
+                team=team,
+            )
+            for player_id, position, team, salary, projection in specs
+        ]
+        players[1]["opportunity_rating"] = 82.0
+        mock_slate.return_value = {
+            "slate_id": "nfl-2026-5-sd-ATL-TB",
+            "label": "Showdown — ATL @ TB",
+            "season": 2026,
+            "site": "draftkings",
+            "site_name": "DraftKings",
+            "contest_type": "showdown",
+            "salary_cap": site["salary_cap"],
+            "captain_multiplier": site.get("captain_multiplier", 1.5),
+            "roster": site["roster"],
+            "players": players,
+            "player_count": len(players),
+            "home_team": "TB",
+            "away_team": "ATL",
+            "games": [
+                {
+                    "game_id": "g-atl-tb",
+                    "home_team": "TB",
+                    "away_team": "ATL",
+                }
+            ],
+            "freshness": {},
+        }
+        mock_scripts.return_value = {
+            "home_team": "TB",
+            "away_team": "ATL",
+            "favorite": "TB",
+            "underdog": "ATL",
+            "market_spread": -3.5,
+            "market_total": 47.5,
+            "projected_home_score": 26.0,
+            "projected_away_score": 21.0,
+            "projected_total": 47.0,
+            "scripts_raw": [],
+            "allocations": [
+                {
+                    "script_id": "shootout",
+                    "label": "Shootout",
+                    "code": "B",
+                    "weight": 0.5,
+                    "lineup_count": 6,
+                    "raw_probability": 0.42,
+                    "implication": "Both QBs",
+                },
+                {
+                    "script_id": "favorite_passing_win",
+                    "label": "Favorite wins through passing",
+                    "code": "E",
+                    "weight": 0.33,
+                    "lineup_count": 4,
+                    "raw_probability": 0.28,
+                    "implication": "Favorite QB + pass catchers",
+                },
+                {
+                    "script_id": "underdog_comeback",
+                    "label": "Underdog comeback",
+                    "code": "C",
+                    "weight": 0.17,
+                    "lineup_count": 2,
+                    "raw_probability": 0.14,
+                    "implication": "Underdog pass game",
+                },
+            ],
+        }
+        result = generate_portfolio(
+            slate_id="nfl-2026-5-sd-ATL-TB",
+            contest_type="showdown",
+            lineup_count=12,
+            strategy="balanced",
+            default_max_exposure=0.6,
+            seed=11,
+        )
+        exposure = {
+            row["player_id"]: row
+            for row in result["exposure"]["players"]
+        }
+        rb_lineups = int(exposure["tb_rb1"]["lineups"])
+        punt_lineups = int(
+            exposure.get("tb_wr_punt", {}).get("lineups") or 0
+        )
+        self.assertGreaterEqual(
+            len(result["lineups"]),
+            10,
+            msg=(
+                f"lineups={len(result['lineups'])} "
+                f"rb={rb_lineups} punt={punt_lineups}"
+            ),
+        )
+        self.assertGreaterEqual(
+            rb_lineups,
+            3,
+            msg=(
+                f"lineups={len(result['lineups'])} "
+                f"rb={rb_lineups} punt={punt_lineups}"
+            ),
+        )
+        self.assertGreater(rb_lineups, punt_lineups)
+        self.assertGreaterEqual(
+            result["portfolio"]["unique_players"], 8
+        )
+
     def test_select_portfolio_prefers_underfilled_script_quotas(self):
         from app.analysis.insights.dfs.portfolio import (
             _select_portfolio_by_script,
@@ -902,16 +1230,27 @@ class PortfolioConstructionValidationTests(unittest.TestCase):
             exposure_cfg=cfg,
             default_max_exposure=0.7,
         )
-        high = _candidate_select_score(
+        mid = _candidate_select_score(
             candidate,
-            counts=Counter({"elite": 10}),
-            selected_count=10,
+            counts=Counter({"elite": 5}),
+            selected_count=5,
             lineup_count=20,
             exposure_cfg=cfg,
             default_max_exposure=0.7,
         )
-        # Soft exposure penalties used to subtract rate*8 (~4 pts).
-        self.assertAlmostEqual(low, high, places=5)
+        # Mid-cap usage must stay competitive (no early soft ban).
+        self.assertAlmostEqual(low, mid, places=5)
+        near = _candidate_select_score(
+            candidate,
+            counts=Counter({"elite": 12}),
+            selected_count=12,
+            lineup_count=20,
+            exposure_cfg=cfg,
+            default_max_exposure=0.7,
+        )
+        # Near the hard cap, prefer leaving room to finish the
+        # requested portfolio size.
+        self.assertLess(near, low)
 
     @patch(
         "app.analysis.insights.dfs.portfolio.build_dfs_slate",

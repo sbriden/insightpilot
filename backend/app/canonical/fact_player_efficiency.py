@@ -402,7 +402,14 @@ def build_fact_player_efficiency(
             )
 
         skill_tds = rush_tds + receiving_tds
-        if touches is not None and touches > 0:
+        position = str(row.get("position") or "").strip().upper()
+        if (
+            position == "QB"
+            and pass_attempts is not None
+            and pass_attempts > 0
+        ):
+            td_rate = _safe_div(pass_tds, pass_attempts)
+        elif touches is not None and touches > 0:
             td_rate = _safe_div(skill_tds, touches)
         else:
             td_rate = _safe_div(pass_tds, pass_attempts)

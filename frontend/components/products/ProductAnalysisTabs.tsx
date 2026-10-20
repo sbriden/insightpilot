@@ -5,6 +5,7 @@ import {
   useState,
 } from "react";
 
+import { AnalysisFormatProvider } from "@/components/analysis/AnalysisFormatContext";
 import AnalysisDashboard from "@/components/AnalysisDashboard";
 import DailyFantasyAnalyzer from "@/components/fantasy/dfs/DailyFantasyAnalyzer";
 import SportsBettingAnalyzer from "@/components/betting/SportsBettingAnalyzer";
@@ -83,6 +84,7 @@ export default function ProductAnalysisTabs({
 
 
   return (
+    <AnalysisFormatProvider format="product">
     <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
 
       <div className="border-b border-gray-100 bg-gray-50 px-4 py-4 sm:px-6">
@@ -197,6 +199,7 @@ export default function ProductAnalysisTabs({
       </div>
 
     </div>
+    </AnalysisFormatProvider>
 
   );
 

@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 
 import { useApplicationContext } from "@/components/applications/ApplicationContext";
-import PlayerSnapshot from "@/components/fantasy/PlayerSnapshot";
+import PlayerSnapshot, {
+  type OverviewTab,
+} from "@/components/fantasy/PlayerSnapshot";
 import PlayerHeader from "@/components/fantasy/snapshot/PlayerHeader";
 import PlayerMatchupsTab from "@/components/fantasy/snapshot/PlayerMatchupsTab";
 import PlayerNewsTab from "@/components/fantasy/snapshot/PlayerNewsTab";
@@ -24,8 +26,21 @@ import {
   searchFantasyPlayers,
 } from "@/services/api";
 
+type PlayerRuntimeView = SnapshotTabId | OverviewTab;
+
+function isOverviewView(
+  view: PlayerRuntimeView
+): view is OverviewTab {
+  return (
+    view === "table" ||
+    view === "scatter" ||
+    view === "compare" ||
+    view === "teams"
+  );
+}
+
 interface Props {
-  view: SnapshotTabId;
+  view: PlayerRuntimeView;
 }
 
 function PlayerPicker({
@@ -196,7 +211,7 @@ export default function PlayerAnalysisRuntime({ view }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (view === "snapshot" || !playerId) {
+    if (view === "snapshot" || isOverviewView(view) || !playerId) {
       setActive(null);
       setError(null);
       return;
@@ -225,6 +240,16 @@ export default function PlayerAnalysisRuntime({ view }: Props) {
       cancelled = true;
     };
   }, [playerId, view]);
+
+  if (isOverviewView(view)) {
+    return (
+      <PlayerSnapshot
+        initialOverviewTab={view}
+        hideOverviewTabs
+        onPlayerSelect={setPlayerId}
+      />
+    );
+  }
 
   if (view === "snapshot") {
     return (

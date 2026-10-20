@@ -224,6 +224,55 @@ def build_dfs_slate(
     except Exception:
         baseline_by_player = {}
 
+    try:
+        from app.analysis.insights.game_forecast import (
+            load_week_game_forecasts,
+        )
+
+        game_forecasts = load_week_game_forecasts(
+            season=season_value,
+            week=int(week_value),
+        )
+    except Exception:
+        game_forecasts = {}
+
+    try:
+        from app.analysis.insights.dfs.player_production import (
+            load_player_efficiency,
+        )
+        from app.analysis.insights.dfs.player_role import (
+            index_teammates_ahead_out,
+            load_player_role_usage,
+        )
+
+        player_ids = [
+            str(player.get("player_id") or "")
+            for player in raw_players
+            if player.get("player_id")
+        ]
+        ahead_out = index_teammates_ahead_out(raw_players)
+        usage_by_player = load_player_role_usage(
+            season=season_value,
+            player_ids=player_ids,
+        )
+        efficiency_by_player = load_player_efficiency(
+            season=season_value,
+            player_ids=player_ids,
+        )
+    except Exception:
+        ahead_out = {}
+        usage_by_player = {}
+        efficiency_by_player = {}
+    for player in raw_players:
+        player_id = str(player.get("player_id") or "")
+        player["teammates_ahead_out"] = int(ahead_out.get(player_id) or 0)
+        usage = usage_by_player.get(player_id) or {}
+        efficiency = efficiency_by_player.get(player_id) or {}
+        player["current_usage"] = usage.get("current") or None
+        player["historical_usage"] = usage.get("historical") or None
+        player["current_efficiency"] = efficiency.get("current") or None
+        player["historical_efficiency"] = efficiency.get("historical") or None
+
     players = [
         _to_dfs_player(
             player,
@@ -235,6 +284,7 @@ def build_dfs_slate(
             baseline=baseline_by_player.get(
                 str(player.get("player_id") or "")
             ),
+            game_forecasts=game_forecasts,
         )
         for player in raw_players
         if _eligible_position(
@@ -243,6 +293,19 @@ def build_dfs_slate(
         )
     ]
     players = [player for player in players if player is not None]
+
+    from app.analysis.insights.dfs.player_simulation import (
+        apply_joint_simulation,
+    )
+
+    apply_joint_simulation(
+        players,
+        scoring=scoring_key,
+        contest_type=format_key,
+        captain_multiplier=float(
+            site_config.get("captain_multiplier") or 1.5
+        ),
+    )
 
     if team_filter:
         players = [
@@ -298,10 +361,15 @@ def build_dfs_slate(
     )
     now = datetime.now(timezone.utc).isoformat()
     salaries_updated_at = salary_updated_at or now
+    environment_note = (
+        "team volume and scoring events from the game forecast"
+        if game_forecasts
+        else "matchup/environment fallback when no game forecast is available"
+    )
     note = (
         "PPR InsightPilot calibrated projections "
         "(sample-size regression + opportunity/distribution "
-        "guardrails) × weekly matchup/environment"
+        f"guardrails) × {environment_note}"
         + (
             "; upload a DK/FD salary CSV for real prices"
             if salary_hits == 0
@@ -834,6 +902,7 @@ def _to_dfs_player(
     week_context: dict[str, Any] | None = None,
     matchup_context: dict[str, Any] | None = None,
     baseline: dict[str, Any] | None = None,
+    game_forecasts: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     player_id = str(player.get("player_id") or "").strip()
     if not player_id:
@@ -907,8 +976,9 @@ def _to_dfs_player(
             else None
         ),
     )
-    # Optimizer / analyzer consume calibrated median before
-    # weekly matchup scaling.
+    # Calibrated median is the player's level. A game forecast
+    # then changes opportunity and scoring events. The 0.80–1.20
+    # matchup multiplier is only the fallback.
     base_projection = float(calibrated.insightpilot_projection)
 
     team = _team_abbr(player.get("team"))
@@ -923,11 +993,22 @@ def _to_dfs_player(
             week_context=week_context,
         )
 
-    adjusted = _opponent_adjusted_projection(
+    adjusted = _apply_week_environment(
         base=float(base_projection),
         position=position,
-        context=matchup_context,
+        team=team,
+        game_forecasts=game_forecasts,
+        matchup_context=matchup_context,
         has_opponent=bool(opponent),
+        opportunity_score=_num(player.get("opportunity_score")),
+        depth_order=depth_order,
+        player=player,
+        baseline=baseline_row,
+        teammates_ahead_out=int(
+            player.get("teammates_ahead_out") or 0
+        ),
+        current_usage=player.get("current_usage"),
+        historical_usage=player.get("historical_usage"),
     )
     projection = float(adjusted["projection"])
     matchup_score = adjusted.get("matchup_score")
@@ -952,9 +1033,12 @@ def _to_dfs_player(
     if salary and salary > 0:
         value = round(float(projection) / (salary / 1000.0), 2)
 
-    # Prefer calibration range, then apply matchup factor so
-    # floor/ceiling move with the weekly outlook.
-    range_factor = float(matchup_factor) if matchup_factor else 1.0
+    # Confidence multipliers are the fallback. A joint simulation
+    # replaces these with percentiles when a game forecast exists.
+    if adjusted.get("adjustment_source") == "game_forecast" and base_projection:
+        range_factor = float(projection) / float(base_projection)
+    else:
+        range_factor = float(matchup_factor) if matchup_factor else 1.0
     floor = round(
         float(calibrated.projection_floor) * range_factor,
         1,
@@ -1003,6 +1087,20 @@ def _to_dfs_player(
             if matchup_factor is not None
             else None
         ),
+        "adjustment_source": adjusted.get("adjustment_source"),
+        "environment_counted_once": bool(
+            adjusted.get("environment_counted_once")
+        ),
+        "matchup_multiplier_applied": bool(
+            adjusted.get("matchup_multiplier_applied")
+        ),
+        "projection_drivers": list(adjusted.get("drivers") or []),
+        "projection_environment_reason": adjusted.get(
+            "projection_environment_reason"
+        ),
+        "scoring_components": adjusted.get("scoring_components"),
+        "role_forecast": adjusted.get("role_forecast"),
+        "game_environment": adjusted.get("game_environment"),
         "floor": floor,
         "ceiling": ceiling,
         "projected_ownership": None,
@@ -1292,6 +1390,99 @@ def _position_matchup_score(
             return None
         return 100.0 - float(overall)
     return overall
+
+
+def _apply_week_environment(
+    *,
+    base: float,
+    position: str,
+    team: str | None,
+    game_forecasts: dict[str, dict[str, Any]] | None,
+    matchup_context: dict[str, Any] | None,
+    has_opponent: bool,
+    opportunity_score: float | None,
+    depth_order: int | None,
+    player: dict[str, Any] | None = None,
+    baseline: dict[str, Any] | None = None,
+    teammates_ahead_out: int = 0,
+    current_usage: dict[str, Any] | None = None,
+    historical_usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Prefer the shared game forecast. Keep matchup ratings visible
+    either way, and use the fixed multiplier only as a fallback.
+    """
+
+    team_forecast = None
+    if game_forecasts and team:
+        team_forecast = game_forecasts.get(team)
+    if (
+        isinstance(team_forecast, dict)
+        and team_forecast.get("projected_points") is not None
+    ):
+        from app.analysis.insights.dfs.player_game_projection import (
+            project_player_from_game_forecast,
+        )
+
+        matchup_row = (matchup_context or {}).get("matchup")
+        matchup_score = _position_matchup_score(position, matchup_row)
+        source = player or {}
+        history = baseline or {}
+        adjusted = project_player_from_game_forecast(
+            base_projection=float(base),
+            position=position,
+            team_forecast=team_forecast,
+            opportunity_score=opportunity_score,
+            depth_order=depth_order,
+            current_season_games=int(_num(source.get("games")) or 0),
+            historical_baseline=_num(history.get("historical_baseline")),
+            raw_projection=_num(source.get("fppg")),
+            injury_status=(
+                str(source.get("injury_status"))
+                if source.get("injury_status") is not None
+                else None
+            ),
+            roster_status=(
+                str(source.get("status"))
+                if source.get("status") is not None
+                else None
+            ),
+            current_usage=current_usage,
+            historical_usage=historical_usage,
+            teammates_ahead_out=teammates_ahead_out,
+            matchup_score=matchup_score,
+            current_efficiency=source.get("current_efficiency"),
+            historical_efficiency=source.get("historical_efficiency"),
+        )
+        environment_score = _num(
+            ((matchup_context or {}).get("environment") or {}).get(
+                "game_environment_score"
+            )
+        )
+        adjusted["matchup_score"] = (
+            round(float(matchup_score), 1)
+            if matchup_score is not None
+            else None
+        )
+        adjusted["environment_score"] = (
+            round(float(environment_score), 1)
+            if environment_score is not None
+            else None
+        )
+        return adjusted
+
+    from app.analysis.insights.dfs.player_game_projection import (
+        annotate_matchup_fallback,
+    )
+
+    return annotate_matchup_fallback(
+        _opponent_adjusted_projection(
+            base=float(base),
+            position=position,
+            context=matchup_context,
+            has_opponent=has_opponent,
+        )
+    )
 
 
 def _opponent_adjusted_projection(

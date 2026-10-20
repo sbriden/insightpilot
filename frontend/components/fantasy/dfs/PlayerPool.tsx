@@ -12,6 +12,7 @@ import MultiSelectFilter, {
 } from "@/components/fantasy/MultiSelectFilter";
 import { SearchablePlayerMultiSelect } from "@/components/fantasy/SearchablePlayerSelect";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
+import { TeamWithLogo } from "@/components/teams/TeamLogo";
 import type { DfsPlayer, DfsSignal } from "@/services/api";
 
 const ANALYZER_POSITIONS = [
@@ -490,7 +491,7 @@ export default function PlayerPool({
                       color: snapshotTokens.textSecondary,
                     }}
                   >
-                    {player.team || "—"}
+                    <TeamWithLogo abbreviation={player.team} />
                   </td>
                   <td
                     className="px-2 py-2"

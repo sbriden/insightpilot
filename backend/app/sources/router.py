@@ -8,6 +8,7 @@ sources that do not require a CSV upload.
 from __future__ import annotations
 
 import traceback
+from datetime import datetime, timezone
 
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
@@ -1364,12 +1365,23 @@ def get_betting_slate(
     season: int | None = None,
     week: int | None = None,
     sport: str = "NFL",
+    residual_model: str = "auto",
+    probability_engine: str = "logistic",
 ):
     """
     NFL Sports Betting slate for a week.
 
     Returns events, expanded markets (spread / total /
     moneyline), model vs market comparisons, and signals.
+
+    ``residual_model``: ``auto`` (default) uses the walk-forward
+    promotion registry; ``champion`` / ``challenger`` force a path.
+    Both are always attached under residuals.compare.
+
+    ``probability_engine``: ``logistic`` (default) uses fixed
+    scales; ``simulation`` applies bivariate score-distribution
+    probabilities. Both are attached under probability_compare
+    and score_distribution on each event.
     """
 
     from app.analysis.insights.betting import (
@@ -1381,6 +1393,8 @@ def get_betting_slate(
             season=season,
             week=week,
             sport=sport,
+            residual_model=residual_model,
+            probability_engine=probability_engine,
         )
     except Exception as exc:
         traceback.print_exc()
@@ -1418,6 +1432,83 @@ def get_betting_event_detail(
             detail=f"Betting event not found: {event_id}",
         )
     return result
+
+
+@router.get("/nflverse/betting/learning")
+def get_nflverse_betting_learning(
+    season: int | None = None,
+    refresh: bool = False,
+):
+    """
+    Continuous learning + model promotion report for a season.
+
+    Includes post-settle residuals, calibration, CLV / betting
+    cohorts, and the latest walk-forward promotion decision.
+    Pass refresh=true to re-run the settle/calibration/promotion
+    cycle from current stored results.
+    """
+
+    from app.analysis.insights.betting.model_learning import (
+        evaluate_settled_learning,
+    )
+    from app.analysis.insights.betting.model_promotion import (
+        run_model_promotion_cycle,
+    )
+    from app.analysis.insights.betting.residual_challenger_dataset import (
+        build_challenger_training_rows,
+    )
+    from app.analysis.insights.betting.slate import _resolve_season
+    from app.canonical.fact_betting_results import (
+        get_learning_report,
+        get_model_promotion,
+        load_market_results,
+        upsert_learning_report,
+        upsert_model_promotion,
+    )
+
+    try:
+        resolved = _resolve_season(season)
+        if refresh:
+            from app.analysis.insights.betting.slate import (
+                _refresh_season_calibration,
+            )
+
+            rows = load_market_results(season=resolved)
+            _refresh_season_calibration(
+                season=int(resolved), extra_rows=rows
+            )
+        report = get_learning_report(int(resolved))
+        promotion = get_model_promotion(int(resolved))
+        if report is None:
+            rows = load_market_results(season=resolved)
+            report = evaluate_settled_learning(rows)
+            train_rows = build_challenger_training_rows(
+                season=int(resolved)
+            )
+            prior = promotion or {}
+            cycle = run_model_promotion_cycle(
+                season=int(resolved),
+                training_rows=train_rows,
+                current_active=str(
+                    prior.get("active_model") or "champion"
+                ),
+            )
+            upsert_model_promotion(cycle, season=int(resolved))
+            report["model_promotion"] = cycle.get("promotion")
+            upsert_learning_report(report, season=int(resolved))
+            promotion = get_model_promotion(int(resolved))
+        return {
+            "season": resolved,
+            "learning": report,
+            "model_promotion": promotion,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to build betting learning report: {exc}",
+        ) from exc
 
 
 @router.get("/nflverse/betting/results")
@@ -1461,6 +1552,7 @@ def generate_nflverse_betting_portfolio(payload: dict):
     )
 
     try:
+        bankroll_raw = payload.get("bankroll")
         return generate_betting_portfolio(
             total_exposure=float(
                 payload.get("total_exposure") or 0
@@ -1475,6 +1567,14 @@ def generate_nflverse_betting_portfolio(payload: dict):
                 payload.get("market_types") or []
             )
             or None,
+            bankroll=(
+                float(bankroll_raw)
+                if bankroll_raw is not None
+                else None
+            ),
+            sizing_mode=str(
+                payload.get("sizing_mode") or "budget"
+            ),
         )
     except ValueError as exc:
         raise HTTPException(

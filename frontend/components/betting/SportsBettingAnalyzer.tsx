@@ -20,7 +20,6 @@ import {
   BettingSlate,
   getBettingSlate,
   listBettingWeeks,
-  refreshNflverseData,
 } from "@/services/api";
 
 type WorkspaceTab =
@@ -72,13 +71,6 @@ export default function SportsBettingAnalyzer({
     useState<BettingMarket | null>(null);
   const [selectedEvent, setSelectedEvent] =
     useState<BettingEvent | null>(null);
-  const [refreshLoading, setRefreshLoading] = useState(false);
-  const [refreshMessage, setRefreshMessage] = useState<string | null>(
-    null
-  );
-  const [refreshStatus, setRefreshStatus] = useState<string | null>(
-    null
-  );
   const [slateReloadKey, setSlateReloadKey] = useState(0);
   const [pendingPortfolioMarket, setPendingPortfolioMarket] =
     useState<BettingMarket | null>(null);
@@ -135,7 +127,13 @@ export default function SportsBettingAnalyzer({
           loadedSlateKey.current = `${weekResult.season}:${nextWeek}:0`;
           setSlate(slateResult);
           setLoading(false);
+        } else if (nextWeek == null) {
+          // No week coverage — stop the spinner instead of hanging.
+          setLoading(false);
+          setError("No betting weeks available for this season.");
         }
+        // When nextWeek is set but the unscoped slate doesn't match,
+        // the week-scoped effect loads it and clears loading.
       } catch (err) {
         if (!cancelled) {
           setError(
@@ -201,40 +199,6 @@ export default function SportsBettingAnalyzer({
       );
     };
   }, []);
-
-  async function handleRefresh(
-    mode: "incremental" | "reprocess"
-  ) {
-    try {
-      setRefreshLoading(true);
-      setError(null);
-      setRefreshMessage(null);
-      setRefreshStatus(null);
-      const result = await refreshNflverseData(mode);
-      const message =
-        result.message
-        ?? result.validation?.message
-        ?? "Betting source data refreshed.";
-      setRefreshMessage(message);
-      setRefreshStatus(
-        result.status
-        ?? result.validation?.status
-        ?? "succeeded"
-      );
-      await loadWeeks();
-      setSlateReloadKey((value) => value + 1);
-    } catch (refreshError) {
-      setRefreshMessage(null);
-      setRefreshStatus(null);
-      setError(
-        refreshError instanceof Error
-          ? refreshError.message
-          : "Unable to refresh betting data."
-      );
-    } finally {
-      setRefreshLoading(false);
-    }
-  }
 
   const filteredMarkets = useMemo(() => {
     const rows = slate?.markets ?? [];
@@ -339,49 +303,8 @@ export default function SportsBettingAnalyzer({
                 </option>
               ))}
             </select>
-            <button
-              type="button"
-              disabled={refreshLoading}
-              onClick={() => void handleRefresh("incremental")}
-              className="rounded-lg border bg-white px-3 py-2 text-sm font-medium disabled:opacity-50"
-              style={{
-                borderColor: snapshotTokens.border,
-                color: snapshotTokens.textPrimary,
-              }}
-            >
-              {refreshLoading ? "Refreshing…" : "Refresh data"}
-            </button>
-            <button
-              type="button"
-              disabled={refreshLoading}
-              onClick={() => void handleRefresh("reprocess")}
-              className="rounded-lg border bg-white px-3 py-2 text-sm font-medium disabled:opacity-50"
-              style={{
-                borderColor: snapshotTokens.border,
-                color: snapshotTokens.textSecondary,
-              }}
-            >
-              Reprocess derived
-            </button>
           </div>
         </div>
-
-        {refreshMessage ? (
-          <div
-            className={[
-              "rounded-xl border px-4 py-3 text-sm",
-              refreshStatus === "failed_validation"
-              || refreshStatus === "failed"
-                ? "border-red-200 bg-red-50 text-red-800"
-                : refreshStatus === "succeeded_with_warnings"
-                  || refreshStatus === "passed_with_warnings"
-                  ? "border-amber-200 bg-amber-50 text-amber-900"
-                  : "border-teal-200 bg-teal-50 text-teal-900",
-            ].join(" ")}
-          >
-            {refreshMessage}
-          </div>
-        ) : null}
 
         {!hideTabBar ? (
         <div

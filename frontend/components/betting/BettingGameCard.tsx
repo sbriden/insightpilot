@@ -10,6 +10,9 @@ import {
   modelSpreadOnSelection,
 } from "@/components/betting/formatMarketValues";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
+import TeamLogo, {
+  TeamMatchupLabel,
+} from "@/components/teams/TeamLogo";
 import { BettingEvent, BettingMarket } from "@/services/api";
 
 interface Props {
@@ -44,7 +47,12 @@ export default function BettingGameCard({
               className="text-base font-semibold"
               style={{ color: snapshotTokens.textPrimary }}
             >
-              {event.label}
+              <TeamMatchupLabel
+                label={event.label}
+                away={event.away_team}
+                home={event.home_team}
+                size={22}
+              />
             </p>
             <p
               className="mt-0.5 text-xs"
@@ -76,6 +84,25 @@ export default function BettingGameCard({
             projected={event.projected_home_score}
           />
         </div>
+        {event.game_forecast?.teams?.length ? (
+          <p
+            className="mt-2 text-xs leading-snug"
+            style={{ color: snapshotTokens.textMuted }}
+          >
+            {event.game_forecast.teams
+              .map((team) => {
+                const plays = team.expected_plays;
+                const pass = team.expected_pass_attempts;
+                const rush = team.expected_rush_attempts;
+                if (plays == null || pass == null || rush == null) {
+                  return null;
+                }
+                return `${team.team} ${plays.toFixed(0)} plays, ${pass.toFixed(0)} pass / ${rush.toFixed(0)} rush`;
+              })
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        ) : null}
       </button>
 
       <div
@@ -214,10 +241,11 @@ function ScoreBlock({
   return (
     <div>
       <p
-        className="text-xs font-semibold uppercase tracking-[0.12em]"
+        className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em]"
         style={{ color: snapshotTokens.textMuted }}
       >
-        {team}
+        <TeamLogo abbreviation={team} size={22} />
+        <span>{team}</span>
       </p>
       <p
         className="mt-1 text-lg font-semibold tabular-nums"

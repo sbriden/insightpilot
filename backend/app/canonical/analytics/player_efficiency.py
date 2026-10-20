@@ -127,15 +127,20 @@ def build_player_efficiency(
             ],
             weights=[0.55, 0.45],
         )
-        overall = weighted_mean(
-            [
-                receiving,
-                rushing,
-                _epa_score(row.get("pass_epa_per_dropback")),
-                score_from_rate(row.get("td_rate"), scale=200.0),
-            ],
-            weights=[0.35, 0.35, 0.2, 0.1],
-        )
+        pass_score = _epa_score(row.get("pass_epa_per_dropback"))
+        td_score = score_from_rate(row.get("td_rate"), scale=200.0)
+        if pass_score is not None:
+            # Passers are graded on the throw. Scramble rate and
+            # a stray catch stay small.
+            overall = weighted_mean(
+                [pass_score, td_score, rushing, receiving],
+                weights=[0.55, 0.22, 0.15, 0.08],
+            )
+        else:
+            overall = weighted_mean(
+                [receiving, rushing, pass_score, td_score],
+                weights=[0.35, 0.35, 0.2, 0.1],
+            )
 
         records.append(
             {

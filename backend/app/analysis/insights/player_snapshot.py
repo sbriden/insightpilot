@@ -135,6 +135,57 @@ def overall_assessment_for_player(
     )
 
 
+def _qb_season_efficiency(
+    position: str | None,
+    season_stats: dict[str, Any] | None,
+) -> float | None:
+    """
+    Season passing grade from yards per attempt, touchdown
+    rate, and interception rate. Rushing is a small extra.
+    """
+
+    pos = str(position or "").strip().upper()
+    if pos != "QB" or not isinstance(season_stats, dict):
+        return None
+    attempts = _num(season_stats.get("pass_attempts"))
+    if attempts is None or attempts < 20:
+        return None
+    yards = _num(season_stats.get("pass_yards")) or 0.0
+    touchdowns = _num(season_stats.get("pass_tds")) or 0.0
+    interceptions = _num(season_stats.get("interceptions")) or 0.0
+    ypa = yards / attempts
+    ypa_score = max(0.0, min(100.0, 50.0 + (ypa - 7.0) * 10.0))
+    td_score = max(
+        0.0,
+        min(100.0, 50.0 + ((touchdowns / attempts) - 0.045) * 500.0),
+    )
+    int_score = max(
+        0.0,
+        min(
+            100.0,
+            50.0 + (0.025 - (interceptions / attempts)) * 800.0,
+        ),
+    )
+    rush_score = None
+    rush_attempts = _num(season_stats.get("rush_attempts"))
+    rush_yards = _num(season_stats.get("rush_yards"))
+    if (
+        rush_attempts is not None
+        and rush_attempts >= 8
+        and rush_yards is not None
+    ):
+        rush_score = max(
+            0.0,
+            min(100.0, (rush_yards / rush_attempts) * 10.0),
+        )
+    from app.canonical.analytics.common import weighted_mean
+
+    return weighted_mean(
+        [ypa_score, td_score, int_score, rush_score],
+        weights=[0.50, 0.25, 0.20, 0.05],
+    )
+
+
 def _season_production_score(
     *,
     position: str | None,
@@ -221,8 +272,9 @@ def _seasonize_profile_scores(
     season_profiles: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
-    Align displayed production / opportunity / value with season
-    fantasy points so Compare and Overview match season totals.
+    Align displayed production, opportunity, and assessment with
+    the player's season. Opponent matchup, game environment, and
+    ownership are not part of the assessment score.
 
     Single-game profile weeks can otherwise invert rankings when
     one player had a hot game and the other has missing opportunity
@@ -243,26 +295,21 @@ def _seasonize_profile_scores(
 
     profiles = list(season_profiles or [])
     if profiles:
-        avg_opportunity = _mean_profile_score(
-            profiles,
-            "opportunity_score",
-        )
-        if avg_opportunity is not None:
-            out["opportunity_score"] = avg_opportunity
-        elif _num(out.get("opportunity_score")) is None:
-            # Keep null only when no week has opportunity.
-            pass
         for field in (
+            "opportunity_score",
             "efficiency_score",
             "trend_score",
-            "matchup_score",
-            "environment_score",
             "risk_score",
         ):
-            if _num(out.get(field)) is None:
-                avg = _mean_profile_score(profiles, field)
-                if avg is not None:
-                    out[field] = avg
+            avg = _mean_profile_score(profiles, field)
+            if avg is not None:
+                out[field] = avg
+
+    # Quarterback efficiency stored on the weekly profile is
+    # mostly scramble rate. Grade the season on passing.
+    passing = _qb_season_efficiency(position, season_stats)
+    if passing is not None:
+        out["efficiency_score"] = passing
 
     try:
         from app.canonical.analytics.player_fantasy_profile import (
@@ -271,13 +318,15 @@ def _seasonize_profile_scores(
     except Exception:
         return out
 
+    # Matchup and environment describe the opponent and the
+    # game, not the player. Ownership is not an input.
     recomputed = _fantasy_value_score(
         production=_num(out.get("production_score")),
         opportunity=_num(out.get("opportunity_score")),
         efficiency=_num(out.get("efficiency_score")),
         trend=_num(out.get("trend_score")),
-        matchup=_num(out.get("matchup_score")),
-        environment=_num(out.get("environment_score")),
+        matchup=None,
+        environment=None,
         risk=_num(out.get("risk_score")),
     )
     if recomputed is not None:
@@ -2453,7 +2502,16 @@ def list_fantasy_players(
                         p.player_id,
                         p.name,
                         p.position,
-                        p.status,
+                        CASE
+                          WHEN COALESCE(p.status, '') = 'Active'
+                            AND depth.player_id IS NULL
+                            AND pts.player_id IS NULL
+                            AND prof.player_id IS NULL
+                            AND own.player_id IS NULL
+                            AND inj.player_id IS NULL
+                          THEN 'Retired'
+                          ELSE p.status
+                        END AS status,
                         t.team_abbreviation AS team,
                         pts.fantasy_points,
                         pts.games,
@@ -2784,13 +2842,20 @@ def _attach_list_projections(
             calibrate_projection,
         )
         from app.analysis.insights.dfs.slate import (
+            _apply_week_environment,
             _load_week_context_maps,
             _normalize_position,
-            _opponent_adjusted_projection,
             _resolve_player_week_context,
             _resolve_week,
             _slate_windows_for_week,
             _team_abbr,
+        )
+        from app.analysis.insights.dfs.player_role import (
+            index_teammates_ahead_out,
+            load_player_role_usage,
+        )
+        from app.analysis.insights.game_forecast import (
+            load_week_game_forecasts,
         )
     except Exception:
         return
@@ -2814,6 +2879,36 @@ def _attach_list_projections(
         season=season_value,
         week=int(week_value),
     )
+    try:
+        game_forecasts = load_week_game_forecasts(
+            season=season_value,
+            week=int(week_value),
+        )
+    except Exception:
+        game_forecasts = {}
+    try:
+        from app.analysis.insights.dfs.player_production import (
+            load_player_efficiency,
+        )
+
+        player_ids = [
+            str(player.get("player_id") or "")
+            for player in players
+            if player.get("player_id")
+        ]
+        ahead_out = index_teammates_ahead_out(players)
+        usage_by_player = load_player_role_usage(
+            season=season_value,
+            player_ids=player_ids,
+        )
+        efficiency_by_player = load_player_efficiency(
+            season=season_value,
+            player_ids=player_ids,
+        )
+    except Exception:
+        ahead_out = {}
+        usage_by_player = {}
+        efficiency_by_player = {}
     opponents: dict[str, str] = {}
     try:
         windows = _slate_windows_for_week(
@@ -2887,18 +2982,60 @@ def _attach_list_projections(
                 opponent=opponent,
                 week_context=week_context,
             )
-            adjusted = _opponent_adjusted_projection(
+            player_id = str(player.get("player_id") or "")
+            usage = usage_by_player.get(player_id) or {}
+            efficiency = efficiency_by_player.get(player_id) or {}
+            player["current_efficiency"] = efficiency.get("current") or None
+            player["historical_efficiency"] = (
+                efficiency.get("historical") or None
+            )
+            adjusted = _apply_week_environment(
                 base=base,
                 position=position,
-                context=context,
+                team=team,
+                game_forecasts=game_forecasts,
+                matchup_context=context,
                 has_opponent=bool(opponent),
+                opportunity_score=_num(
+                    player.get("opportunity_score")
+                ),
+                depth_order=depth_order,
+                player=player,
+                baseline=baseline,
+                teammates_ahead_out=int(
+                    ahead_out.get(player_id) or 0
+                ),
+                current_usage=usage.get("current") or None,
+                historical_usage=usage.get("historical") or None,
             )
             player["projection"] = round(
                 float(adjusted["projection"]),
                 1,
             )
+            player["projection_source"] = adjusted.get(
+                "adjustment_source"
+            )
+            player["projection_drivers"] = list(
+                adjusted.get("drivers") or []
+            )
+            player["environment_counted_once"] = bool(
+                adjusted.get("environment_counted_once")
+            )
+            player["scoring_components"] = adjusted.get(
+                "scoring_components"
+            )
+            player["game_environment"] = adjusted.get(
+                "game_environment"
+            )
+            player["role_forecast"] = adjusted.get("role_forecast")
         except Exception:
             player["projection"] = round(float(raw), 1)
+
+    from app.analysis.insights.dfs.player_simulation import (
+        apply_joint_simulation,
+    )
+
+    apply_joint_simulation(players, scoring=scoring)
 
 
 def _list_injury_type(value: Any) -> str | None:
@@ -3273,6 +3410,7 @@ def _season_stats_for_player(
                         COUNT(*) AS games,
                         ROUND(SUM({ppr_expr})::numeric, 1)
                           AS fantasy_points,
+                        SUM(pass_attempts) AS pass_attempts,
                         SUM(pass_yards) AS pass_yards,
                         SUM(pass_tds) AS pass_tds,
                         SUM(interceptions) AS interceptions,
@@ -3433,6 +3571,12 @@ def _season_stats_for_player(
         "season": int(season),
         "games": games,
         "fantasy_points": _num(row.get("fantasy_points")),
+        "pass_attempts": _num(row.get("pass_attempts")),
+        "pass_yards": _num(row.get("pass_yards")),
+        "pass_tds": _num(row.get("pass_tds")),
+        "interceptions": _num(row.get("interceptions")),
+        "rush_attempts": _num(row.get("rush_attempts")),
+        "rush_yards": _num(row.get("rush_yards")),
         "fppg": (
             round(
                 float(row.get("fantasy_points") or 0) / games,

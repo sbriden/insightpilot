@@ -5,10 +5,14 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from app.analysis.insights.dfs.correlation import (
+    build_correlation_context,
+)
 from app.analysis.insights.dfs.optimize import (
     _fits_slot,
     _optimize_classic,
     _optimize_showdown,
+    _rank_slot_candidates,
     _same_team_qb_conflict,
     optimize_lineup,
 )
@@ -306,6 +310,59 @@ class DfsOptimizeTests(unittest.TestCase):
         self.assertFalse(_same_team_qb_conflict(selected, other))
         self.assertFalse(_same_team_qb_conflict(selected, wr))
 
+    def test_rank_slot_candidates_prefers_qb_wr_over_opp_dst(self):
+        qb = _fake_player(
+            player_id="qb_buf",
+            name="BUF QB",
+            position="QB",
+            salary=7500,
+            projection=22.0,
+            team="BUF",
+        )
+        qb["opponent"] = "MIA"
+        wr = _fake_player(
+            player_id="wr_buf",
+            name="BUF WR",
+            position="WR",
+            salary=6000,
+            projection=14.0,
+            team="BUF",
+        )
+        wr["opponent"] = "MIA"
+        wr["_opt_score"] = 40.0
+        dst = _fake_player(
+            player_id="dst_mia",
+            name="MIA DST",
+            position="DEF",
+            salary=3000,
+            projection=8.0,
+            team="MIA",
+        )
+        dst["opponent"] = "BUF"
+        # Slightly higher raw score so without correlation DST wins.
+        dst["_opt_score"] = 42.0
+        ctx = build_correlation_context(
+            [qb, wr, dst],
+            sport="nfl",
+            season=2026,
+            week=5,
+        )
+        ranked = _rank_slot_candidates(
+            [dst, wr],
+            selected=[
+                {
+                    "player_id": "qb_buf",
+                    "position": "QB",
+                    "team": "BUF",
+                    "opponent": "MIA",
+                    "slot": "QB",
+                }
+            ],
+            correlation_context=ctx,
+            correlation_weight=0.25,
+        )
+        self.assertEqual(ranked[0]["player_id"], "wr_buf")
+
     def test_showdown_blocks_second_same_team_qb(self):
         pool = [
             _fake_player(
@@ -383,6 +440,90 @@ class DfsOptimizeTests(unittest.TestCase):
         ]
         self.assertEqual(qb_ids, ["cpt_qb"])
         self.assertNotIn("backup_qb", qb_ids)
+
+    def test_showdown_requires_player_from_each_team(self):
+        """Greedy same-team chalk still must leave a seat for the other side."""
+
+        pool = [
+            _fake_player(
+                player_id="buf_qb",
+                name="BUF QB",
+                position="QB",
+                salary=8000,
+                projection=30.0,
+                team="BUF",
+            ),
+            _fake_player(
+                player_id="buf_rb",
+                name="BUF RB",
+                position="RB",
+                salary=7000,
+                projection=24.0,
+                team="BUF",
+            ),
+            _fake_player(
+                player_id="buf_wr1",
+                name="BUF WR1",
+                position="WR",
+                salary=6500,
+                projection=20.0,
+                team="BUF",
+            ),
+            _fake_player(
+                player_id="buf_wr2",
+                name="BUF WR2",
+                position="WR",
+                salary=6000,
+                projection=18.0,
+                team="BUF",
+            ),
+            _fake_player(
+                player_id="buf_te",
+                name="BUF TE",
+                position="TE",
+                salary=5000,
+                projection=16.0,
+                team="BUF",
+            ),
+            _fake_player(
+                player_id="buf_dst",
+                name="BUF DST",
+                position="DEF",
+                salary=3000,
+                projection=14.0,
+                team="BUF",
+            ),
+            # Weaker DET pool — without the constraint these lose to BUF.
+            _fake_player(
+                player_id="det_wr",
+                name="DET WR",
+                position="WR",
+                salary=4500,
+                projection=9.0,
+                team="DET",
+            ),
+            _fake_player(
+                player_id="det_rb",
+                name="DET RB",
+                position="RB",
+                salary=4000,
+                projection=8.0,
+                team="DET",
+            ),
+        ]
+        for player in pool:
+            player["_opt_score"] = float(player["projection"])
+        selected = _optimize_showdown(
+            pool=pool,
+            salary_cap=50000,
+            captain_multiplier=1.5,
+            locked=set(),
+            max_ownership=None,
+            required_captain_id="buf_qb",
+        )
+        self.assertEqual(len(selected), 6)
+        teams = {player.get("team") for player in selected}
+        self.assertEqual(teams, {"BUF", "DET"})
 
     def test_showdown_required_captain_is_honored(self):
         pool = [

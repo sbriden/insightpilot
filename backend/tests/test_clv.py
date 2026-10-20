@@ -202,6 +202,74 @@ class ClvTests(unittest.TestCase):
         diag = build_clv_diagnostics(rows)
         self.assertGreater(diag["summary"]["clv_sample"], 0)
         self.assertIsNotNone(diag["summary"]["average_closing_edge"])
+        # Headline average_clv is points-only (excludes ML prob_pp).
+        self.assertEqual(diag["summary"]["average_clv"], 1.5)
+        self.assertEqual(diag["summary"]["average_clv_points"], 1.5)
+        self.assertIsNotNone(diag["summary"]["average_clv_prob_pp"])
+        self.assertNotEqual(
+            diag["summary"]["average_clv"],
+            diag["summary"]["average_clv_prob_pp"],
+        )
+
+    def test_grades_on_bet_line_not_closing_line(self):
+        # Actual margin home +7. Bet home -2 covers; close -6.5 also
+        # covers — use a total where bet vs close diverge on grade.
+        event = {
+            "event_id": "g2",
+            "label": "ATL @ GB",
+            "season": 2026,
+            "week": 4,
+            "status": "Final",
+            "home_team": "GB",
+            "away_team": "ATL",
+            "home_score": 27,
+            "away_score": 20,
+            "projected_home_score": 24.0,
+            "projected_away_score": 20.0,
+            "projected_total": 44.0,
+            "model_spread": -4.0,
+            "market_spread": -3.5,
+            "market_total": 45.5,
+            "opening_spread": -2.0,
+            "opening_total": 47.0,
+            "current_spread": -3.5,
+            "current_total": 45.5,
+        }
+        snapshot = {
+            "projected_home_score": 24.0,
+            "projected_away_score": 20.0,
+            "projected_total": 44.0,
+            "model_spread": -4.0,
+            "market_spread": -2.0,
+            "market_total": 47.0,
+            "tape_source": "first_publish",
+            "captured_at": "2026-09-27T12:00:00+00:00",
+            "frozen": True,
+        }
+        markets = [
+            {
+                "market_id": "g2:total",
+                "market_type": "total",
+                "selection": "Under 45.5",
+                "line": 45.5,  # closing published line
+                "price": -110,
+                "home_team": "GB",
+                "away_team": "ATL",
+                "model_probability": 0.55,
+                "edge_probability": 2.0,
+                "confidence": "Moderate",
+                "bet_status": "lean",
+            },
+        ]
+        settled = settle_event_markets(
+            event, markets, snapshot=snapshot
+        )
+        total = settled[0]
+        self.assertEqual(total["bet_line"], 47.0)
+        self.assertEqual(total["closing_line"], 45.5)
+        # Actual 47 graded on bet 47 → push (not lost vs close 45.5).
+        self.assertEqual(total["result"], "push")
+        self.assertEqual(total["clv"], 1.5)
 
 
 if __name__ == "__main__":

@@ -3,10 +3,13 @@
 import { useMemo, useState } from "react";
 
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
+import TeamLogo from "@/components/teams/TeamLogo";
 import type {
   DfsPlayer,
   DfsPortfolioExposureRow,
 } from "@/services/api";
+
+export type PlayerExposureVariant = "included" | "excluded";
 
 interface Props {
   rows: DfsPortfolioExposureRow[];
@@ -18,6 +21,8 @@ interface Props {
   lockedIds: Set<string>;
   excludedIds: Set<string>;
   showCaptainLimits?: boolean;
+  /** Which exposure list to render (tabs own the chrome). */
+  variant?: PlayerExposureVariant;
   onPositionFilter: (value: string) => void;
   onMin: (playerId: string, value: number | null) => void;
   onMax: (playerId: string, value: number | null) => void;
@@ -42,6 +47,7 @@ export default function PlayerExposureTable({
   lockedIds,
   excludedIds,
   showCaptainLimits = false,
+  variant = "included",
   onPositionFilter,
   onMin,
   onMax,
@@ -56,6 +62,7 @@ export default function PlayerExposureTable({
   const [forceMinPct, setForceMinPct] = useState(
     Math.round(DEFAULT_FORCE_MIN * 100)
   );
+  const isExcluded = variant === "excluded";
 
   const mergedRows = useMemo(
     () =>
@@ -86,9 +93,8 @@ export default function PlayerExposureTable({
     excludedIds.has(row.player_id)
   );
 
-  const filteredActive = filterByPosition(activeRows, positionFilter);
-  const filteredExcluded = filterByPosition(
-    excludedRows,
+  const filteredRows = filterByPosition(
+    isExcluded ? excludedRows : activeRows,
     positionFilter
   );
 
@@ -125,18 +131,16 @@ export default function PlayerExposureTable({
   }, [forceQuery, slatePlayers, mergedRows, excludedIds]);
 
   return (
-    <section
-      id="portfolio-exposure"
-      className="rounded-[10px] border p-4"
-      style={{ borderColor: snapshotTokens.border }}
-    >
+    <div>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3
-          className="text-sm font-semibold"
-          style={{ color: snapshotTokens.navy }}
+        <p
+          className="text-xs"
+          style={{ color: snapshotTokens.textSecondary }}
         >
-          Player Exposure
-        </h3>
+          {isExcluded
+            ? "Re-include without resetting the portfolio. Regenerate to use them again."
+            : "Set min/max exposure, lock, or exclude players. Regenerate to apply."}
+        </p>
         <div className="flex flex-wrap gap-1">
           {POSITIONS.map((pos) => (
             <button
@@ -161,123 +165,126 @@ export default function PlayerExposureTable({
         </div>
       </div>
 
-      <div
-        className="mt-3 rounded-md border px-3 py-2"
-        style={{ borderColor: snapshotTokens.border }}
-      >
-        <p
-          className="text-[11px] font-semibold uppercase tracking-wide"
-          style={{ color: snapshotTokens.textMuted }}
+      {!isExcluded && (
+        <div
+          className="mt-3 rounded-md border px-3 py-2"
+          style={{ borderColor: snapshotTokens.border }}
         >
-          Force include player
-        </p>
-        <p
-          className="mt-1 text-xs"
-          style={{ color: snapshotTokens.textSecondary }}
-        >
-          Add any slate player with a minimum exposure. Regenerate
-          to pull them into lineups.
-        </p>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <input
-            type="search"
-            value={forceQuery}
-            onChange={(event) => setForceQuery(event.target.value)}
-            placeholder="Search slate players…"
-            className="min-w-[12rem] flex-1 rounded border px-2 py-1.5 text-sm"
-            style={{ borderColor: snapshotTokens.border }}
-          />
-          <label
-            className="flex items-center gap-1 text-xs"
+          <p
+            className="text-[11px] font-semibold uppercase tracking-wide"
+            style={{ color: snapshotTokens.textMuted }}
+          >
+            Force include player
+          </p>
+          <p
+            className="mt-1 text-xs"
             style={{ color: snapshotTokens.textSecondary }}
           >
-            Min%
+            Add any slate player with a minimum exposure. Regenerate
+            to pull them into lineups.
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <input
-              type="number"
-              min={1}
-              max={100}
-              value={forceMinPct}
-              onChange={(event) =>
-                setForceMinPct(
-                  Math.max(
-                    1,
-                    Math.min(100, Number(event.target.value) || 1)
-                  )
-                )
-              }
-              className="w-14 rounded border px-1.5 py-1 text-xs"
+              type="search"
+              value={forceQuery}
+              onChange={(event) => setForceQuery(event.target.value)}
+              placeholder="Search slate players…"
+              className="min-w-[12rem] flex-1 rounded border px-2 py-1.5 text-sm"
               style={{ borderColor: snapshotTokens.border }}
             />
-          </label>
+            <label
+              className="flex items-center gap-1 text-xs"
+              style={{ color: snapshotTokens.textSecondary }}
+            >
+              Min%
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={forceMinPct}
+                onChange={(event) =>
+                  setForceMinPct(
+                    Math.max(
+                      1,
+                      Math.min(100, Number(event.target.value) || 1)
+                    )
+                  )
+                }
+                className="w-14 rounded border px-1.5 py-1 text-xs"
+                style={{ borderColor: snapshotTokens.border }}
+              />
+            </label>
+          </div>
+          {forceSuggestions.length > 0 && (
+            <ul
+              className="mt-2 max-h-48 overflow-auto rounded border"
+              style={{ borderColor: snapshotTokens.border }}
+            >
+              {forceSuggestions.map((player) => {
+                const hasMin = minMap[player.player_id] != null;
+                return (
+                  <li
+                    key={player.player_id}
+                    className="flex items-center justify-between gap-2 border-b px-2 py-1.5 text-sm last:border-b-0"
+                    style={{ borderColor: snapshotTokens.border }}
+                  >
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      onClick={() =>
+                        onSelectPlayer?.(player.player_id)
+                      }
+                    >
+                      <span
+                        className="block truncate font-medium"
+                        style={{ color: snapshotTokens.textPrimary }}
+                      >
+                        {player.name}
+                      </span>
+                      <span
+                        className="text-xs"
+                        style={{ color: snapshotTokens.textMuted }}
+                      >
+                        {player.position}
+                        {player.team ? ` · ${player.team}` : ""}
+                        {player.projection != null
+                          ? ` · ${player.projection.toFixed(1)} proj`
+                          : ""}
+                        {hasMin
+                          ? ` · min ${Math.round(
+                              minMap[player.player_id] * 100
+                            )}%`
+                          : ""}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onForceInclude(
+                          player.player_id,
+                          forceMinPct / 100
+                        );
+                        setForceQuery("");
+                      }}
+                      className="shrink-0 rounded border px-2 py-1 text-[11px] font-semibold"
+                      style={{
+                        borderColor: snapshotTokens.blue,
+                        color: snapshotTokens.blue,
+                      }}
+                    >
+                      {hasMin ? "Update min" : "Force include"}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
-        {forceSuggestions.length > 0 && (
-          <ul className="mt-2 max-h-48 overflow-auto rounded border"
-            style={{ borderColor: snapshotTokens.border }}
-          >
-            {forceSuggestions.map((player) => {
-              const hasMin = minMap[player.player_id] != null;
-              return (
-                <li
-                  key={player.player_id}
-                  className="flex items-center justify-between gap-2 border-b px-2 py-1.5 text-sm last:border-b-0"
-                  style={{ borderColor: snapshotTokens.border }}
-                >
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 text-left"
-                    onClick={() =>
-                      onSelectPlayer?.(player.player_id)
-                    }
-                  >
-                    <span
-                      className="block truncate font-medium"
-                      style={{ color: snapshotTokens.textPrimary }}
-                    >
-                      {player.name}
-                    </span>
-                    <span
-                      className="text-xs"
-                      style={{ color: snapshotTokens.textMuted }}
-                    >
-                      {player.position}
-                      {player.team ? ` · ${player.team}` : ""}
-                      {player.projection != null
-                        ? ` · ${player.projection.toFixed(1)} proj`
-                        : ""}
-                      {hasMin
-                        ? ` · min ${Math.round(
-                            minMap[player.player_id] * 100
-                          )}%`
-                        : ""}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onForceInclude(
-                        player.player_id,
-                        forceMinPct / 100
-                      );
-                      setForceQuery("");
-                    }}
-                    className="shrink-0 rounded border px-2 py-1 text-[11px] font-semibold"
-                    style={{
-                      borderColor: snapshotTokens.blue,
-                      color: snapshotTokens.blue,
-                    }}
-                  >
-                    {hasMin ? "Update min" : "Force include"}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
+      )}
 
       <div className="mt-3 overflow-x-auto">
         <ExposureTableBody
-          rows={filteredActive}
+          rows={filteredRows}
           showCaptainLimits={showCaptainLimits}
           minMap={minMap}
           maxMap={maxMap}
@@ -291,50 +298,15 @@ export default function PlayerExposureTable({
           onExclude={onExclude}
           onInclude={onInclude}
           onSelectPlayer={onSelectPlayer}
-          emptyLabel="Generate a portfolio to see player exposure."
+          emptyLabel={
+            isExcluded
+              ? "No excluded players."
+              : "Generate a portfolio to see player exposure."
+          }
+          dimmed={isExcluded}
         />
       </div>
-
-      {filteredExcluded.length > 0 && (
-        <div className="mt-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4
-              className="text-sm font-semibold"
-              style={{ color: snapshotTokens.navy }}
-            >
-              Excluded players ({filteredExcluded.length})
-            </h4>
-            <p
-              className="text-xs"
-              style={{ color: snapshotTokens.textSecondary }}
-            >
-              Re-include without resetting the portfolio. Regenerate
-              to use them again.
-            </p>
-          </div>
-          <div className="mt-2 overflow-x-auto">
-            <ExposureTableBody
-              rows={filteredExcluded}
-              showCaptainLimits={showCaptainLimits}
-              minMap={minMap}
-              maxMap={maxMap}
-              captainMaxMap={captainMaxMap}
-              lockedIds={lockedIds}
-              excludedIds={excludedIds}
-              onMin={onMin}
-              onMax={onMax}
-              onCaptainMax={onCaptainMax}
-              onLock={onLock}
-              onExclude={onExclude}
-              onInclude={onInclude}
-              onSelectPlayer={onSelectPlayer}
-              emptyLabel="No excluded players."
-              dimmed
-            />
-          </div>
-        </div>
-      )}
-    </section>
+    </div>
   );
 }
 
@@ -432,7 +404,7 @@ function ExposureTableBody({
                     onClick={() => onSelectPlayer?.(row.player_id)}
                   >
                     <div
-                      className="font-medium hover:underline"
+                      className="flex items-center gap-1.5 font-medium hover:underline"
                       style={{
                         color: snapshotTokens.textPrimary,
                         textDecoration: excluded
@@ -440,7 +412,8 @@ function ExposureTableBody({
                           : undefined,
                       }}
                     >
-                      {row.name}
+                      <TeamLogo abbreviation={row.team} size={18} />
+                      <span>{row.name}</span>
                       {forced ? (
                         <span
                           className="ml-1 text-[10px] font-semibold uppercase tracking-wide"

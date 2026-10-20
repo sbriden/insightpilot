@@ -2,11 +2,21 @@
 
 import {
   ArrowLeft,
-  ArrowRight,
   Sparkles,
   User,
 } from "lucide-react";
+import {
+  PolarAngleAxis,
+  PolarGrid,
+  PolarRadiusAxis,
+  Radar,
+  RadarChart,
+  ResponsiveContainer,
+} from "recharts";
 
+import TeamLogo, {
+  canonicalTeamAbbreviation,
+} from "@/components/teams/TeamLogo";
 import {
   FantasyPlayerSnapshot,
 } from "@/services/api";
@@ -18,6 +28,12 @@ import {
   snapshotTokens,
 } from "./tokens";
 
+const PLAYER_B_COLOR = "#F97316";
+
+function playerAColor(): string {
+  return snapshotTokens.blue;
+}
+
 interface Props {
   base: FantasyPlayerSnapshot;
   compare: FantasyPlayerSnapshot;
@@ -27,61 +43,182 @@ interface Props {
   onOpenPlayer?: (playerId: string) => void;
 }
 
-function PlayerIdentity({
-  player,
-  badge,
+function scoreOrZero(
+  value: number | null | undefined
+): number {
+  return value == null || !Number.isFinite(value) ? 0 : value;
+}
+
+function OverlayRadar({
+  base,
+  compare,
 }: {
-  player: FantasyPlayerSnapshot;
-  badge: string;
+  base: FantasyPlayerSnapshot;
+  compare: FantasyPlayerSnapshot;
 }) {
-  const tone = assessmentStyles(player.overall_assessment);
+  const data = [
+    {
+      metric: "Value",
+      base: scoreOrZero(base.fantasy_value_score),
+      compare: scoreOrZero(compare.fantasy_value_score),
+    },
+    {
+      metric: "Opportunity",
+      base: scoreOrZero(base.opportunity_score),
+      compare: scoreOrZero(compare.opportunity_score),
+    },
+    {
+      metric: "Production",
+      base: scoreOrZero(base.production_score),
+      compare: scoreOrZero(compare.production_score),
+    },
+  ];
+  const baseName = base.name || "Player A";
+  const compareName = compare.name || "Player B";
 
   return (
-    <div className="flex min-w-0 items-start gap-3">
-      <div
-        className="h-16 w-16 shrink-0 overflow-hidden rounded-xl border bg-white sm:h-20 sm:w-20"
-        style={{ borderColor: snapshotTokens.border }}
-      >
-        {player.headshot_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={player.headshot_url}
-            alt=""
-            className="h-full w-full object-cover object-top"
+    <div
+      className="mx-auto h-[188px] w-full max-w-[280px]"
+      aria-label={
+        `${baseName} in blue and ${compareName} in orange. `
+        + "Value, opportunity, and production."
+      }
+    >
+      <ResponsiveContainer width="100%" height="100%">
+        <RadarChart
+          data={data}
+          cx="50%"
+          cy="50%"
+          outerRadius="68%"
+          margin={{ top: 16, right: 44, bottom: 16, left: 44 }}
+        >
+          <PolarGrid stroke={snapshotTokens.divider} />
+          <PolarAngleAxis
+            dataKey="metric"
+            tick={{
+              fill: snapshotTokens.textMuted,
+              fontSize: 11,
+            }}
           />
-        ) : (
-          <div
-            className="flex h-full w-full items-center justify-center"
-            style={{ background: snapshotTokens.background }}
-          >
-            <User
-              className="h-7 w-7"
-              style={{ color: snapshotTokens.textMuted }}
+          <PolarRadiusAxis
+            type="number"
+            domain={[0, 100]}
+            allowDataOverflow
+            tick={false}
+            axisLine={false}
+          />
+          <Radar
+            dataKey="compare"
+            stroke={PLAYER_B_COLOR}
+            fill={PLAYER_B_COLOR}
+            fillOpacity={0.28}
+            strokeWidth={2}
+            isAnimationActive={false}
+          />
+          <Radar
+            dataKey="base"
+            stroke={playerAColor()}
+            fill={playerAColor()}
+            fillOpacity={0.22}
+            strokeWidth={2}
+            isAnimationActive={false}
+          />
+        </RadarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function LegendSwatch({ color }: { color: string }) {
+  return (
+    <span
+      className="inline-block h-2.5 w-2.5 shrink-0 rounded-[3px]"
+      style={{ background: color }}
+      aria-hidden
+    />
+  );
+}
+
+function PlayerIdentity({
+  player,
+  side,
+  onOpen,
+}: {
+  player: FantasyPlayerSnapshot;
+  side: "left" | "right";
+  onOpen?: () => void;
+}) {
+  const tone = assessmentStyles(player.overall_assessment);
+  const reversed = side === "right";
+  const color = reversed ? PLAYER_B_COLOR : playerAColor();
+  const name = player.name || player.player_id;
+  const className = `flex min-w-0 items-center gap-3 rounded-xl text-left ${
+    reversed ? "flex-row-reverse" : ""
+  } ${
+    onOpen
+      ? "cursor-pointer transition hover:opacity-80"
+      : ""
+  }`;
+  const content = (
+    <>
+      <div
+        className="relative h-16 w-16 shrink-0 sm:h-20 sm:w-20"
+      >
+        <div
+          className="h-full w-full overflow-hidden rounded-xl border bg-white"
+          style={{ borderColor: snapshotTokens.border }}
+        >
+          {player.headshot_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={player.headshot_url}
+              alt=""
+              className="h-full w-full object-cover object-top"
             />
-          </div>
-        )}
+          ) : (
+            <div
+              className="flex h-full w-full items-center justify-center"
+              style={{ background: snapshotTokens.background }}
+            >
+              <User
+                className="h-7 w-7"
+                style={{ color: snapshotTokens.textMuted }}
+              />
+            </div>
+          )}
+        </div>
+        {canonicalTeamAbbreviation(player.team) ? (
+          <span
+            className="absolute -bottom-1 -right-1 rounded-full border bg-white p-0.5"
+            style={{ borderColor: snapshotTokens.border }}
+          >
+            <TeamLogo abbreviation={player.team} size={22} />
+          </span>
+        ) : null}
       </div>
-      <div className="min-w-0">
-        <p
-          className="text-[11px] font-semibold uppercase tracking-wide"
-          style={{ color: snapshotTokens.textMuted }}
+      <div className={`min-w-0 ${reversed ? "text-right" : ""}`}>
+        <span
+          className={`flex items-center gap-2 ${
+            reversed ? "justify-end" : ""
+          }`}
         >
-          {badge}
-        </p>
-        <p
-          className="mt-0.5 truncate text-lg font-bold leading-tight"
-          style={{ color: snapshotTokens.navy }}
-        >
-          {player.name || player.player_id}
-        </p>
-        <p
-          className="mt-0.5 text-sm"
+          {!reversed && <LegendSwatch color={color} />}
+          <span
+            className="truncate text-lg font-bold leading-tight"
+            style={{ color: snapshotTokens.navy }}
+          >
+            {name}
+          </span>
+          {reversed && <LegendSwatch color={color} />}
+        </span>
+        <span
+          className="mt-0.5 block text-sm"
           style={{ color: snapshotTokens.textSecondary }}
         >
           {[player.position, player.team]
             .filter(Boolean)
             .join(" · ") || "—"}
-        </p>
+        </span>
         <span
           className="mt-2 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold tabular-nums"
           style={{
@@ -95,7 +232,22 @@ function PlayerIdentity({
             : ""}
         </span>
       </div>
-    </div>
+    </>
+  );
+
+  if (!onOpen) {
+    return <div className={className}>{content}</div>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={className}
+      aria-label={`Open ${name} snapshot`}
+    >
+      {content}
+    </button>
   );
 }
 
@@ -147,29 +299,113 @@ function CompareRow({
 
   const leftColor = deltaTone(left, right, higherIsBetter);
   const rightColor = deltaTone(right, left, higherIsBetter);
+  const shift = advantageShift(left, right, higherIsBetter);
+  const favoredColor = shift < 0 ? playerAColor() : PLAYER_B_COLOR;
+  const reach = Math.abs(shift) * 50;
 
   return (
     <div
-      className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 border-b py-3 last:border-0"
+      className="border-b py-3 last:border-0"
       style={{ borderColor: snapshotTokens.divider }}
     >
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+        <p
+          className="text-left text-base font-bold tabular-nums"
+          style={{ color: leftColor }}
+        >
+          {display(left)}
+        </p>
+        <p
+          className="w-[5.75rem] text-center text-[10px] font-medium uppercase leading-tight tracking-wide"
+          style={{ color: snapshotTokens.textMuted }}
+        >
+          {label}
+        </p>
+        <p
+          className="text-right text-base font-bold tabular-nums"
+          style={{ color: rightColor }}
+        >
+          {display(right)}
+        </p>
+      </div>
+      <div className="relative mt-2 h-3">
+        <div
+          className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full"
+          style={{ background: snapshotTokens.divider }}
+        />
+        {shift !== 0 && (
+          <div
+            className="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-full"
+            style={{
+              width: `${reach}%`,
+              left: shift < 0 ? `${50 - reach}%` : "50%",
+              background: favoredColor,
+            }}
+          />
+        )}
+        <div
+          className="absolute left-1/2 top-0 h-full w-0.5 -translate-x-1/2 rounded-full"
+          style={{ background: snapshotTokens.navy }}
+          aria-hidden
+        />
+      </div>
+    </div>
+  );
+}
+
+function advantageShift(
+  left: number | null | undefined,
+  right: number | null | undefined,
+  higherIsBetter: boolean
+): number {
+  const finite = (value: number | null | undefined) =>
+    value != null && Number.isFinite(value) ? Math.abs(value) : null;
+  const leftValue = finite(left);
+  const rightValue = finite(right);
+  if (leftValue == null && rightValue == null) {
+    return 0;
+  }
+  if (leftValue == null) {
+    return higherIsBetter ? 1 : -1;
+  }
+  if (rightValue == null) {
+    return higherIsBetter ? -1 : 1;
+  }
+  if (leftValue === rightValue) {
+    return 0;
+  }
+  const rightFavored = higherIsBetter
+    ? rightValue > leftValue
+    : rightValue < leftValue;
+  const other = rightFavored ? leftValue : rightValue;
+  const gap = Math.abs(leftValue - rightValue);
+  const magnitude = other === 0 ? 1 : Math.min(1, gap / other);
+  return rightFavored ? magnitude : -magnitude;
+}
+
+function CompareHeaders({
+  leftName,
+  rightName,
+}: {
+  leftName: string;
+  rightName: string;
+}) {
+  return (
+    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 pt-3">
       <p
-        className="text-right text-base font-bold tabular-nums"
-        style={{ color: leftColor }}
+        className="line-clamp-2 text-left text-xs font-semibold leading-tight"
+        style={{ color: snapshotTokens.navy }}
+        title={leftName}
       >
-        {display(left)}
+        {leftName}
       </p>
+      <span className="w-[5.75rem]" aria-hidden />
       <p
-        className="min-w-[7.5rem] text-center text-[11px] font-medium uppercase tracking-wide"
-        style={{ color: snapshotTokens.textMuted }}
+        className="line-clamp-2 text-right text-xs font-semibold leading-tight"
+        style={{ color: snapshotTokens.navy }}
+        title={rightName}
       >
-        {label}
-      </p>
-      <p
-        className="text-left text-base font-bold tabular-nums"
-        style={{ color: rightColor }}
-      >
-        {display(right)}
+        {rightName}
       </p>
     </div>
   );
@@ -242,8 +478,8 @@ function buildComparisonInsight(
   return {
     headline: "Compare value, opportunity, and availability",
     body:
-      "Use assessment score, opportunity, and ownership together — "
-      + "not fantasy points alone — when deciding on a replacement.",
+      "Use the assessment score with opportunity and season "
+      + "production. Ownership is listed on its own.",
   };
 }
 
@@ -371,6 +607,9 @@ export default function PlayerComparison({
     || compare.opportunity_score != null
     || dedupedOpportunityRows.length > 0;
 
+  const baseName = base.name || "Player A";
+  const compareName = compare.name || "Player B";
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -402,24 +641,30 @@ export default function PlayerComparison({
         className="rounded-[10px] border bg-white p-4 sm:p-5"
         style={{ borderColor: snapshotTokens.border }}
       >
-        <div className="grid gap-4 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
-          <PlayerIdentity
-            player={base}
-            badge="Current player"
-          />
-          <div
-            className="hidden h-10 w-10 items-center justify-center rounded-full border sm:flex"
-            style={{
-              borderColor: snapshotTokens.border,
-              color: snapshotTokens.textMuted,
-            }}
-          >
-            <ArrowRight className="h-4 w-4" />
+        <div className="grid items-center gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)]">
+          <div className="min-w-0 justify-self-start">
+            <PlayerIdentity
+              player={base}
+              side="left"
+              onOpen={
+                onOpenPlayer
+                  ? () => onOpenPlayer(base.player_id)
+                  : undefined
+              }
+            />
           </div>
-          <PlayerIdentity
-            player={compare}
-            badge="Free-agent replacement"
-          />
+          <OverlayRadar base={base} compare={compare} />
+          <div className="min-w-0 justify-self-end">
+            <PlayerIdentity
+              player={compare}
+              side="right"
+              onOpen={
+                onOpenPlayer
+                  ? () => onOpenPlayer(compare.player_id)
+                  : undefined
+              }
+            />
+          </div>
         </div>
       </section>
 
@@ -451,6 +696,17 @@ export default function PlayerComparison({
         </p>
       </section>
 
+      <div
+        className={`grid items-start gap-4 ${
+          [
+            true,
+            hasOpportunityMetrics,
+            metricKeys.size > 0,
+          ].filter(Boolean).length >= 3
+            ? "lg:grid-cols-3"
+            : "lg:grid-cols-2"
+        }`}
+      >
       <section
         className="rounded-[10px] border bg-white p-4 sm:p-5"
         style={{ borderColor: snapshotTokens.border }}
@@ -467,7 +723,11 @@ export default function PlayerComparison({
         >
           Green favors that side of the comparison
         </p>
-        <div className="mt-2">
+        <CompareHeaders
+          leftName={baseName}
+          rightName={compareName}
+        />
+        <div>
           <CompareRow
             label="Assessment"
             left={base.fantasy_value_score}
@@ -529,7 +789,11 @@ export default function PlayerComparison({
             Average of recent games — snaps, shares, and
             high-leverage chances
           </p>
-          <div className="mt-2">
+          <CompareHeaders
+            leftName={baseName}
+            rightName={compareName}
+          />
+          <div>
             <CompareRow
               label="Opp Score"
               left={base.opportunity_score}
@@ -569,7 +833,11 @@ export default function PlayerComparison({
           >
             Factual box-score totals (PPR)
           </p>
-          <div className="mt-2">
+          <CompareHeaders
+            leftName={baseName}
+            rightName={compareName}
+          />
+          <div>
             {[...metricKeys.entries()].map(([key, label]) => (
               <CompareRow
                 key={key}
@@ -583,9 +851,10 @@ export default function PlayerComparison({
           </div>
         </section>
       )}
+      </div>
 
-      <div className="flex flex-wrap gap-2">
-        {onBack && (
+      {onBack && (
+        <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={onBack}
@@ -597,35 +866,8 @@ export default function PlayerComparison({
           >
             Keep viewing {base.name || "current player"}
           </button>
-        )}
-        {onOpenPlayer && (
-          <button
-            type="button"
-            onClick={() =>
-              onOpenPlayer(compare.player_id)
-            }
-            className="rounded-lg px-3 py-2 text-sm font-semibold text-white"
-            style={{ background: snapshotTokens.blue }}
-          >
-            Open {compare.name || "replacement"} snapshot
-          </button>
-        )}
-        {onOpenPlayer && (
-          <button
-            type="button"
-            onClick={() =>
-              onOpenPlayer(base.player_id)
-            }
-            className="rounded-lg border bg-white px-3 py-2 text-sm font-medium"
-            style={{
-              borderColor: snapshotTokens.border,
-              color: snapshotTokens.textSecondary,
-            }}
-          >
-            Open {base.name || "player"} snapshot
-          </button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

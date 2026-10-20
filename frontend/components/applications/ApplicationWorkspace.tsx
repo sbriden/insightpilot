@@ -10,9 +10,14 @@ import ApplicationLogo from "@/components/applications/ApplicationLogo";
 import { appTheme } from "@/components/applications/appTheme";
 import {
   getRegistryAnalysis,
+  LEGACY_PLAYER_OVERVIEW_KEY,
+  PLAYER_OVERVIEW_ANALYSIS_KEYS,
   sourceProductLabels,
 } from "@/lib/analysisRegistry";
-import type { AnalyticalApplication } from "@/services/api";
+import {
+  refreshNflverseData,
+  type AnalyticalApplication,
+} from "@/services/api";
 
 interface Props {
   application: AnalyticalApplication;
@@ -29,10 +34,19 @@ function buildNavGroups(
   const ordered = [...(analyses || [])].sort(
     (a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)
   );
+  const expanded = ordered.flatMap((row) => {
+    if (row.analysis_key !== LEGACY_PLAYER_OVERVIEW_KEY) {
+      return [row];
+    }
+    return PLAYER_OVERVIEW_ANALYSIS_KEYS.map((analysis_key) => ({
+      ...row,
+      analysis_key,
+    }));
+  });
   const groups: NavGroup[] = [];
   const indexByLabel = new Map<string, number>();
 
-  for (const row of ordered) {
+  for (const row of expanded) {
     const meta = getRegistryAnalysis(row.analysis_key);
     const label = (
       row.navigation_group ||
@@ -64,8 +78,52 @@ export default function ApplicationWorkspace({ application }: Props) {
   const [navOpen, setNavOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [refreshKey, setRefreshKey] = useState(0);
+  const [refreshLoading, setRefreshLoading] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const products = sourceProductLabels(flatKeys);
+
+  const activeGroup = useMemo(
+    () =>
+      groups.find((group) =>
+        group.analyses.some(
+          (row) => row.analysis_key === activeKey
+        )
+      ) ?? null,
+    [groups, activeKey]
+  );
+
+  async function handleDataRefresh() {
+    if (refreshLoading) {
+      return;
+    }
+    try {
+      setRefreshLoading(true);
+      setRefreshError(null);
+      const result = await refreshNflverseData("incremental");
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("insightpilot:fantasy-data-refreshed", {
+            detail: {
+              mode: "incremental",
+              status: result.status,
+              validation_blocked_derived:
+                result.validation_blocked_derived,
+            },
+          })
+        );
+      }
+      setRefreshKey((key) => key + 1);
+    } catch (error) {
+      setRefreshError(
+        error instanceof Error
+          ? error.message
+          : "Unable to refresh data."
+      );
+    } finally {
+      setRefreshLoading(false);
+    }
+  }
 
   return (
     <ApplicationContextProvider>
@@ -103,7 +161,16 @@ export default function ApplicationWorkspace({ application }: Props) {
               </h1>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            {refreshError ? (
+              <p
+                className="hidden max-w-[220px] truncate text-xs sm:block"
+                style={{ color: appTheme.negative }}
+                title={refreshError}
+              >
+                {refreshError}
+              </p>
+            ) : null}
             <button
               type="button"
               className="rounded-lg px-3 py-1.5 text-sm lg:hidden"
@@ -117,12 +184,25 @@ export default function ApplicationWorkspace({ application }: Props) {
             </button>
             <button
               type="button"
-              title="Refresh analysis"
-              onClick={() => setRefreshKey((k) => k + 1)}
-              className="rounded-lg p-2 transition-colors"
+              title={
+                refreshLoading
+                  ? "Refreshing data…"
+                  : "Refresh data"
+              }
+              disabled={refreshLoading}
+              onClick={() => void handleDataRefresh()}
+              className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors disabled:opacity-60"
               style={{ color: appTheme.silver }}
             >
-              <RefreshCw className="h-4 w-4" />
+              <RefreshCw
+                className={[
+                  "h-4 w-4",
+                  refreshLoading ? "animate-spin" : "",
+                ].join(" ")}
+              />
+              <span className="hidden sm:inline">
+                {refreshLoading ? "Refreshing…" : "Refresh"}
+              </span>
             </button>
             <Link
               href={`/applications/${application.id}/edit`}
@@ -267,7 +347,62 @@ export default function ApplicationWorkspace({ application }: Props) {
             className="min-w-0 flex-1 overflow-auto p-4 lg:p-5 xl:p-6"
             style={{ background: appTheme.obsidian }}
           >
-            {activeKey ? (
+            {activeKey && activeGroup ? (
+              <div className="min-h-0 flex-1 space-y-4">
+                <header className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+                  <p
+                    className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.18em]"
+                    style={{ color: appTheme.cyan }}
+                  >
+                    {activeGroup.label}
+                  </p>
+                  <nav
+                    className="flex min-w-0 flex-wrap items-center gap-1"
+                    role="tablist"
+                    aria-label={`${activeGroup.label} analyses`}
+                  >
+                    {activeGroup.analyses.map((row) => {
+                      const meta = getRegistryAnalysis(
+                        row.analysis_key
+                      );
+                      const selected =
+                        row.analysis_key === activeKey;
+                      return (
+                        <button
+                          key={row.analysis_key}
+                          type="button"
+                          role="tab"
+                          aria-selected={selected}
+                          onClick={() => {
+                            setActiveKey(row.analysis_key);
+                            setNavOpen(false);
+                          }}
+                          className="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+                          style={
+                            selected
+                              ? {
+                                  background:
+                                    "rgba(0, 229, 255, 0.12)",
+                                  color: appTheme.cyan,
+                                  boxShadow: appTheme.glowSoft,
+                                }
+                              : {
+                                  color: appTheme.silver,
+                                }
+                          }
+                        >
+                          {meta?.name || row.analysis_key}
+                        </button>
+                      );
+                    })}
+                  </nav>
+                </header>
+                <AnalysisRuntime
+                  key={`${activeKey}:${refreshKey}`}
+                  analysisKey={activeKey}
+                />
+              </div>
+            ) : activeKey ? (
               <AnalysisRuntime
                 key={`${activeKey}:${refreshKey}`}
                 analysisKey={activeKey}

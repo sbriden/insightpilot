@@ -26,6 +26,7 @@ import MultiSelectFilter, {
   MULTI_SELECT_NONE,
 } from "@/components/fantasy/MultiSelectFilter";
 import { SearchablePlayerMultiSelect } from "@/components/fantasy/SearchablePlayerSelect";
+import { TeamWithLogo } from "@/components/teams/TeamLogo";
 import PlayerOverviewCompare from "@/components/fantasy/PlayerOverviewCompare";
 import PlayerOverviewScatter from "@/components/fantasy/PlayerOverviewScatter";
 import PlayerOverviewTeamStats from "@/components/fantasy/PlayerOverviewTeamStats";
@@ -53,7 +54,7 @@ type SortKey =
 
 type SortDir = "asc" | "desc";
 
-type OverviewTab = "table" | "scatter" | "compare" | "teams";
+export type OverviewTab = "table" | "scatter" | "compare" | "teams";
 
 interface Props {
   /** Optional preloaded snapshots from the analysis dashboard. */
@@ -62,6 +63,10 @@ interface Props {
   initialDetailTab?: SnapshotTabId;
   /** Notify parent (e.g. application context) when a player is opened. */
   onPlayerSelect?: (playerId: string) => void;
+  /** Open on this overview view. */
+  initialOverviewTab?: OverviewTab;
+  /** Hide the inner view switcher. Used when each view is its own analysis. */
+  hideOverviewTabs?: boolean;
 }
 
 const POSITIONS = [
@@ -94,11 +99,31 @@ const NUMERIC_SORT_KEYS: SortKey[] = [
 const OVERVIEW_TABS: Array<{
   id: OverviewTab;
   label: string;
+  description: string;
 }> = [
-  { id: "table", label: "Table" },
-  { id: "scatter", label: "Scatter" },
-  { id: "compare", label: "Compare" },
-  { id: "teams", label: "Team Stats" },
+  {
+    id: "table",
+    label: "Table",
+    description:
+      "Browse production, opportunity, and assessment scores.",
+  },
+  {
+    id: "scatter",
+    label: "Scatter",
+    description:
+      "Explore how opportunity and production relate across players.",
+  },
+  {
+    id: "compare",
+    label: "Compare",
+    description:
+      "Compare value, opportunity, and production for any two players.",
+  },
+  {
+    id: "teams",
+    label: "Team Stats",
+    description: "Review team leaders and depth charts.",
+  },
 ];
 
 function displayValue(value: unknown): string {
@@ -304,6 +329,8 @@ export default function PlayerSnapshot({
   snapshots: _snapshots = [],
   initialDetailTab = "snapshot",
   onPlayerSelect,
+  initialOverviewTab = "table",
+  hideOverviewTabs = false,
 }: Props) {
   const [players, setPlayers] = useState<
     FantasyPlayerSearchHit[]
@@ -315,7 +342,7 @@ export default function PlayerSnapshot({
   >(null);
 
   const [overviewTab, setOverviewTab] =
-    useState<OverviewTab>("table");
+    useState<OverviewTab>(initialOverviewTab);
   const [selectedPlayerIds, setSelectedPlayerIds] =
     useState<string[]>([]);
   const [positionFilter, setPositionFilter] =
@@ -501,7 +528,10 @@ export default function PlayerSnapshot({
 
   const rows = useMemo(() => {
     const filtered = players.filter((player) => {
-      if (selectedPlayerSet.size > 0) {
+      if (
+        overviewTab !== "compare"
+        && selectedPlayerSet.size > 0
+      ) {
         return selectedPlayerSet.has(player.player_id);
       }
 
@@ -585,6 +615,7 @@ export default function PlayerSnapshot({
     return sorted;
   }, [
     players,
+    overviewTab,
     selectedPlayerSet,
     positionFilter,
     teamFilter,
@@ -630,6 +661,7 @@ export default function PlayerSnapshot({
       className="rounded-[10px] border bg-white"
       style={{ borderColor: snapshotTokens.border }}
     >
+      {hideOverviewTabs ? null : (
       <div
         className="border-b px-5 py-4 sm:px-6"
         style={{
@@ -653,9 +685,9 @@ export default function PlayerSnapshot({
           className="mt-1 text-sm"
           style={{ color: snapshotTokens.textSecondary }}
         >
-          Browse the table, explore opportunity vs
-          production, compare players, or dig into team
-          leaders and depth charts.
+          Browse the table, explore opportunity vs production,
+          compare players, or dig into team leaders and depth
+          charts.
         </p>
 
         <div
@@ -689,18 +721,21 @@ export default function PlayerSnapshot({
           })}
         </div>
       </div>
+      )}
 
       {overviewTab !== "teams" && (
       <div
         className="flex flex-wrap items-end gap-3 border-b bg-white px-4 py-3 sm:px-5"
         style={{ borderColor: snapshotTokens.divider }}
       >
-        <SearchablePlayerMultiSelect
-          label="Players"
-          players={players}
-          selectedIds={selectedPlayerIds}
-          onChange={setSelectedPlayerIds}
-        />
+        {overviewTab !== "compare" && (
+          <SearchablePlayerMultiSelect
+            label="Players"
+            players={players}
+            selectedIds={selectedPlayerIds}
+            onChange={setSelectedPlayerIds}
+          />
+        )}
         <MultiSelectFilter
           label="Position"
           options={[...POSITIONS]}
@@ -875,7 +910,7 @@ export default function PlayerSnapshot({
                           className="px-4 py-3"
                           style={{ color: snapshotTokens.textSecondary }}
                         >
-                          {displayValue(player.team)}
+                          <TeamWithLogo abbreviation={player.team} />
                         </td>
                         <td
                           className="px-4 py-3 tabular-nums font-semibold"

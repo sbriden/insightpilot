@@ -5,6 +5,9 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from app.analysis.insights.dfs.forecast_contract import (
+    lineup_decision_score,
+)
 from app.analysis.insights.dfs.correlation import (
     CorrelationContext,
     build_correlation_context,
@@ -333,6 +336,39 @@ def _team_key(player: dict[str, Any]) -> str | None:
     return team or None
 
 
+def _showdown_required_teams(pool: list[dict[str, Any]]) -> set[str]:
+    """Teams that must appear in a finished showdown lineup."""
+
+    return {
+        team
+        for player in pool
+        if (team := _team_key(player)) is not None
+    }
+
+
+def _showdown_missing_teams(
+    selected: list[dict[str, Any]],
+    required_teams: set[str],
+) -> set[str]:
+    present = {
+        team
+        for player in selected
+        if (team := _team_key(player)) is not None
+    }
+    return set(required_teams) - present
+
+
+def _showdown_covers_both_teams(
+    selected: list[dict[str, Any]],
+    required_teams: set[str],
+) -> bool:
+    """True when lineup covers every required team (or pool has <2)."""
+
+    if len(required_teams) < 2:
+        return True
+    return not _showdown_missing_teams(selected, required_teams)
+
+
 def _same_team_qb_conflict(
     selected: list[dict[str, Any]],
     candidate: dict[str, Any],
@@ -440,13 +476,11 @@ def _optimize_classic(
             )
         if not candidates:
             continue
-        candidates.sort(
-            key=lambda item: _candidate_sort_key(
-                item,
-                selected=selected,
-                correlation_context=correlation_context,
-                correlation_weight=correlation_weight,
-            )
+        candidates = _rank_slot_candidates(
+            candidates,
+            selected=selected,
+            correlation_context=correlation_context,
+            correlation_weight=correlation_weight,
         )
         pick = candidates[0]
         salary = int(pick.get("salary") or 0)
@@ -510,6 +544,9 @@ def _optimize_showdown(
 
     When ``required_captain_id`` is set, only that captain is tried
     (portfolio uses this to diversify CPT across lineups).
+
+    Hard rule: finished lineups must include at least one player
+    from each team in the showdown pool.
     """
 
     if len(pool) < 6:
@@ -521,6 +558,7 @@ def _optimize_showdown(
         for player in pool
         if player.get("player_id")
     }
+    required_teams = _showdown_required_teams(pool)
     required = str(required_captain_id or "").strip() or None
     if required:
         forced = by_id.get(required)
@@ -579,12 +617,28 @@ def _optimize_showdown(
         remaining_flex = 5
         for flex_index in range(remaining_flex):
             later = remaining_flex - flex_index - 1
-            reserved = _cheapest_n(
+            missing_teams = _showdown_missing_teams(
+                selected, required_teams
+            )
+            must_cover_now = (
+                bool(missing_teams)
+                and later < len(missing_teams)
+            )
+            # Keep salary available for any still-missing teams that
+            # must be filled in later seats (or remaining after a
+            # forced missing-team pick on this seat).
+            reserve_missing = set(missing_teams)
+            if must_cover_now and reserve_missing:
+                # This seat covers one missing team; reserve the rest.
+                reserve_missing = set(
+                    list(reserve_missing)[1:]
+                )
+            reserved = _showdown_reserved_salary(
                 pool,
                 used_ids=used,
-                count=later,
-                exclude_salary_mult=1.0,
+                later=later,
                 selected=selected,
+                missing_teams=reserve_missing,
             )
             budget = salary_cap - salary_used - reserved
             candidates = [
@@ -613,6 +667,18 @@ def _optimize_showdown(
                         <= float(max_ownership)
                     )
                 ]
+            # Hard both-team rule: last available seats that can still
+            # cover a missing side must come from that side.
+            if must_cover_now:
+                forced = [
+                    player
+                    for player in candidates
+                    if _team_key(player) in missing_teams
+                ]
+                if forced:
+                    candidates = forced
+                else:
+                    break
             # Prefer filling remaining locks into FLEX.
             locked_left = [
                 player
@@ -624,13 +690,11 @@ def _optimize_showdown(
                 candidates = locked_left
             if not candidates:
                 break
-            candidates.sort(
-                key=lambda item: _candidate_sort_key(
-                    item,
-                    selected=selected,
-                    correlation_context=correlation_context,
-                    correlation_weight=correlation_weight,
-                )
+            candidates = _rank_slot_candidates(
+                candidates,
+                selected=selected,
+                correlation_context=correlation_context,
+                correlation_weight=correlation_weight,
             )
             pick = candidates[0]
             pid = str(pick["player_id"])
@@ -646,8 +710,11 @@ def _optimize_showdown(
 
         if len(selected) < 6:
             continue
+        if not _showdown_covers_both_teams(selected, required_teams):
+            continue
 
-        # Soft-upgrade FLEX seats.
+        # Soft-upgrade FLEX seats (cannot drop the last player
+        # from either team).
         selected = _upgrade_lineup(
             selected,
             pool=pool,
@@ -659,11 +726,19 @@ def _optimize_showdown(
             contest_type="showdown",
             correlation_context=correlation_context,
             correlation_weight=correlation_weight,
+            required_teams=required_teams,
         )
+        if not _showdown_covers_both_teams(selected, required_teams):
+            continue
 
-        total_proj = sum(
-            float(item.get("projection") or 0.0)
-            for item in selected
+        decided = lineup_decision_score(selected)
+        total_proj = (
+            decided
+            if decided is not None
+            else sum(
+                float(item.get("projection") or 0.0)
+                for item in selected
+            )
         )
         if total_proj > best_score or not best:
             best = selected
@@ -697,6 +772,55 @@ def _cheapest_n(
     return sum(options[:count]) + max(
         0, count - len(options)
     ) * 2500
+
+
+def _showdown_reserved_salary(
+    pool: list[dict[str, Any]],
+    *,
+    used_ids: set[str],
+    later: int,
+    selected: list[dict[str, Any]],
+    missing_teams: set[str],
+) -> int:
+    """Salary to hold for later FLEX seats, prioritizing missing teams."""
+
+    if later <= 0:
+        return 0
+    temp_used = set(used_ids)
+    reserved = 0
+    seats_left = later
+    for team in sorted(missing_teams):
+        if seats_left <= 0:
+            break
+        options = sorted(
+            (
+                (
+                    int(player.get("salary") or 0),
+                    str(player.get("player_id") or ""),
+                )
+                for player in pool
+                if str(player.get("player_id")) not in temp_used
+                and _team_key(player) == team
+                and not _same_team_qb_conflict(selected, player)
+            )
+        )
+        if options:
+            salary, pid = options[0]
+            reserved += salary
+            if pid:
+                temp_used.add(pid)
+        else:
+            reserved += 2500
+        seats_left -= 1
+    if seats_left > 0:
+        reserved += _cheapest_n(
+            pool,
+            used_ids=temp_used,
+            count=seats_left,
+            exclude_salary_mult=1.0,
+            selected=selected,
+        )
+    return reserved
 
 
 def _slot_candidates(
@@ -751,6 +875,9 @@ def _player_score(
     if max_ownership is not None and ownership > float(max_ownership):
         return -1e9
 
+    expected = player.get("expected_points")
+    if expected is not None:
+        projection = 0.65 * projection + 0.35 * float(expected)
     proj_n = min(100.0, projection * 3.5)
     floor_n = min(100.0, floor * 4.0)
     ceil_n = min(100.0, ceiling * 2.8)
@@ -763,7 +890,7 @@ def _player_score(
     # the weight stays visible in metadata totals.
     corr_n = 0.0
 
-    return (
+    score = (
         weights.get("projection", 0) * proj_n
         + weights.get("floor", 0) * floor_n
         + weights.get("ceiling", 0) * ceil_n
@@ -771,6 +898,19 @@ def _player_score(
         + weights.get("ownership", 0) * own_n
         + weights.get("correlation", 0) * corr_n
     )
+    # A path to a strong score is salary-blind. Points per dollar
+    # stays in the value term and does not decide inclusion alone.
+    path = player.get("strong_outcome_probability")
+    if path is None:
+        path = player.get("probability_20_plus")
+    if path is not None:
+        score += 0.18 * min(100.0, float(path) * 100.0)
+    forecast = player.get("forecast") or {}
+    if forecast.get("contest_type") == "showdown":
+        captain_path = forecast.get("captain_strong_outcome_probability")
+        if captain_path is not None:
+            score += 0.08 * min(100.0, float(captain_path) * 100.0)
+    return score
 
 
 def _effective_opt_score(
@@ -808,6 +948,64 @@ def _candidate_sort_key(
         -float(player.get("projection") or 0.0),
         int(player.get("salary") or 0),
     )
+
+
+# Correlation re-rank shortlist size. Full-pool correlation sorts on
+# classic main slates were the portfolio runtime bottleneck.
+_CORR_SHORTLIST = 28
+
+
+def _rank_slot_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    selected: list[dict[str, Any]],
+    correlation_context: CorrelationContext | None,
+    correlation_weight: float,
+) -> list[dict[str, Any]]:
+    """
+    Rank slot options: base score first, correlation on a shortlist.
+
+    Keeps QB↔WR stacks / DST fades active without scoring every
+    remaining pool player against the lineup.
+    """
+
+    if not candidates:
+        return candidates
+    if (
+        correlation_context is None
+        or correlation_weight <= 0
+        or not selected
+        or len(candidates) <= _CORR_SHORTLIST
+    ):
+        return sorted(
+            candidates,
+            key=lambda item: _candidate_sort_key(
+                item,
+                selected=selected,
+                correlation_context=correlation_context,
+                correlation_weight=correlation_weight,
+            ),
+        )
+
+    by_base = sorted(
+        candidates,
+        key=lambda item: (
+            -float(item.get("_opt_score") or 0.0),
+            -float(item.get("projection") or 0.0),
+            int(item.get("salary") or 0),
+        ),
+    )
+    head = by_base[:_CORR_SHORTLIST]
+    tail = by_base[_CORR_SHORTLIST:]
+    head.sort(
+        key=lambda item: _candidate_sort_key(
+            item,
+            selected=selected,
+            correlation_context=correlation_context,
+            correlation_weight=correlation_weight,
+        )
+    )
+    return head + tail
 
 
 def _reserve_salary_for_slots(
@@ -927,6 +1125,17 @@ def _lineup_player(
     value = None
     if salary > 0:
         value = round(projection / (salary / 1000.0), 2)
+    forecast = player.get("forecast")
+    if isinstance(forecast, dict) and mult != 1.0:
+        forecast = dict(forecast)
+        for key in (
+            "expected_points",
+            "median_projection",
+            "floor_projection",
+            "ceiling_projection",
+        ):
+            if forecast.get(key) is not None:
+                forecast[key] = round(float(forecast[key]) * mult, 2)
     return {
         "slot": slot,
         "player_id": player.get("player_id"),
@@ -939,8 +1148,36 @@ def _lineup_player(
         "base_salary": base_salary,
         "projection": projection,
         "base_projection": round(base_proj, 1),
+        "raw_projection": player.get("raw_projection"),
         "floor": floor,
         "ceiling": ceiling,
+        "forecast": forecast,
+        "expected_points": (
+            None
+            if (forecast or {}).get("expected_points") is None
+            else forecast.get("expected_points")
+        ),
+        "median_projection": (
+            None
+            if (forecast or {}).get("median_projection") is None
+            else forecast.get("median_projection")
+        ),
+        "floor_projection": (
+            None
+            if (forecast or {}).get("floor_projection") is None
+            else forecast.get("floor_projection")
+        ),
+        "ceiling_projection": (
+            None
+            if (forecast or {}).get("ceiling_projection") is None
+            else forecast.get("ceiling_projection")
+        ),
+        "strong_outcome_probability": player.get(
+            "strong_outcome_probability"
+        ),
+        "probability_20_plus": player.get("probability_20_plus"),
+        "role_change_signal": player.get("role_change_signal"),
+        "projection_version": player.get("projection_version"),
         "projected_ownership": player.get("projected_ownership"),
         "value": value,
         "matchup_label": player.get("matchup_label"),
@@ -964,6 +1201,7 @@ def _upgrade_lineup(
     contest_type: str = "classic",
     correlation_context: CorrelationContext | None = None,
     correlation_weight: float = 0.0,
+    required_teams: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     result = list(selected)
     by_id = {
@@ -972,6 +1210,7 @@ def _upgrade_lineup(
         if player.get("player_id")
     }
     used = {str(item["player_id"]) for item in result}
+    teams_required = set(required_teams or ())
 
     for index, current in enumerate(list(result)):
         player_id = str(current.get("player_id") or "")
@@ -1005,6 +1244,7 @@ def _upgrade_lineup(
                 contest_type=contest_type,
             ),
         }
+        eligible: list[dict[str, Any]] = []
         for candidate in pool:
             cid = str(candidate.get("player_id") or "")
             if not cid or cid in used or cid in excluded:
@@ -1028,6 +1268,29 @@ def _upgrade_lineup(
                 > float(max_ownership)
             ):
                 continue
+            if (
+                contest_type == "showdown"
+                and teams_required
+                and not _showdown_covers_both_teams(
+                    others + [candidate],
+                    teams_required,
+                )
+            ):
+                continue
+            eligible.append(candidate)
+        if (
+            correlation_weight > 0
+            and len(eligible) > _CORR_SHORTLIST
+        ):
+            eligible = sorted(
+                eligible,
+                key=lambda item: (
+                    -float(item.get("_opt_score") or 0.0),
+                    -float(item.get("projection") or 0.0),
+                ),
+            )[: max(_CORR_SHORTLIST, 24)]
+        for candidate in eligible:
+            cid = str(candidate.get("player_id") or "")
             cand_score = _effective_opt_score(
                 candidate,
                 selected=others,

@@ -197,19 +197,19 @@ function OwnershipRangeSlider({
           width: 0.7rem;
           height: 0.7rem;
           border-radius: 9999px;
-          background: #1677FF;
-          border: 1.5px solid #FFFFFF;
-          box-shadow: 0 0 0 1px #DCE3EC;
+          background: var(--analysis-blue, #1677FF);
+          border: 1.5px solid var(--analysis-white, #FFFFFF);
+          box-shadow: 0 0 0 1px var(--analysis-border, #DCE3EC);
           cursor: pointer;
         }
         .ownership-range-thumb::-moz-range-thumb {
           pointer-events: auto;
           width: 0.7rem;
           height: 0.7rem;
-          border: 1.5px solid #FFFFFF;
+          border: 1.5px solid var(--analysis-white, #FFFFFF);
           border-radius: 9999px;
-          background: #1677FF;
-          box-shadow: 0 0 0 1px #DCE3EC;
+          background: var(--analysis-blue, #1677FF);
+          box-shadow: 0 0 0 1px var(--analysis-border, #DCE3EC);
           cursor: pointer;
         }
         .ownership-range-thumb::-webkit-slider-runnable-track {

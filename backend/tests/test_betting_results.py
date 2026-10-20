@@ -6,8 +6,10 @@ import unittest
 
 from app.analysis.insights.betting.results import (
     apply_calibration_to_scores,
+    build_bet_tape_snapshot,
     build_performance_trend,
     calibration_feedback_from_results,
+    filter_learning_rows,
     settle_event_markets,
     summarize_model_results,
 )
@@ -88,8 +90,35 @@ class BettingModelResultsTests(unittest.TestCase):
         self.assertEqual(by_id["g1:spread"]["result"], "won")
         self.assertEqual(by_id["g1:total"]["result"], "won")
         self.assertEqual(by_id["g1:moneyline"]["result"], "won")
+        self.assertEqual(by_id["g1:moneyline"]["bet_price"], -220)
+        self.assertEqual(by_id["g1:moneyline"]["closing_price"], -220)
         self.assertEqual(by_id["g1:total"]["actual_total"], 41)
         self.assertEqual(by_id["g1:spread"]["total_error"], 0.0)
+
+    def test_moneyline_prices_follow_the_selected_side(self):
+        event = _event(
+            opening_moneyline=-180,
+            current_moneyline=-210,
+        )
+        markets = _markets()
+        markets[2] = {
+            **markets[2],
+            "selection": "ATL",
+            "price": 175,
+            "opening_price": 160,
+        }
+        settled = settle_event_markets(event, markets)
+        moneyline = next(
+            row
+            for row in settled
+            if row["market_type"] == "moneyline"
+        )
+        self.assertGreater(moneyline["bet_price"], 0)
+        self.assertGreater(moneyline["closing_price"], 0)
+        self.assertNotEqual(
+            moneyline["bet_price"],
+            moneyline["closing_price"],
+        )
 
     def test_summarize_and_feedback(self):
         settled = settle_event_markets(_event(), _markets())
@@ -173,6 +202,56 @@ class BettingModelResultsTests(unittest.TestCase):
             settled = _sync_event_results(event, markets)
         self.assertEqual(settled, [])
         upsert.assert_not_called()
+
+    def test_bet_tape_prefers_opening_when_no_pregame_snapshot(self):
+        event = _event(
+            market_spread=-3.5,
+            market_total=45.5,
+            opening_spread=-2.0,
+            opening_total=47.0,
+            current_spread=-3.5,
+            current_total=45.5,
+        )
+        snap = build_bet_tape_snapshot(event, prefer_opening=True)
+        self.assertEqual(snap["market_spread"], -2.0)
+        self.assertEqual(snap["market_total"], 47.0)
+        self.assertEqual(snap["tape_source"], "opening_fallback")
+
+        settled = settle_event_markets(
+            event, _markets(), snapshot=snap
+        )
+        by_id = {row["market_id"]: row for row in settled}
+        self.assertEqual(by_id["g1:spread"]["bet_line"], -2.0)
+        self.assertEqual(by_id["g1:spread"]["closing_line"], -3.5)
+        self.assertEqual(by_id["g1:spread"]["clv"], 1.5)
+        self.assertEqual(by_id["g1:total"]["bet_line"], 47.0)
+
+    def test_learning_cohort_prefers_strong_and_lean(self):
+        rows = []
+        for index in range(20):
+            rows.append(
+                {
+                    "market_id": f"a{index}",
+                    "bet_status": "strong_bet" if index < 10 else "lean",
+                    "result": "won",
+                }
+            )
+            rows.append(
+                {
+                    "market_id": f"p{index}",
+                    "bet_status": "pass",
+                    "result": "lost",
+                }
+            )
+        cohort, label = filter_learning_rows(rows)
+        self.assertEqual(label, "strong_lean")
+        self.assertEqual(len(cohort), 20)
+        self.assertTrue(
+            all(
+                row["bet_status"] in {"strong_bet", "lean"}
+                for row in cohort
+            )
+        )
 
 
 if __name__ == "__main__":

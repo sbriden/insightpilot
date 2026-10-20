@@ -112,6 +112,22 @@ def _sql_null_if_missing(value: Any) -> Any:
     return value
 
 
+def _status_for_identity(row_map: dict[str, Any]) -> str | None:
+    """
+    Current-roster status wins. Historical player files often
+    still say ACT after a player has left the league, so Active
+    is kept only when this season's roster includes them.
+    """
+
+    status = _normalize_status(row_map.get("status_raw"))
+    on_current_roster = not _is_missing(
+        row_map.get("roster_status")
+    )
+    if status == "Active" and not on_current_roster:
+        return "Retired"
+    return status
+
+
 def _normalize_status(value: Any) -> str | None:
     raw = _normalize_id(value)
     if raw is None:
@@ -476,9 +492,7 @@ def build_dim_player(
                     team_code,
                     team_id_lookup=team_lookup,
                 ),
-                "status": _normalize_status(
-                    row_map.get("status_raw")
-                ),
+                "status": _status_for_identity(row_map),
                 "source_ids": source_ids,
                 "resolution_key": resolution_key,
             }

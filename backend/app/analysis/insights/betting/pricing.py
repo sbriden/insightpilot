@@ -91,30 +91,187 @@ def total_to_over_probability(
     return 1.0 / (1.0 + math.exp(-edge / max(scale, 0.1)))
 
 
-def expected_value(
-    model_probability: float | None,
-    american_odds: float | int | None,
+def win_probability_from_spread(
+    model_spread: float | None,
+    *,
+    scale: float = 7.0,
 ) -> float | None:
     """
-    Expected value as a decimal fraction of stake.
+    Home win probability from projected home-team spread
+    (negative = home favored), logistic benchmark.
+    """
 
-    EV = model_p * profit_per_unit - (1 - model_p)
+    if model_spread is None:
+        return None
+    return 1.0 / (
+        1.0 + math.exp(float(model_spread) / max(scale, 0.1))
+    )
+
+
+def cover_probability_from_engine(
+    *,
+    engine: str = "logistic",
+    model_spread: float | None = None,
+    market_spread: float | None = None,
+    simulation: dict[str, Any] | None = None,
+    scale: float = 7.5,
+) -> float | None:
+    """
+    Home-cover probability. Prefers simulation when requested
+    and available; otherwise logistic fallback.
+    """
+
+    label = str(engine or "logistic").strip().lower()
+    if label in {"simulation", "sim", "bivariate", "score_distribution"}:
+        from app.analysis.insights.betting.score_distribution import (
+            probabilities_from_simulation,
+        )
+
+        probs = probabilities_from_simulation(
+            simulation,
+            market_spread=market_spread,
+        )
+        if probs.get("home_cover") is not None:
+            return float(probs["home_cover"])
+    return spread_to_cover_probability(
+        model_spread,
+        market_spread,
+        scale=scale,
+    )
+
+
+def over_probability_from_engine(
+    *,
+    engine: str = "logistic",
+    model_total: float | None = None,
+    market_total: float | None = None,
+    simulation: dict[str, Any] | None = None,
+    scale: float = 6.5,
+) -> float | None:
+    label = str(engine or "logistic").strip().lower()
+    if label in {"simulation", "sim", "bivariate", "score_distribution"}:
+        from app.analysis.insights.betting.score_distribution import (
+            probabilities_from_simulation,
+        )
+
+        probs = probabilities_from_simulation(
+            simulation,
+            market_total=market_total,
+        )
+        if probs.get("over") is not None:
+            return float(probs["over"])
+    return total_to_over_probability(
+        model_total,
+        market_total,
+        scale=scale,
+    )
+
+
+def win_probability_from_engine(
+    *,
+    engine: str = "logistic",
+    model_spread: float | None = None,
+    simulation: dict[str, Any] | None = None,
+    scale: float = 7.0,
+) -> float | None:
+    """Home win probability."""
+
+    label = str(engine or "logistic").strip().lower()
+    if label in {"simulation", "sim", "bivariate", "score_distribution"}:
+        from app.analysis.insights.betting.score_distribution import (
+            probabilities_from_simulation,
+        )
+
+        probs = probabilities_from_simulation(simulation)
+        if probs.get("home_win") is not None:
+            return float(probs["home_win"])
+    return win_probability_from_spread(model_spread, scale=scale)
+
+
+def american_profit_per_unit(
+    american_odds: float | int | None,
+) -> float | None:
+    """Net profit on a winning one-unit stake (b in EV = p*b − (1−p))."""
+
+    if american_odds is None:
+        return None
+    try:
+        odds = float(american_odds)
+    except (TypeError, ValueError):
+        return None
+    if odds == 0:
+        return None
+    if odds > 0:
+        return odds / 100.0
+    return 100.0 / abs(odds)
+
+
+def expected_value_american(
+    model_probability: float | None,
+    american_odds: float | int | None,
+    *,
+    p_push: float | None = 0.0,
+) -> float | None:
+    """
+    Expected value per unit stake at American odds.
+
+    With push probability ``p_push`` (stake refunded):
+      EV = p_win * b + p_push * 0 − p_lose * 1
+      p_lose = 1 − p_win − p_push
     """
 
     if model_probability is None or american_odds is None:
         return None
     try:
-        p = float(model_probability)
-        odds = float(american_odds)
+        p_win = float(model_probability)
+        push = float(p_push or 0.0)
     except (TypeError, ValueError):
         return None
-    if p <= 0 or p >= 1:
+    if p_win < 0 or p_win > 1:
         return None
-    if odds > 0:
-        profit = odds / 100.0
-    else:
-        profit = 100.0 / abs(odds)
-    return (p * profit) - (1.0 - p)
+    push = max(0.0, min(1.0 - p_win, push))
+    p_lose = 1.0 - p_win - push
+    if p_lose < -1e-9:
+        return None
+    p_lose = max(0.0, p_lose)
+    profit = american_profit_per_unit(american_odds)
+    if profit is None:
+        return None
+    # Binary path still requires a non-trivial win probability.
+    if p_win <= 0 and push <= 0:
+        return None
+    if p_win >= 1.0 and push <= 0:
+        return profit
+    return (p_win * profit) - p_lose
+
+
+def expected_value(
+    model_probability: float | None,
+    american_odds: float | int | None,
+) -> float | None:
+    """
+    Expected value as a decimal fraction of stake (no push).
+
+    EV = model_p * profit_per_unit - (1 - model_p)
+
+    Prefer ``expected_value_american(..., p_push=...)`` when push
+    probability is available.
+    """
+
+    if model_probability is None:
+        return None
+    try:
+        p = float(model_probability)
+    except (TypeError, ValueError):
+        return None
+    # Preserve historical binary contract: exclusive (0, 1).
+    if p <= 0.0 or p >= 1.0:
+        return None
+    return expected_value_american(
+        model_probability,
+        american_odds,
+        p_push=0.0,
+    )
 
 
 def confidence_from_edge(

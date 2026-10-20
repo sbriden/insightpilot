@@ -9,6 +9,7 @@ import pandas as pd
 from app.analysis.insights.team_stats import (
     _group_depth_chart,
     _rank_leaders,
+    build_team_total_comparisons,
     build_team_totals,
     team_logo_url,
 )
@@ -209,6 +210,119 @@ class TeamStatsTests(unittest.TestCase):
     def test_build_team_totals_empty(self):
         self.assertIsNone(build_team_totals(None, []))
         self.assertIsNone(build_team_totals({"games": 0}, []))
+
+    def test_build_team_total_comparisons_ranks_and_tiers(self):
+        strong = build_team_totals(
+            {
+                "games": 2,
+                "points": 60,
+                "yards": 800,
+                "offensive_plays": 120,
+                "pass_attempts": 70,
+                "rush_attempts": 50,
+                "offensive_epa": 20,
+                "pass_epa": 12,
+                "rush_epa": 8,
+                "red_zone_trips": 8,
+                "red_zone_tds": 6,
+                "turnovers": 1,
+                "wins": 2,
+                "losses": 0,
+                "ties": 0,
+                "points_allowed": 20,
+                "yards_allowed": 400,
+                "pass_yards_allowed": 250,
+                "rush_yards_allowed": 150,
+                "pass_epa_allowed": -4,
+                "rush_epa_allowed": -2,
+                "sack_rate": 0.12,
+                "pressure_rate": 0.4,
+                "defense_games": 2,
+            },
+            [],
+        )
+        weak = build_team_totals(
+            {
+                "games": 2,
+                "points": 20,
+                "yards": 400,
+                "offensive_plays": 120,
+                "pass_attempts": 70,
+                "rush_attempts": 50,
+                "offensive_epa": -10,
+                "pass_epa": -6,
+                "rush_epa": -4,
+                "red_zone_trips": 4,
+                "red_zone_tds": 1,
+                "turnovers": 5,
+                "wins": 0,
+                "losses": 2,
+                "ties": 0,
+                "points_allowed": 60,
+                "yards_allowed": 900,
+                "pass_yards_allowed": 600,
+                "rush_yards_allowed": 300,
+                "pass_epa_allowed": 8,
+                "rush_epa_allowed": 4,
+                "sack_rate": 0.03,
+                "pressure_rate": 0.15,
+                "defense_games": 2,
+            },
+            [],
+        )
+        mid = build_team_totals(
+            {
+                "games": 2,
+                "points": 40,
+                "yards": 600,
+                "offensive_plays": 120,
+                "pass_attempts": 70,
+                "rush_attempts": 50,
+                "offensive_epa": 0,
+                "pass_epa": 0,
+                "rush_epa": 0,
+                "red_zone_trips": 6,
+                "red_zone_tds": 3,
+                "turnovers": 3,
+                "wins": 1,
+                "losses": 1,
+                "ties": 0,
+                "points_allowed": 40,
+                "yards_allowed": 650,
+                "pass_yards_allowed": 400,
+                "rush_yards_allowed": 250,
+                "pass_epa_allowed": 1,
+                "rush_epa_allowed": 0,
+                "sack_rate": 0.07,
+                "pressure_rate": 0.25,
+                "defense_games": 2,
+            },
+            [],
+        )
+        league = {
+            "strong": strong,
+            "mid": mid,
+            "weak": weak,
+        }
+        strong_cmp = build_team_total_comparisons(strong, league)
+        weak_cmp = build_team_total_comparisons(weak, league)
+
+        self.assertEqual(strong_cmp["offense.points_per_game"]["rank"], 1)
+        self.assertEqual(strong_cmp["offense.points_per_game"]["rank_of"], 3)
+        self.assertEqual(strong_cmp["offense.points_per_game"]["tier"], "good")
+        self.assertEqual(
+            strong_cmp["defense.points_allowed_per_game"]["rank"],
+            1,
+        )
+        self.assertEqual(
+            weak_cmp["defense.points_allowed_per_game"]["rank"],
+            3,
+        )
+        self.assertEqual(
+            weak_cmp["offense.points_per_game"]["tier"],
+            "poor",
+        )
+        self.assertIn("league_avg", strong_cmp["offense.points_per_game"])
 
 
 if __name__ == "__main__":

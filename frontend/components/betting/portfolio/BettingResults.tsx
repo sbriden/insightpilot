@@ -55,6 +55,32 @@ function formatSettledLine(
   return String(line);
 }
 
+function formatSettledQuote(
+  row: {
+    market_type?: string | null;
+    line?: number | null;
+    price?: number | null;
+    bet_line?: number | null;
+    closing_line?: number | null;
+    bet_price?: number | null;
+    closing_price?: number | null;
+  },
+  kind: "bet" | "close",
+): string {
+  if (row.market_type === "moneyline") {
+    const price =
+      kind === "bet"
+        ? (row.bet_price ?? row.price)
+        : row.closing_price;
+    return formatAmerican(price);
+  }
+  const line =
+    kind === "bet"
+      ? (row.bet_line ?? row.line)
+      : row.closing_line;
+  return formatSettledLine(line, row.market_type);
+}
+
 export default function BettingResults({
   slate,
   season,
@@ -1231,7 +1257,7 @@ function SettledMarketsTable({
         <table className="min-w-full text-left text-sm">
           <thead
             className="sticky top-0 z-[1]"
-            style={{ background: "#fff" }}
+            style={{ background: snapshotTokens.white }}
           >
             <tr
               className="text-xs uppercase tracking-[0.12em]"
@@ -1285,10 +1311,10 @@ function SettledMarketsTable({
                   </span>
                 </td>
                 <td className="px-3 py-2.5 text-right tabular-nums">
-                  {formatSettledLine(row.bet_line ?? row.line, row.market_type)}
+                  {formatSettledQuote(row, "bet")}
                 </td>
                 <td className="px-3 py-2.5 text-right tabular-nums">
-                  {formatSettledLine(row.closing_line, row.market_type)}
+                  {formatSettledQuote(row, "close")}
                 </td>
                 <td
                   className="px-3 py-2.5 text-right tabular-nums font-medium"
@@ -1431,7 +1457,7 @@ function PortfolioResultsPanel({
           <table className="min-w-full text-left text-sm">
             <thead
               className="sticky top-0 z-[1]"
-              style={{ background: "#fff" }}
+              style={{ background: snapshotTokens.white }}
             >
               <tr
                 className="text-xs uppercase tracking-[0.12em]"

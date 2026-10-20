@@ -10,8 +10,11 @@ import ApplicationLogo, {
 } from "@/components/applications/ApplicationLogo";
 import {
   ANALYSIS_REGISTRY,
+  expandLegacyOverviewKeys,
   getRegistryAnalysis,
   groupRegistryByProduct,
+  LEGACY_PLAYER_OVERVIEW_KEY,
+  PLAYER_OVERVIEW_ANALYSIS_KEYS,
 } from "@/lib/analysisRegistry";
 import {
   createAnalyticalApplication,
@@ -50,9 +53,11 @@ export default function CreateApplicationWizard({
   const [logoError, setLogoError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>(() => {
     if (existing?.analyses?.length) {
-      return [...existing.analyses]
-        .sort((a, b) => a.display_order - b.display_order)
-        .map((row) => row.analysis_key);
+      return expandLegacyOverviewKeys(
+        [...existing.analyses]
+          .sort((a, b) => a.display_order - b.display_order)
+          .map((row) => row.analysis_key)
+      );
     }
     return [];
   });
@@ -60,8 +65,14 @@ export default function CreateApplicationWizard({
     () => {
       const map: Record<string, string> = {};
       for (const row of existing?.analyses || []) {
-        map[row.analysis_key] =
-          row.navigation_group || defaultGroupFor(row.analysis_key);
+        const keys =
+          row.analysis_key === LEGACY_PLAYER_OVERVIEW_KEY
+            ? PLAYER_OVERVIEW_ANALYSIS_KEYS
+            : [row.analysis_key];
+        for (const key of keys) {
+          map[key] =
+            row.navigation_group || defaultGroupFor(key);
+        }
       }
       return map;
     }

@@ -5,6 +5,8 @@ import type { DfsPortfolioCorrelationSummary } from "@/services/api";
 
 interface Props {
   correlation?: DfsPortfolioCorrelationSummary | null;
+  /** When true, omit outer card chrome (parent tabs own it). */
+  embedded?: boolean;
 }
 
 function PairList({
@@ -41,15 +43,21 @@ function PairList({
         {rows.map((row) => (
           <li
             key={`${row.player_id}-${row.correlated_player_id}`}
-            className="flex items-baseline justify-between gap-3 text-sm"
+            className="flex items-start justify-between gap-3 text-sm"
             style={{ color: snapshotTokens.textPrimary }}
           >
-            <span>
+            <span className="min-w-0">
               <span style={{ color: accent }}>
                 {row.correlation_score > 0 ? "+" : ""}
                 {row.correlation_score.toFixed(2)}
               </span>{" "}
               {row.player_name} + {row.correlated_player_name}
+              <span
+                className="mt-0.5 block text-xs"
+                style={{ color: snapshotTokens.textMuted }}
+              >
+                {formatLineupIndexes(row.lineup_indexes)}
+              </span>
             </span>
             <span
               className="shrink-0 tabular-nums"
@@ -64,13 +72,84 @@ function PairList({
   );
 }
 
-export default function PortfolioCorrelation({ correlation }: Props) {
+function formatLineupIndexes(
+  indexes?: number[] | null
+): string {
+  const values = (indexes ?? [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  if (values.length === 0) {
+    return "Regenerate to see lineup numbers";
+  }
+  const shown = values.slice(0, 8);
+  const label = shown.join(", ");
+  const remaining = values.length - shown.length;
+  if (values.length === 1) {
+    return `Lineup ${label}`;
+  }
+  if (remaining > 0) {
+    return `Lineups ${label} +${remaining} more`;
+  }
+  return `Lineups ${label}`;
+}
+
+export default function PortfolioCorrelation({
+  correlation,
+  embedded = false,
+}: Props) {
+  const positive = correlation?.positive_correlation_exposure ?? [];
+  const negative = correlation?.negative_correlation_exposure ?? [];
+
+  const body = (
+    <>
+      {!correlation ? (
+        <p
+          className="text-sm"
+          style={{ color: snapshotTokens.textSecondary }}
+        >
+          Generate a portfolio to see correlation exposure.
+        </p>
+      ) : (
+        <>
+          {correlation.narrative && (
+            <p
+              className="text-sm"
+              style={{ color: snapshotTokens.textSecondary }}
+            >
+              {correlation.narrative}
+            </p>
+          )}
+          <div
+            className={
+              correlation.narrative
+                ? "mt-3 grid gap-4 lg:grid-cols-2"
+                : "grid gap-4 lg:grid-cols-2"
+            }
+          >
+            <PairList
+              title="Positive Correlation Exposure"
+              rows={positive}
+              tone="positive"
+            />
+            <PairList
+              title="Negative Correlation Exposure"
+              rows={negative}
+              tone="negative"
+            />
+          </div>
+        </>
+      )}
+    </>
+  );
+
+  if (embedded) {
+    return <div>{body}</div>;
+  }
+
   if (!correlation) {
     return null;
   }
-
-  const positive = correlation.positive_correlation_exposure ?? [];
-  const negative = correlation.negative_correlation_exposure ?? [];
 
   return (
     <section
@@ -83,26 +162,7 @@ export default function PortfolioCorrelation({ correlation }: Props) {
       >
         Correlation Exposure
       </h3>
-      {correlation.narrative && (
-        <p
-          className="mt-2 text-sm"
-          style={{ color: snapshotTokens.textSecondary }}
-        >
-          {correlation.narrative}
-        </p>
-      )}
-      <div className="mt-3 grid gap-4 lg:grid-cols-2">
-        <PairList
-          title="Positive Correlation Exposure"
-          rows={positive}
-          tone="positive"
-        />
-        <PairList
-          title="Negative Correlation Exposure"
-          rows={negative}
-          tone="negative"
-        />
-      </div>
+      <div className="mt-2">{body}</div>
     </section>
   );
 }

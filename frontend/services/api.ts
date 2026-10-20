@@ -61,6 +61,69 @@ async function handleResponse<T>(
 }
 
 
+function isRetryableHttpStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+
+async function readErrorMessage(response: Response): Promise<string> {
+  let message = "An unexpected error occurred.";
+  try {
+    const error = await response.json();
+    message = error.detail ?? error.message ?? message;
+  } catch {
+    // Keep the default message when the body is not JSON.
+  }
+  return message;
+}
+
+
+async function fetchWithRetry(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  options: {
+    attempts?: number;
+    baseDelayMs?: number;
+  } = {}
+): Promise<Response> {
+  const attempts = options.attempts ?? 3;
+  const baseDelayMs = options.baseDelayMs ?? 750;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await fetch(input, init);
+      if (
+        !response.ok
+        && isRetryableHttpStatus(response.status)
+        && attempt < attempts
+      ) {
+        await sleep(baseDelayMs * attempt);
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts) {
+        throw error;
+      }
+      await sleep(baseDelayMs * attempt);
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Request failed after retries.");
+}
+
+
 /* --------------------------------------------------------------------------
  * Upload Dataset
  *
@@ -461,12 +524,23 @@ export interface FantasyTeamEfficiency {
 }
 
 
+export interface FantasyTeamStatComparison {
+  league_avg?: number | null;
+  rank?: number | null;
+  rank_of?: number | null;
+  percentile?: number | null;
+  tier?: "good" | "average" | "poor" | string | null;
+  higher_is_better?: boolean | null;
+}
+
+
 export interface FantasyTeamTotals {
   games?: number | null;
   record?: FantasyTeamRecord | null;
   offense?: FantasyTeamOffense | null;
   defense?: FantasyTeamDefense | null;
   efficiency?: FantasyTeamEfficiency | null;
+  comparisons?: Record<string, FantasyTeamStatComparison> | null;
 }
 
 
@@ -1219,6 +1293,19 @@ export interface DfsSignal {
   body?: string;
 }
 
+export interface DfsProjectionComponent {
+  key: string;
+  label: string;
+  opportunities?: number | null;
+  opportunity_label?: string | null;
+  rate?: number | null;
+  rate_label?: string | null;
+  stat?: number | null;
+  stat_label?: string | null;
+  points?: number | null;
+  scoring_rule?: string | null;
+}
+
 export interface DfsPlayer {
   dfs_player_id: string;
   player_id: string;
@@ -1241,6 +1328,61 @@ export interface DfsPlayer {
   historical_games?: number | null;
   historical_baseline?: number | null;
   matchup_adjustment_factor?: number | null;
+  adjustment_source?: "game_forecast" | "matchup_fallback" | string | null;
+  environment_counted_once?: boolean | null;
+  matchup_multiplier_applied?: boolean | null;
+  simulation?: {
+    source?: string | null;
+    n_sims?: number | null;
+    floor_percentile?: number | null;
+    ceiling_percentile?: number | null;
+    median?: number | null;
+    floor?: number | null;
+    ceiling?: number | null;
+    upside_probability?: number | null;
+    bust_probability?: number | null;
+    upside_threshold?: number | null;
+    bust_threshold?: number | null;
+    note?: string | null;
+  } | null;
+  forecast?: {
+    projection_version?: string | null;
+    projection_source?: string | null;
+    contest_type?: string | null;
+    expected_points?: number | null;
+    median_projection?: number | null;
+    floor_projection?: number | null;
+    ceiling_projection?: number | null;
+    probability_10_plus?: number | null;
+    probability_20_plus?: number | null;
+    strong_outcome_threshold?: number | null;
+    strong_outcome_probability?: number | null;
+    captain_strong_outcome_probability?: number | null;
+    projected_opportunity?: {
+      position?: string | null;
+      components?: Record<string, number> | null;
+    } | null;
+    role_change_signal?: number | null;
+    projection_uncertainty?: number | null;
+  } | null;
+  expected_points?: number | null;
+  median_projection?: number | null;
+  floor_projection?: number | null;
+  ceiling_projection?: number | null;
+  probability_10_plus?: number | null;
+  probability_20_plus?: number | null;
+  strong_outcome_probability?: number | null;
+  role_change_signal?: number | null;
+  projection_uncertainty?: number | null;
+  projection_version?: string | null;
+  projection_drivers?: string[] | null;
+  projection_environment_reason?: string | null;
+  scoring_components?: {
+    production_prior?: number | null;
+    stats?: Record<string, number> | null;
+    points?: Record<string, number> | null;
+    components?: DfsProjectionComponent[] | null;
+  } | null;
   floor?: number | null;
   ceiling?: number | null;
   projected_ownership?: number | null;
@@ -1333,6 +1475,8 @@ export interface DfsPortfolioCorrelationExposure {
   correlation_score: number;
   correlation_reason?: string | null;
   lineups: number;
+  /** 1-based portfolio lineup numbers containing this pair. */
+  lineup_indexes?: number[];
   exposure: number;
   exposure_pct: number;
 }
@@ -1522,6 +1666,7 @@ export interface DfsPortfolioResult {
     player_id: string;
     name?: string | null;
     position?: string | null;
+    team?: string | null;
     exposure: number;
     exposure_pct: number;
     lineups: number;
@@ -1530,6 +1675,7 @@ export interface DfsPortfolioResult {
     player_id: string;
     name?: string | null;
     position?: string | null;
+    team?: string | null;
     exposure: number;
     exposure_pct: number;
     lineups: number;
@@ -1818,28 +1964,30 @@ export async function refreshNflverseData(
         ? undefined
         : modeOrScope;
 
-  const response =
-    await fetch(
-      `${API_BASE_URL}/api/sources/nflverse/refresh`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          mode,
-          scope: modeOrScope === "seasons" ? "seasons" : modeOrScope,
-          seasons,
-          dataset_ids: datasetIds,
-          layers,
-          persist,
-        }),
-      }
-    );
-
-  return handleResponse<NflverseRefreshResult>(
-    response
+  const response = await fetchWithRetry(
+    `${API_BASE_URL}/api/sources/nflverse/refresh`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        mode,
+        scope: modeOrScope === "seasons" ? "seasons" : modeOrScope,
+        seasons,
+        dataset_ids: datasetIds,
+        layers,
+        persist,
+      }),
+    },
+    { attempts: 3, baseDelayMs: 750 }
   );
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  return response.json();
 
 }
 
@@ -2791,6 +2939,35 @@ export interface BettingInjuryNote {
   is_expected_to_play?: boolean | null;
 }
 
+export interface GameForecastTeam {
+  team?: string | null;
+  opponent?: string | null;
+  side?: string | null;
+  projected_points?: number | null;
+  expected_plays?: number | null;
+  expected_drives?: number | null;
+  expected_scoring_opportunities?: number | null;
+  expected_pass_attempts?: number | null;
+  expected_rush_attempts?: number | null;
+  expected_pass_tds?: number | null;
+  expected_rush_tds?: number | null;
+  expected_field_goals?: number | null;
+  expected_turnovers?: number | null;
+}
+
+export interface GameForecast {
+  source?: string | null;
+  model_version?: string | null;
+  timestamp?: string | null;
+  projected_home_points?: number | null;
+  projected_away_points?: number | null;
+  projected_total?: number | null;
+  projected_margin?: number | null;
+  teams?: GameForecastTeam[];
+  drivers?: string[];
+  environment_embedded?: boolean;
+}
+
 export interface BettingGameScript {
   script_id: string;
   label: string;
@@ -2878,6 +3055,7 @@ export interface BettingEvent {
     formula?: string | null;
   } | null;
   game_scripts?: BettingGameScript[];
+  game_forecast?: GameForecast | null;
   injury_adjustment_home?: number | null;
   injury_adjustment_away?: number | null;
   injuries?: BettingInjuryNote[];
@@ -2962,6 +3140,7 @@ export interface BettingModelResultRow {
   market_type?: string | null;
   selection?: string | null;
   line?: number | null;
+  price?: number | null;
   bet_line?: number | null;
   closing_line?: number | null;
   bet_price?: number | null;
@@ -3282,6 +3461,15 @@ export interface BettingPortfolioPosition {
   model_change?: number | null;
   assumption_tags?: string[];
   bet_type?: "single" | "parlay" | string | null;
+  allocation_tier?:
+    | "preferred"
+    | "secondary"
+    | "remainder"
+    | "parlay"
+    | string
+    | null;
+  qualification_label?: string | null;
+  selection_rationale?: string | null;
   parlay_size?: "small" | "medium" | "large" | string | null;
   leg_count?: number | null;
   legs?: Array<{
@@ -3467,9 +3655,19 @@ export async function analyzeBettingPortfolio(payload: {
 
 export interface BettingPortfolioGeneration {
   total_exposure: number;
+  requested_exposure?: number;
   risk_exposure: number;
   risk: string;
   allocated_exposure: number;
+  unallocated_exposure?: number;
+  deployment_pct?: number;
+  deployment_status?:
+    | "fully_deployed"
+    | "partially_deployed"
+    | "no_eligible_bets"
+    | string;
+  unallocated_reason?: string | null;
+  blocking_constraints?: string[];
   position_count: number;
   single_count?: number;
   parlay_count?: number;
@@ -3478,9 +3676,25 @@ export interface BettingPortfolioGeneration {
     medium?: number;
     large?: number;
   };
+  selected_by_tier?: {
+    preferred?: number;
+    secondary?: number;
+    remainder?: number;
+    parlay?: number;
+  };
+  selected_by_qualification?: {
+    strong_bet?: number;
+    lean?: number;
+    pass?: number;
+    parlay?: number;
+  };
   target_single_pct?: number;
   target_parlay_pct?: number;
+  candidates_evaluated?: number;
+  candidates_selected?: number;
   candidates_considered?: number;
+  candidate_source?: string;
+  min_stake?: number;
   max_positions?: number;
   max_per_game?: number;
   note?: string | null;

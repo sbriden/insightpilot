@@ -242,6 +242,107 @@ class PlayerSnapshotTests(unittest.TestCase):
             assessment_rank[hot_week["overall_assessment"]],
         )
 
+    def test_assessment_ignores_ownership_and_schedule(self):
+        """
+        A softer opponent or a lower ownership percentage must
+        not raise the season assessment.
+        """
+
+        from app.analysis.insights.player_snapshot import (
+            _seasonize_profile_scores,
+        )
+
+        shared = {
+            "production_score": 40,
+            "opportunity_score": 55,
+            "efficiency_score": 40,
+            "trend_score": 50,
+            "risk_score": 10,
+        }
+        season_stats = {
+            "fppg": 12.0,
+            "fantasy_points": 60.0,
+            "games": 5,
+        }
+        tough = _seasonize_profile_scores(
+            {
+                **shared,
+                "matchup_score": 30,
+                "environment_score": 30,
+                "ownership": 90,
+            },
+            position="WR",
+            season_stats=season_stats,
+        )
+        soft = _seasonize_profile_scores(
+            {
+                **shared,
+                "matchup_score": 90,
+                "environment_score": 90,
+                "ownership": 8,
+            },
+            position="WR",
+            season_stats=season_stats,
+        )
+        self.assertEqual(
+            tough["fantasy_value_score"],
+            soft["fantasy_value_score"],
+        )
+
+    def test_qb_assessment_follows_passing_not_latest_matchup(self):
+        from app.analysis.insights.player_snapshot import (
+            _seasonize_profile_scores,
+        )
+
+        def grade(stats, matchup, weekly_efficiency):
+            return _seasonize_profile_scores(
+                {
+                    "opportunity_score": 50,
+                    "efficiency_score": weekly_efficiency,
+                    "trend_score": 50,
+                    "matchup_score": matchup,
+                    "environment_score": 50,
+                    "risk_score": 0,
+                    "ownership": 10,
+                },
+                position="QB",
+                season_stats=stats,
+            )["fantasy_value_score"]
+
+        # More season passing production, tougher latest opponent.
+        nix = grade(
+            {
+                "fppg": 14.0,
+                "fantasy_points": 70.0,
+                "games": 5,
+                "pass_attempts": 180,
+                "pass_yards": 1400,
+                "pass_tds": 10,
+                "interceptions": 3,
+                "rush_attempts": 20,
+                "rush_yards": 40,
+            },
+            matchup=32,
+            weekly_efficiency=25,
+        )
+        # Soft matchup and a hot scramble-efficiency week.
+        ward = grade(
+            {
+                "fppg": 11.0,
+                "fantasy_points": 55.0,
+                "games": 5,
+                "pass_attempts": 160,
+                "pass_yards": 900,
+                "pass_tds": 3,
+                "interceptions": 4,
+                "rush_attempts": 16,
+                "rush_yards": 70,
+            },
+            matchup=80,
+            weekly_efficiency=70,
+        )
+        self.assertGreater(nix, ward)
+
 
     def test_search_players_matches_name(self):
         from unittest.mock import patch

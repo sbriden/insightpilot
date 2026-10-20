@@ -22,6 +22,7 @@ from app.analysis.insights.betting.player_context import (
 )
 from app.analysis.insights.betting.slate import (
     _enrich_event,
+    _moneyline_side_after_calibration,
     build_betting_slate,
     find_betting_event_by_matchup,
 )
@@ -452,6 +453,33 @@ class BettingInjuryContextTests(unittest.TestCase):
             ),
             3,
         )
+
+
+class MoneylineSelectionTests(unittest.TestCase):
+    def test_keeps_raw_favorite_when_calibration_stays_above_half(self):
+        side_home, cal = _moneyline_side_after_calibration(
+            0.62,
+            cal_model=None,
+        )
+        self.assertTrue(side_home)
+        self.assertGreaterEqual(cal["model_probability"], 0.5)
+
+    def test_flips_when_calibration_drops_favorite_below_half(self):
+        # Raw home win 51% calibrates to 47.6%, so the away team
+        # is the side the displayed probability actually supports.
+        model = {
+            "active": True,
+            "method": "isotonic",
+            "x": [0.01, 0.51, 0.99],
+            "y": [0.01, 0.476, 0.99],
+        }
+        side_home, cal = _moneyline_side_after_calibration(
+            0.51,
+            cal_model=model,
+        )
+        self.assertFalse(side_home)
+        self.assertAlmostEqual(cal["model_probability"], 0.524, places=3)
+        self.assertGreaterEqual(cal["model_probability"], 0.5)
 
 
 class BettingSlateTests(unittest.TestCase):

@@ -48,7 +48,7 @@ export default function PortfolioLineupTable({
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 pb-3">
         <table className="min-w-full text-left text-sm">
-          <thead className="sticky top-0 z-[1]" style={{ background: "#fff" }}>
+          <thead className="sticky top-0 z-[1]" style={{ background: snapshotTokens.white }}>
             <tr
               className="border-b text-[11px] uppercase tracking-wide"
               style={{

@@ -15,6 +15,51 @@ interface Props {
   onOpenOverview: () => void;
 }
 
+function ProjectionBreakdown({ player }: { player: DfsPlayer }) {
+  const parts = (player.scoring_components?.components ?? []).filter(
+    (part) => Math.abs(part.points ?? 0) >= 0.05,
+  );
+  if (parts.length === 0) {
+    return null;
+  }
+  return (
+    <div>
+      <p
+        className="text-[11px] font-semibold uppercase tracking-wide"
+        style={{ color: snapshotTokens.textMuted }}
+      >
+        Projection breakdown
+      </p>
+      <ul className="mt-1 space-y-1">
+        {parts.map((part) => (
+          <li
+            key={part.key}
+            className="flex items-baseline justify-between gap-3 text-sm"
+            style={{ color: snapshotTokens.textSecondary }}
+          >
+            <span>
+              {part.label}
+              {part.stat != null ? (
+                <span className="text-xs">
+                  {" "}
+                  {part.stat.toFixed(1)} {part.stat_label}
+                  {part.opportunities != null && part.rate != null
+                    ? ` · ${part.opportunities.toFixed(1)} ${part.opportunity_label} × ${part.rate.toFixed(2)}`
+                    : ""}
+                </span>
+              ) : null}
+            </span>
+            <span className="tabular-nums">
+              {(part.points ?? 0) > 0 ? "+" : ""}
+              {(part.points ?? 0).toFixed(1)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function PlayerDetailDrawer({
   player,
   inLineup,
@@ -79,11 +124,19 @@ export default function PlayerDetailDrawer({
           <div className="grid grid-cols-3 gap-2">
             <Stat label="Projection" value={player.projection.toFixed(1)} />
             <Stat
-              label="Ceiling"
+              label={
+                player.simulation?.ceiling_percentile
+                  ? `Ceiling (p${player.simulation.ceiling_percentile})`
+                  : "Ceiling"
+              }
               value={player.ceiling?.toFixed(1) ?? "—"}
             />
             <Stat
-              label="Floor"
+              label={
+                player.simulation?.floor_percentile
+                  ? `Floor (p${player.simulation.floor_percentile})`
+                  : "Floor"
+              }
               value={player.floor?.toFixed(1) ?? "—"}
             />
             <Stat
@@ -103,6 +156,25 @@ export default function PlayerDetailDrawer({
               value={player.value?.toFixed(2) ?? "—"}
             />
           </div>
+
+          {player.simulation?.upside_probability != null &&
+          player.simulation?.bust_probability != null ? (
+            <p
+              className="text-xs leading-snug"
+              style={{ color: snapshotTokens.textSecondary }}
+            >
+              {`In the simulated games, ${(player.simulation.upside_probability * 100).toFixed(0)}% clear ${player.simulation.upside_threshold?.toFixed(1)} and ${(player.simulation.bust_probability * 100).toFixed(0)}% fall under ${player.simulation.bust_threshold?.toFixed(1)}. The floor and ceiling are percentiles, not guarantees.`}
+            </p>
+          ) : null}
+
+          {player.forecast?.strong_outcome_probability != null ? (
+            <p
+              className="text-xs leading-snug"
+              style={{ color: snapshotTokens.textSecondary }}
+            >
+              {`${(player.forecast.strong_outcome_probability * 100).toFixed(0)}% of simulated games reach ${player.forecast.strong_outcome_threshold?.toFixed(0)} points. Mean ${player.forecast.expected_points?.toFixed(1) ?? "—"}, median ${player.forecast.median_projection?.toFixed(1) ?? "—"}.`}
+            </p>
+          ) : null}
 
           {(player.raw_projection != null ||
             player.base_projection != null ||
@@ -144,8 +216,15 @@ export default function PlayerDetailDrawer({
                   {player.projection_adjustment_reason}
                 </p>
               ) : null}
+              {player.projection_environment_reason ? (
+                <p className="mt-1.5 text-xs leading-snug">
+                  {player.projection_environment_reason}
+                </p>
+              ) : null}
             </div>
           )}
+
+          <ProjectionBreakdown player={player} />
 
           <div>
             <p

@@ -1,6 +1,6 @@
 /** InsightPilot Player Snapshot design tokens (style guide). */
 
-export const snapshotTokens = {
+export const productSnapshotTokens = {
   navy: "#0B1F3A",
   blue: "#1677FF",
   blueLight: "#EAF3FF",
@@ -21,6 +21,37 @@ export const snapshotTokens = {
   divider: "#E8EDF3",
 } as const;
 
+export type SnapshotTokens = {
+  -readonly [K in keyof typeof productSnapshotTokens]: string;
+};
+
+type TokenGetter = () => SnapshotTokens;
+
+let analysisTokenGetter: TokenGetter | null = null;
+
+/** Registered by analysis format module so product pages stay static. */
+export function registerAnalysisTokenGetter(
+  getter: TokenGetter
+): void {
+  analysisTokenGetter = getter;
+}
+
+/**
+ * Active analysis tokens. Inside an application format provider these
+ * resolve to the dark command-center map; otherwise product defaults.
+ */
+export const snapshotTokens: SnapshotTokens = new Proxy(
+  productSnapshotTokens as SnapshotTokens,
+  {
+    get(target, prop, receiver) {
+      const source = analysisTokenGetter
+        ? analysisTokenGetter()
+        : target;
+      return Reflect.get(source, prop, receiver);
+    },
+  }
+);
+
 export function assessmentStyles(
   label: string | null | undefined
 ): { bg: string; text: string; border: string } {
@@ -30,25 +61,25 @@ export function assessmentStyles(
       return {
         bg: snapshotTokens.successLight,
         text: snapshotTokens.success,
-        border: "#BBF7D0",
+        border: snapshotTokens.success,
       };
     case "solid":
       return {
         bg: snapshotTokens.blueLight,
         text: snapshotTokens.blue,
-        border: "#BFDBFE",
+        border: snapshotTokens.blue,
       };
     case "cautious":
       return {
         bg: snapshotTokens.warningLight,
-        text: "#B45309",
-        border: "#FDE68A",
+        text: snapshotTokens.warning,
+        border: snapshotTokens.warning,
       };
     case "weak":
       return {
         bg: snapshotTokens.negativeLight,
         text: snapshotTokens.negative,
-        border: "#FECACA",
+        border: snapshotTokens.negative,
       };
     default:
       return {

@@ -362,11 +362,20 @@ def build_clv_diagnostics(
             if str(row.get("market_type") or "").lower() == mtype
         ]
 
-    clvs = [
+    point_clvs = [
         float(row["clv"])
         for row in rows
         if num(row.get("clv")) is not None
+        and str(row.get("clv_unit") or "") == "points"
     ]
+    prob_clvs = [
+        float(row["clv"])
+        for row in rows
+        if num(row.get("clv")) is not None
+        and str(row.get("clv_unit") or "") == "prob_pp"
+    ]
+    # Never average points with probability pp — headline CLV is points.
+    clvs = point_clvs
     units = [
         float(row["units"])
         for row in decided
@@ -407,10 +416,22 @@ def build_clv_diagnostics(
         "average_clv": (
             round(sum(clvs) / len(clvs), 2) if clvs else None
         ),
+        "average_clv_points": (
+            round(sum(point_clvs) / len(point_clvs), 2)
+            if point_clvs
+            else None
+        ),
+        "average_clv_prob_pp": (
+            round(sum(prob_clvs) / len(prob_clvs), 2)
+            if prob_clvs
+            else None
+        ),
         "median_clv": (
             round(float(statistics.median(clvs)), 2) if clvs else None
         ),
         "clv_sample": len(clvs),
+        "clv_points_sample": len(point_clvs),
+        "clv_prob_pp_sample": len(prob_clvs),
         "beat_close_pct": (
             round(100.0 * len(beat) / len(clv_known), 1)
             if clv_known
@@ -427,9 +448,9 @@ def build_clv_diagnostics(
             else None
         ),
         "note": (
-            "CLV uses bet_line vs closing_line (points) for "
-            "spreads/totals and implied-probability points for "
-            "moneylines. Positive CLV = beat the closing market."
+            "CLV points (spreads/totals) and prob_pp (moneylines) "
+            "are tracked separately — headline average_clv is points "
+            "only. Positive CLV = beat the closing market."
         ),
     }
 

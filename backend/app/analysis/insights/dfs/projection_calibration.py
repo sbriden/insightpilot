@@ -21,10 +21,11 @@ Pipeline
       • Confidence + floor / ceiling range
             │
             ▼
-    InsightPilot projection (pre-matchup)
+    InsightPilot projection (pre-game)
             │
             ▼
-    Weekly matchup / environment multiplier (slate)
+    Game forecast (plays, scoring opportunities, touchdowns)
+      or matchup/environment multiplier when no forecast exists
             │
             ▼
     Final DFS projection consumed by analyzer / optimizer

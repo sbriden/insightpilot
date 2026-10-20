@@ -6,7 +6,7 @@ Early-season DFS projections that equal current-season FPPG
 can explode after 1–2 outlier games (e.g. a QB projecting ~45
 for week 3). InsightPilot keeps the **raw** signal but routes
 all DFS scoring through a **calibration / guardrail layer**
-before matchup adjustments and the optimizer.
+before the weekly game environment is applied.
 
 ## Pipeline
 
@@ -23,11 +23,29 @@ Projection Calibration  ← this document
   • historical / positional distribution checks
   • confidence + floor / ceiling
       ↓
-InsightPilot projection (pre-matchup)
+InsightPilot projection (skill prior)
       ↓
-Weekly matchup / environment multiplier
+Role and opportunity forecast
+  • depth chart, availability, teammate absences
+  • historical role as the prior, current usage as the present
+  • opportunities capped by the game forecast
+      ↓
+Component production
+  • yards and catches = opportunities × shrunk efficiency
+  • touchdowns from goal-line / red-zone chances and team scoring
+  • calibrated FPPG sets efficiency only when the rate sample is thin
       ↓
 Final `projection` / `insightpilot_projection`
+(matchup/environment multiplier only if no game forecast)
+      ↓
+Forecast contract (`player_forecast_v1`)
+  • mean, median, and percentile floor / ceiling
+  • position- and contest-specific outcome probabilities
+  • workload, role change, and uncertainty
+      ↓
+DFS optimizer uses the joint distribution for showdown
+lineups. Salary still has to fit. Points per dollar is
+one input, not the reason a player is included.
       ↓
 DFS Analyzer / Optimizer / Portfolio
 ```
@@ -38,7 +56,9 @@ DFS Analyzer / Optimizer / Portfolio
 |------|------|
 | `projection_calibration.py` | Guardrail engine + `CalibrationConfig` |
 | `projection_baselines.py` | Prior-season FPPG / p90 loader |
-| `slate.py` `_to_dfs_player` | Applies calibration, then matchup |
+| `game_forecast.py` | Shared game scoring environment |
+| `player_game_projection.py` | Player opportunity, efficiency, and touchdowns |
+| `slate.py` `_to_dfs_player` | Calibration, then game forecast or matchup fallback |
 
 ## Configurable weights
 
@@ -61,22 +81,20 @@ Historical weight = `1 − current_season_weight`
 ## Output fields on DFS players
 
 - `raw_projection` — uncalibrated season FPPG
-- `base_projection` — calibrated InsightPilot median (pre-matchup)
-- `projection` / `insightpilot_projection` — after matchup (optimizer input)
+- `base_projection` — calibrated InsightPilot median (pre-game)
+- `projection` / `insightpilot_projection` — simulation median when a game forecast exists, otherwise the component projection or the matchup fallback
+- `adjustment_source` — `game_forecast` or `matchup_fallback`
+- `projection_drivers` — why the weekly environment changed the projection
+- `scoring_components` — fantasy points by opportunity, efficiency, and scoring event
+- `simulation` — percentile floor, ceiling, and upside / bust probabilities
 - `projection_adjustment` — `insightpilot − raw` (points)
-- `projection_adjustment_reason` — human-readable explanation
-- `projection_floor` / `floor`, `projection_ceiling` / `ceiling`
+- `projection_floor` / `floor`, `projection_ceiling` / `ceiling` — 10th and 90th percentiles of simulated fantasy points when a game is simulated; confidence multipliers otherwise
 - `projection_confidence`, `sample_size_confidence`
-- `historical_baseline`, `current_season_games`, `historical_games`
 
-## What this is not (yet)
+## What the percentiles are
 
-Full rate-based component projection (projecting pass
-attempts, targets, etc. then converting to fantasy points)
-is the next evolution. Today, opportunity scores act as the
-**driver validation** signal so fantasy-point spikes without
-opportunity support are regressed.
-
-Outcome distribution / Monte Carlo floors & ceilings can
-replace the confidence multiplier table later without
-changing the DFS consumer contract.
+Floor and ceiling are configurable percentiles of the joint
+game simulation (`SimulationConfig`). A 10th-percentile
+outcome is a point in that distribution, not a guarantee
+the player scores at least that many points. Confidence
+stays the calibration label from sample size and input quality.

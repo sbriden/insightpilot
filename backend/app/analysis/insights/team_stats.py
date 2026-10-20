@@ -36,6 +36,43 @@ DEPTH_POSITION_ORDER = (
     "RT",
 )
 
+# (section, field, higher_is_better). None = style/neutral (always average).
+TEAM_TOTAL_COMPARISON_METRICS: tuple[
+    tuple[str, str, bool | None],
+    ...,
+] = (
+    ("offense", "points", True),
+    ("offense", "points_per_game", True),
+    ("offense", "yards", True),
+    ("offense", "yards_per_game", True),
+    ("offense", "yards_per_play", True),
+    ("offense", "epa_per_play", True),
+    ("offense", "pass_epa_per_attempt", True),
+    ("offense", "rush_epa_per_attempt", True),
+    ("offense", "pass_rate", None),
+    ("offense", "red_zone_td_rate", True),
+    ("offense", "turnovers_per_game", False),
+    ("defense", "points_allowed", False),
+    ("defense", "points_allowed_per_game", False),
+    ("defense", "yards_allowed", False),
+    ("defense", "yards_allowed_per_game", False),
+    ("defense", "pass_yards_allowed_per_game", False),
+    ("defense", "rush_yards_allowed_per_game", False),
+    ("defense", "pass_epa_allowed_per_game", False),
+    ("defense", "rush_epa_allowed_per_game", False),
+    ("defense", "sack_rate", True),
+    ("defense", "pressure_rate", True),
+    ("efficiency", "completion_pct", True),
+    ("efficiency", "yards_per_attempt", True),
+    ("efficiency", "yards_per_carry", True),
+    ("efficiency", "catch_rate", True),
+    ("efficiency", "yards_per_target", True),
+    ("efficiency", "yards_per_reception", True),
+    ("record", "point_differential", True),
+)
+
+_LEAGUE_TOTALS_CACHE: dict[int, dict[str, dict[str, Any]]] = {}
+
 
 def _num(value: Any) -> float | None:
     return normalize_float(value)
@@ -302,6 +339,272 @@ def build_team_totals(
         "defense": defense,
         "efficiency": efficiency,
     }
+
+
+def _metric_value(
+    totals: dict[str, Any] | None,
+    section: str,
+    field: str,
+) -> float | None:
+    if not totals:
+        return None
+    if section == "record":
+        record = totals.get("record") or {}
+        return _num(record.get(field))
+    block = totals.get(section) or {}
+    return _num(block.get(field))
+
+
+def _tier_from_percentile(
+    percentile: float | None,
+    *,
+    higher_is_better: bool | None,
+) -> str:
+    if higher_is_better is None or percentile is None:
+        return "average"
+    if percentile >= 67:
+        return "good"
+    if percentile <= 33:
+        return "poor"
+    return "average"
+
+
+def build_team_total_comparisons(
+    selected: dict[str, Any] | None,
+    league_totals: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """
+    Rank each displayed team-total metric against the league.
+
+    ``league_totals`` maps team_id → build_team_totals(...) output.
+    """
+
+    if not selected or not league_totals:
+        return {}
+
+    comparisons: dict[str, dict[str, Any]] = {}
+    teams = list(league_totals.values())
+
+    for section, field, higher_is_better in TEAM_TOTAL_COMPARISON_METRICS:
+        values: list[float] = []
+        for totals in teams:
+            value = _metric_value(totals, section, field)
+            if value is not None:
+                values.append(value)
+        if not values:
+            continue
+
+        selected_value = _metric_value(selected, section, field)
+        if selected_value is None:
+            continue
+
+        mean = sum(values) / len(values)
+        if higher_is_better is False:
+            # Lower is better → rank 1 is the smallest value.
+            better_count = sum(1 for value in values if value < selected_value)
+            tied = sum(1 for value in values if value == selected_value)
+            rank = better_count + 1
+            # Percentile: share of teams that are worse (higher).
+            worse = sum(1 for value in values if value > selected_value)
+            percentile = (
+                100.0 * (worse + tied * 0.5) / len(values)
+            )
+        elif higher_is_better is True:
+            better_count = sum(
+                1 for value in values if value > selected_value
+            )
+            tied = sum(1 for value in values if value == selected_value)
+            rank = better_count + 1
+            worse = sum(1 for value in values if value < selected_value)
+            percentile = (
+                100.0 * (worse + tied * 0.5) / len(values)
+            )
+        else:
+            better_count = sum(
+                1 for value in values if value > selected_value
+            )
+            tied = sum(1 for value in values if value == selected_value)
+            rank = better_count + 1
+            percentile = 50.0
+
+        key = f"{section}.{field}"
+        comparisons[key] = {
+            "league_avg": _round(mean, 4),
+            "rank": int(rank),
+            "rank_of": len(values),
+            "percentile": _round(percentile, 1),
+            "tier": _tier_from_percentile(
+                percentile if higher_is_better is not None else None,
+                higher_is_better=higher_is_better,
+            ),
+            "higher_is_better": higher_is_better,
+        }
+
+    return comparisons
+
+
+def _load_league_team_totals(
+    season: int,
+) -> dict[str, dict[str, Any]]:
+    """
+    build_team_totals for every franchise with games in ``season``.
+
+    Cached in-process for the season (stats change weekly at most).
+    """
+
+    cached = _LEAGUE_TOTALS_CACHE.get(int(season))
+    if cached is not None:
+        return cached
+
+    try:
+        from sqlalchemy import text
+
+        from app.canonical.schema import FANTASY_SCHEMA
+        from app.database import engine
+    except Exception:
+        return {}
+
+    env_sql = f"""
+        SELECT
+          tg.team_id,
+          COUNT(*) AS games,
+          SUM(tg.points) AS points,
+          SUM(tg.yards) AS yards,
+          SUM(tg.offensive_plays) AS offensive_plays,
+          SUM(tg.pass_attempts) AS pass_attempts,
+          SUM(tg.rush_attempts) AS rush_attempts,
+          SUM(tg.offensive_epa) AS offensive_epa,
+          SUM(tg.pass_epa) AS pass_epa,
+          SUM(tg.rush_epa) AS rush_epa,
+          SUM(tg.red_zone_trips) AS red_zone_trips,
+          SUM(tg.red_zone_td_rate * tg.red_zone_trips)
+            AS red_zone_tds,
+          SUM(tg.turnovers) AS turnovers,
+          AVG(tg.pace) AS pace,
+          SUM(
+            CASE
+              WHEN tg.points IS NOT NULL
+                AND dg.points_allowed IS NOT NULL
+                AND tg.points > dg.points_allowed
+              THEN 1 ELSE 0
+            END
+          ) AS wins,
+          SUM(
+            CASE
+              WHEN tg.points IS NOT NULL
+                AND dg.points_allowed IS NOT NULL
+                AND tg.points < dg.points_allowed
+              THEN 1 ELSE 0
+            END
+          ) AS losses,
+          SUM(
+            CASE
+              WHEN tg.points IS NOT NULL
+                AND dg.points_allowed IS NOT NULL
+                AND tg.points = dg.points_allowed
+              THEN 1 ELSE 0
+            END
+          ) AS ties,
+          SUM(dg.points_allowed) AS points_allowed,
+          SUM(dg.yards_allowed) AS yards_allowed,
+          SUM(dg.pass_yards_allowed) AS pass_yards_allowed,
+          SUM(dg.rush_yards_allowed) AS rush_yards_allowed,
+          SUM(dg.pass_epa_allowed) AS pass_epa_allowed,
+          SUM(dg.rush_epa_allowed) AS rush_epa_allowed,
+          AVG(dg.sack_rate) AS sack_rate,
+          AVG(dg.pressure_rate) AS pressure_rate,
+          COUNT(dg.game_id) AS defense_games
+        FROM {FANTASY_SCHEMA}.fact_team_game tg
+        LEFT JOIN {FANTASY_SCHEMA}.fact_defensive_game dg
+          ON dg.defensive_team_id = tg.team_id
+         AND dg.game_id = tg.game_id
+        WHERE tg.season = :season
+          AND (
+            tg.season_type IS NULL
+            OR UPPER(tg.season_type) IN ('REG', 'REGULAR')
+          )
+        GROUP BY tg.team_id
+    """
+    skill_sql = f"""
+        SELECT
+          g.team_id,
+          SUM(g.pass_completions) AS pass_completions,
+          SUM(g.pass_attempts) AS pass_attempts,
+          SUM(g.pass_yards) AS pass_yards,
+          SUM(g.rush_attempts) AS rush_attempts,
+          SUM(g.rush_yards) AS rush_yards,
+          SUM(g.targets) AS targets,
+          SUM(g.receptions) AS receptions,
+          SUM(g.receiving_yards) AS receiving_yards
+        FROM {FANTASY_SCHEMA}.fact_player_game g
+        WHERE g.season = :season
+          AND g.team_id IS NOT NULL
+        GROUP BY g.team_id
+    """
+
+    try:
+        with engine.connect() as connection:
+            env_frame = pd.read_sql_query(
+                text(env_sql),
+                connection,
+                params={"season": int(season)},
+            )
+            skill_frame = pd.read_sql_query(
+                text(skill_sql),
+                connection,
+                params={"season": int(season)},
+            )
+    except Exception:
+        return {}
+
+    skill_by_team: dict[str, dict[str, Any]] = {}
+    for row in skill_frame.to_dict(orient="records"):
+        team_id = str(row.get("team_id") or "").strip()
+        if team_id:
+            skill_by_team[team_id] = row
+
+    league: dict[str, dict[str, Any]] = {}
+    for row in env_frame.to_dict(orient="records"):
+        team_id = str(row.get("team_id") or "").strip()
+        if not team_id or (_int(row.get("games")) or 0) <= 0:
+            continue
+        skill = skill_by_team.get(team_id)
+        players = [skill] if skill else []
+        totals = build_team_totals(row, players)
+        if totals is not None:
+            league[team_id] = totals
+
+    # Teams with only skill lines (no team-game row yet).
+    for team_id, skill in skill_by_team.items():
+        if team_id in league:
+            continue
+        totals = build_team_totals(None, [skill])
+        if totals is not None:
+            league[team_id] = totals
+
+    _LEAGUE_TOTALS_CACHE[int(season)] = league
+    return league
+
+
+def attach_league_comparisons(
+    totals: dict[str, Any] | None,
+    *,
+    team_id: str,
+    season: int,
+) -> dict[str, Any] | None:
+    """Return team totals with a ``comparisons`` map attached."""
+
+    if totals is None:
+        return None
+    league = _load_league_team_totals(season)
+    if team_id and team_id not in league:
+        # Prefer the selected team's own totals in the league set.
+        league = {**league, team_id: totals}
+    comparisons = build_team_total_comparisons(totals, league)
+    enriched = dict(totals)
+    if comparisons:
+        enriched["comparisons"] = comparisons
+    return enriched
 
 
 def _team_identity(row: dict[str, Any], abbr: str) -> dict[str, Any]:
@@ -606,11 +909,16 @@ def get_team_stats(
         team_id,
         int(season),
     )
+    team_totals = attach_league_comparisons(
+        build_team_totals(environment, players),
+        team_id=team_id,
+        season=int(season),
+    )
 
     return {
         "team": _team_identity(team_row, abbr),
         "season": int(season) if season is not None else None,
-        "team_totals": build_team_totals(environment, players),
+        "team_totals": team_totals,
         "depth_season": depth_season,
         "depth_week": depth_week,
         "depth_as_of": (

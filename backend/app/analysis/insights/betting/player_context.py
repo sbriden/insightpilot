@@ -20,13 +20,16 @@ from app.analysis.insights.betting.injury_impact import (
     estimate_injury_impact,
     material_injury,
 )
+from app.analysis.insights.betting.injury_quality import (
+    build_quality_factors,
+    load_player_quality_metrics,
+)
 from app.analysis.insights.betting.pricing import num
 from app.canonical.schema import FANTASY_SCHEMA
 from app.database import engine
 
 
-# Market-implied scores often already price known outs; dampen
-# the summed raw positional delta before applying to projections.
+# Fallback when per-player market_priced_fraction unavailable.
 INJURY_MARKET_WEIGHT = 0.45
 _MAX_OWN_ADJUSTMENT = -7.5
 _MAX_OPPONENT_ADJUSTMENT = 4.5
@@ -42,14 +45,18 @@ def load_week_player_context(
     *,
     season: int,
     week: int,
+    spread_move: float | None = None,
+    total_move: float | None = None,
 ) -> dict[str, Any]:
     """
     Build a team_id → injury/depth context map for one slate week.
 
     Returns per team:
-      adjustment_pts          — net effect on THIS team's score
-      opponent_adjustment_pts — effect on OPPONENT score (D injuries)
-      raw_adjustment_pts / raw_opponent_adjustment_pts
+      score_adjustment_pts / score_opponent_adjustment_pts — full
+        predictive score impact
+      adjustment_pts / opponent_adjustment_pts — edge impact
+        (market-residualized; applied to projections)
+      impact_sigma — pooled uncertainty
       injuries / drivers
     """
 
@@ -65,6 +72,24 @@ def load_week_player_context(
         {row["player_id"] for row in injuries if row.get("player_id")}
         | {row["player_id"] for row in depth if row.get("player_id")}
     )
+
+    # Prefetch usage/efficiency for injured + likely replacements.
+    quality_ids = {
+        str(row["player_id"])
+        for row in injuries
+        if row.get("player_id")
+    } | {
+        str(row["player_id"])
+        for row in depth
+        if row.get("player_id")
+    }
+    metrics = load_player_quality_metrics(
+        player_ids=quality_ids,
+        season=int(season),
+        before_week=int(week),
+    )
+    usage_cache = metrics.get("usage") or {}
+    efficiency_cache = metrics.get("efficiency") or {}
 
     starter_keys = {
         (row["team_id"], str(row.get("position") or "").upper()): row
@@ -109,6 +134,17 @@ def load_week_player_context(
             )
         )
 
+        factors = build_quality_factors(
+            player_id=player_id,
+            team_id=team_id,
+            position=position,
+            depth_order=depth_order,
+            season=int(season),
+            before_week=int(week),
+            depth_rows=depth,
+            usage_cache=usage_cache,
+            efficiency_cache=efficiency_cache,
+        )
         injury_type = _clean_text(enriched_row.get("injury_type"))
         practice = _clean_text(enriched_row.get("practice_status"))
         impact = estimate_injury_impact(
@@ -116,9 +152,12 @@ def load_week_player_context(
             status=status,
             depth_order=depth_order,
             is_starter=is_starter,
+            factors=factors,
+            is_expected_to_play=enriched_row.get("is_expected_to_play"),
+            spread_move=spread_move,
+            total_move=total_move,
+            injured_team_is_home=None,
         )
-        # Only apply impact for starters / high-role slots, or any
-        # QB Out/Doubtful, or material rotational outs.
         apply = False
         if impact.get("applies"):
             if is_starter or (
@@ -130,16 +169,25 @@ def load_week_player_context(
             ):
                 apply = True
 
-        own_raw = (
+        score_own = (
             float(impact.get("own_score_delta") or 0.0) if apply else 0.0
         )
-        opp_raw = (
+        score_opp = (
             float(impact.get("opponent_score_delta") or 0.0)
             if apply
             else 0.0
         )
-        market_own = round(own_raw * INJURY_MARKET_WEIGHT, 2)
-        market_opp = round(opp_raw * INJURY_MARKET_WEIGHT, 2)
+        edge_own = (
+            float(impact.get("edge_own_delta") or 0.0) if apply else 0.0
+        )
+        edge_opp = (
+            float(impact.get("edge_opponent_delta") or 0.0)
+            if apply
+            else 0.0
+        )
+        impact_sigma = (
+            float(impact.get("impact_sigma") or 0.0) if apply else 0.0
+        )
 
         note = {
             "player_id": player_id,
@@ -161,12 +209,27 @@ def load_week_player_context(
             "raw_magnitude": (
                 impact.get("raw_magnitude") if apply else 0.0
             ),
-            "own_score_delta": market_own,
-            "opponent_score_delta": market_opp,
-            "projection_impact_pts": market_own if market_own else (
-                market_opp if market_opp else 0.0
+            "play_prob": impact.get("play_prob"),
+            "impact_sigma": impact_sigma,
+            "efficiency_delta": impact.get("efficiency_delta"),
+            "volume_delta": impact.get("volume_delta"),
+            "market_priced_fraction": impact.get(
+                "market_priced_fraction"
+            ),
+            "score_own_delta": round(score_own, 3),
+            "score_opponent_delta": round(score_opp, 3),
+            "edge_own_delta": round(edge_own, 3),
+            "edge_opponent_delta": round(edge_opp, 3),
+            # Applied-to-projection fields (edge); keep legacy names.
+            "own_score_delta": round(edge_own, 2),
+            "opponent_score_delta": round(edge_opp, 2),
+            "projection_impact_pts": (
+                round(edge_own, 2)
+                if edge_own
+                else (round(edge_opp, 2) if edge_opp else 0.0)
             ),
             "quality_factors": impact.get("quality_factors"),
+            "quality_multiplier": impact.get("quality_multiplier"),
             "is_expected_to_play": enriched_row.get("is_expected_to_play"),
         }
 
@@ -175,6 +238,8 @@ def load_week_player_context(
             or status in {"out", "doubtful"}
             or note["projection_impact_pts"]
             or note["opponent_score_delta"]
+            or note["score_own_delta"]
+            or note["score_opponent_delta"]
         ):
             continue
 
@@ -183,45 +248,63 @@ def load_week_player_context(
             {
                 "adjustment_pts": 0.0,
                 "opponent_adjustment_pts": 0.0,
+                "score_adjustment_pts": 0.0,
+                "score_opponent_adjustment_pts": 0.0,
                 "raw_adjustment_pts": 0.0,
                 "raw_opponent_adjustment_pts": 0.0,
+                "impact_sigma": 0.0,
                 "injuries": [],
                 "drivers": [],
             },
         )
         bucket["injuries"].append(note)
-        if apply and (own_raw or opp_raw):
-            bucket["raw_adjustment_pts"] += own_raw
-            bucket["raw_opponent_adjustment_pts"] += opp_raw
+        if apply and (score_own or score_opp or edge_own or edge_opp):
+            bucket["raw_adjustment_pts"] += score_own
+            bucket["raw_opponent_adjustment_pts"] += score_opp
+            bucket["score_adjustment_pts"] += score_own
+            bucket["score_opponent_adjustment_pts"] += score_opp
+            bucket["adjustment_pts"] += edge_own
+            bucket["opponent_adjustment_pts"] += edge_opp
+            bucket["impact_sigma"] = (
+                float(bucket["impact_sigma"]) ** 2 + impact_sigma ** 2
+            ) ** 0.5
             label = note["depth_label"] or position or "Player"
             detail = injury_type or note["game_status"]
-            if own_raw:
-                shown = market_own
+            priced = impact.get("market_priced_fraction")
+            if score_own:
                 bucket["drivers"].append(
                     f"{name} ({label}) listed {note['game_status']}"
                     f"{f' — {detail}' if detail and detail != note['game_status'] else ''}"
-                    f"; own projection {shown:+g} pts"
+                    f"; score {score_own:+g} / edge {edge_own:+g}"
+                    f" (market priced {priced})"
                 )
-            if opp_raw:
-                shown = market_opp
+            if score_opp:
                 bucket["drivers"].append(
                     f"{name} ({label}) listed {note['game_status']}"
                     f"{f' — {detail}' if detail and detail != note['game_status'] else ''}"
-                    f"; opponent projection {shown:+g} pts"
+                    f"; opp score {score_opp:+g} / edge {edge_opp:+g}"
+                    f" (market priced {priced})"
                 )
 
     for team_id, bucket in by_team.items():
-        raw_own = float(bucket["raw_adjustment_pts"])
-        raw_opp = float(bucket["raw_opponent_adjustment_pts"])
-        bucket["raw_adjustment_pts"] = round(raw_own, 2)
-        bucket["raw_opponent_adjustment_pts"] = round(raw_opp, 2)
+        score_own = float(bucket["score_adjustment_pts"])
+        score_opp = float(bucket["score_opponent_adjustment_pts"])
+        edge_own = float(bucket["adjustment_pts"])
+        edge_opp = float(bucket["opponent_adjustment_pts"])
+        bucket["raw_adjustment_pts"] = round(score_own, 2)
+        bucket["raw_opponent_adjustment_pts"] = round(score_opp, 2)
+        bucket["score_adjustment_pts"] = round(score_own, 2)
+        bucket["score_opponent_adjustment_pts"] = round(score_opp, 2)
         bucket["adjustment_pts"] = max(
             _MAX_OWN_ADJUSTMENT,
-            round(raw_own * INJURY_MARKET_WEIGHT, 2),
+            round(edge_own, 2),
         )
         bucket["opponent_adjustment_pts"] = min(
             _MAX_OPPONENT_ADJUSTMENT,
-            round(raw_opp * INJURY_MARKET_WEIGHT, 2),
+            round(edge_opp, 2),
+        )
+        bucket["impact_sigma"] = round(
+            float(bucket.get("impact_sigma") or 0.0), 3
         )
         bucket["injuries"].sort(
             key=lambda item: (
@@ -239,6 +322,7 @@ def load_week_player_context(
         "week": int(week),
         "by_team": by_team,
         "positions_modeled": list(CANONICAL_POSITIONS),
+        "model": "predictive_injury_v1",
     }
 
 
@@ -249,8 +333,11 @@ def team_injury_context(
     empty = {
         "adjustment_pts": 0.0,
         "opponent_adjustment_pts": 0.0,
+        "score_adjustment_pts": 0.0,
+        "score_opponent_adjustment_pts": 0.0,
         "raw_adjustment_pts": 0.0,
         "raw_opponent_adjustment_pts": 0.0,
+        "impact_sigma": 0.0,
         "injuries": [],
         "drivers": [],
     }
@@ -259,16 +346,121 @@ def team_injury_context(
     return dict(context.get("by_team", {}).get(str(team_id), empty))
 
 
+def refine_injury_with_market_move(
+    injury: dict[str, Any] | None,
+    *,
+    spread_move: float | None,
+    total_move: float | None,
+    is_home: bool,
+) -> dict[str, Any]:
+    """
+    Recompute edge adjustments using game-level line movement.
+
+    Score impacts stay fixed; edge shrinks when the market already
+    moved in the injury-implied direction.
+    """
+
+    from app.analysis.insights.betting.injury_impact import (
+        market_priced_fraction_for_injury,
+    )
+
+    base = dict(injury or {})
+    notes = list(base.get("injuries") or [])
+    if not notes and not (
+        base.get("score_adjustment_pts")
+        or base.get("raw_adjustment_pts")
+    ):
+        return base
+
+    edge_own_total = 0.0
+    edge_opp_total = 0.0
+    score_own_total = 0.0
+    score_opp_total = 0.0
+    sigma_sq = 0.0
+    refined_notes: list[dict[str, Any]] = []
+    for note in notes:
+        score_own = float(note.get("score_own_delta") or 0.0)
+        score_opp = float(note.get("score_opponent_delta") or 0.0)
+        priced = market_priced_fraction_for_injury(
+            position=note.get("position"),
+            status=str(note.get("game_status") or "").lower(),
+            spread_move=spread_move,
+            total_move=total_move,
+            own_score_delta=score_own,
+            opponent_score_delta=score_opp,
+            injured_team_is_home=is_home,
+        )
+        edge_own = round(score_own * (1.0 - priced), 3)
+        edge_opp = round(score_opp * (1.0 - priced), 3)
+        updated = {
+            **note,
+            "market_priced_fraction": round(priced, 3),
+            "edge_own_delta": edge_own,
+            "edge_opponent_delta": edge_opp,
+            "own_score_delta": round(edge_own, 2),
+            "opponent_score_delta": round(edge_opp, 2),
+            "projection_impact_pts": (
+                round(edge_own, 2)
+                if edge_own
+                else (round(edge_opp, 2) if edge_opp else 0.0)
+            ),
+        }
+        refined_notes.append(updated)
+        edge_own_total += edge_own
+        edge_opp_total += edge_opp
+        score_own_total += score_own
+        score_opp_total += score_opp
+        sigma_sq += float(note.get("impact_sigma") or 0.0) ** 2
+
+    if not notes:
+        # Team-level only fallback.
+        score_own_total = float(
+            base.get("score_adjustment_pts")
+            or base.get("raw_adjustment_pts")
+            or 0.0
+        )
+        score_opp_total = float(
+            base.get("score_opponent_adjustment_pts")
+            or base.get("raw_opponent_adjustment_pts")
+            or 0.0
+        )
+        priced = market_priced_fraction_for_injury(
+            position="QB",
+            spread_move=spread_move,
+            total_move=total_move,
+            own_score_delta=score_own_total,
+            opponent_score_delta=score_opp_total,
+            injured_team_is_home=is_home,
+        )
+        edge_own_total = score_own_total * (1.0 - priced)
+        edge_opp_total = score_opp_total * (1.0 - priced)
+
+    base["injuries"] = refined_notes
+    base["score_adjustment_pts"] = round(score_own_total, 2)
+    base["score_opponent_adjustment_pts"] = round(score_opp_total, 2)
+    base["raw_adjustment_pts"] = round(score_own_total, 2)
+    base["raw_opponent_adjustment_pts"] = round(score_opp_total, 2)
+    base["adjustment_pts"] = max(
+        _MAX_OWN_ADJUSTMENT, round(edge_own_total, 2)
+    )
+    base["opponent_adjustment_pts"] = min(
+        _MAX_OPPONENT_ADJUSTMENT, round(edge_opp_total, 2)
+    )
+    if sigma_sq > 0:
+        base["impact_sigma"] = round(sigma_sq ** 0.5, 3)
+    return base
+
+
 def combined_score_adjustments(
     *,
     home_injury: dict[str, Any] | None,
     away_injury: dict[str, Any] | None,
 ) -> tuple[float, float]:
     """
-    Net home/away score deltas from both teams' injury reports.
+    Net home/away **edge** deltas from both teams' injury reports.
 
     Offense injuries cut that team's score; defense injuries raise
-    the opponent's score.
+    the opponent's score. Uses market-residualized adjustment_pts.
     """
 
     home = home_injury or {}
@@ -282,6 +474,16 @@ def combined_score_adjustments(
         + float(home.get("opponent_adjustment_pts") or 0.0)
     )
     return round(home_adj, 2), round(away_adj, 2)
+
+
+def combined_impact_sigma(
+    *,
+    home_injury: dict[str, Any] | None,
+    away_injury: dict[str, Any] | None,
+) -> float:
+    home = float((home_injury or {}).get("impact_sigma") or 0.0)
+    away = float((away_injury or {}).get("impact_sigma") or 0.0)
+    return round((home ** 2 + away ** 2) ** 0.5, 3)
 
 
 def apply_injury_adjustment(

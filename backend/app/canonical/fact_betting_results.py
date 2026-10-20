@@ -136,6 +136,97 @@ ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
 
 ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
   ADD COLUMN IF NOT EXISTS beat_close BOOLEAN;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS bet_status TEXT;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS bet_label TEXT;
+
+CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.fact_betting_residual_challenger (
+    season INTEGER NOT NULL PRIMARY KEY,
+    method TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT FALSE,
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    model_version TEXT,
+    model_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    mae_home DOUBLE PRECISION,
+    mae_away DOUBLE PRECISION,
+    note TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.fact_betting_score_distribution (
+    season INTEGER NOT NULL PRIMARY KEY,
+    method TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT FALSE,
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    model_version TEXT,
+    model_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    sigma_home DOUBLE PRECISION,
+    sigma_away DOUBLE PRECISION,
+    rho DOUBLE PRECISION,
+    note TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.fact_betting_context_ablation (
+    season INTEGER NOT NULL PRIMARY KEY,
+    report_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    best_group TEXT,
+    note TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.fact_betting_qualification_thresholds (
+    season INTEGER NOT NULL PRIMARY KEY,
+    method TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT FALSE,
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    model_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    strong_edge_pp DOUBLE PRECISION,
+    strong_ev_pct DOUBLE PRECISION,
+    lean_edge_pp DOUBLE PRECISION,
+    lean_ev_pct DOUBLE PRECISION,
+    holdout_strong_roi DOUBLE PRECISION,
+    note TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_projection_snapshot
+  ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{{}}'::jsonb;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_projection_snapshot
+  ADD COLUMN IF NOT EXISTS model_version TEXT;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_projection_snapshot
+  ADD COLUMN IF NOT EXISTS decision_at TIMESTAMP;
+
+CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.fact_betting_model_promotion (
+    season INTEGER NOT NULL,
+    component TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    active_model TEXT NOT NULL DEFAULT 'champion',
+    candidate_version TEXT,
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    champion_mae DOUBLE PRECISION,
+    challenger_mae DOUBLE PRECISION,
+    relative_improvement DOUBLE PRECISION,
+    bootstrap_confidence DOUBLE PRECISION,
+    report_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    note TEXT,
+    decided_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (season, component)
+);
+
+CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.fact_betting_learning_report (
+    season INTEGER NOT NULL PRIMARY KEY,
+    report_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    n_settled INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -178,19 +269,27 @@ def upsert_projection_snapshot(
     if existing and existing.get("frozen") and not freeze:
         return
     frozen = bool(freeze or (existing or {}).get("frozen"))
+    import json
+
+    payload = snapshot.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
     sql = f"""
         INSERT INTO {FANTASY_SCHEMA}.fact_betting_projection_snapshot (
             game_id, season, week, home_team, away_team,
             projected_home_score, projected_away_score, projected_total,
             model_spread, market_spread, market_total,
             market_home_score, market_away_score,
-            captured_at, frozen, updated_at
+            captured_at, frozen, payload, model_version, decision_at,
+            updated_at
         ) VALUES (
             :game_id, :season, :week, :home_team, :away_team,
             :projected_home_score, :projected_away_score, :projected_total,
             :model_spread, :market_spread, :market_total,
             :market_home_score, :market_away_score,
-            CAST(:captured_at AS TIMESTAMP), :frozen, CURRENT_TIMESTAMP
+            CAST(:captured_at AS TIMESTAMP), :frozen,
+            CAST(:payload AS JSONB), :model_version,
+            CAST(:decision_at AS TIMESTAMP), CURRENT_TIMESTAMP
         )
         ON CONFLICT (game_id) DO UPDATE SET
             season = EXCLUDED.season,
@@ -242,15 +341,51 @@ def upsert_projection_snapshot(
                 THEN {FANTASY_SCHEMA}.fact_betting_projection_snapshot.captured_at
                 ELSE EXCLUDED.captured_at
             END,
+            payload = CASE
+                WHEN {FANTASY_SCHEMA}.fact_betting_projection_snapshot.frozen
+                THEN {FANTASY_SCHEMA}.fact_betting_projection_snapshot.payload
+                ELSE EXCLUDED.payload
+            END,
+            model_version = CASE
+                WHEN {FANTASY_SCHEMA}.fact_betting_projection_snapshot.frozen
+                THEN {FANTASY_SCHEMA}.fact_betting_projection_snapshot.model_version
+                ELSE EXCLUDED.model_version
+            END,
+            decision_at = CASE
+                WHEN {FANTASY_SCHEMA}.fact_betting_projection_snapshot.frozen
+                THEN {FANTASY_SCHEMA}.fact_betting_projection_snapshot.decision_at
+                ELSE EXCLUDED.decision_at
+            END,
             frozen = EXCLUDED.frozen OR
                 {FANTASY_SCHEMA}.fact_betting_projection_snapshot.frozen,
             updated_at = CURRENT_TIMESTAMP
     """
+    decision_at = (
+        snapshot.get("decision_at")
+        or (payload.get("decision_at") if isinstance(payload, dict) else None)
+        or snapshot.get("captured_at")
+        or datetime.now(timezone.utc).isoformat()
+    )
     params = {
-        **snapshot,
+        "game_id": snapshot.get("game_id"),
+        "season": snapshot.get("season"),
+        "week": snapshot.get("week"),
+        "home_team": snapshot.get("home_team"),
+        "away_team": snapshot.get("away_team"),
+        "projected_home_score": snapshot.get("projected_home_score"),
+        "projected_away_score": snapshot.get("projected_away_score"),
+        "projected_total": snapshot.get("projected_total"),
+        "model_spread": snapshot.get("model_spread"),
+        "market_spread": snapshot.get("market_spread"),
+        "market_total": snapshot.get("market_total"),
+        "market_home_score": snapshot.get("market_home_score"),
+        "market_away_score": snapshot.get("market_away_score"),
         "frozen": frozen,
         "captured_at": snapshot.get("captured_at")
         or datetime.now(timezone.utc).isoformat(),
+        "payload": json.dumps(payload, sort_keys=True, default=str),
+        "model_version": snapshot.get("model_version"),
+        "decision_at": decision_at,
     }
     try:
         with engine.begin() as connection:
@@ -324,7 +459,8 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
             market_id, game_id, season, week, market_type, selection,
             line, price, model_probability, raw_model_probability,
             market_probability, edge,
-            confidence, result, model_correct, home_score, away_score,
+            confidence, bet_status, bet_label, result, model_correct,
+            home_score, away_score,
             actual_total, actual_spread, model_home_score, model_away_score,
             model_total, model_spread, market_spread, market_total,
             total_error, spread_error, closing_line, bet_line, bet_price,
@@ -334,7 +470,8 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
             :market_id, :game_id, :season, :week, :market_type, :selection,
             :line, :price, :model_probability, :raw_model_probability,
             :market_probability, :edge,
-            :confidence, :result, :model_correct, :home_score, :away_score,
+            :confidence, :bet_status, :bet_label, :result, :model_correct,
+            :home_score, :away_score,
             :actual_total, :actual_spread, :model_home_score, :model_away_score,
             :model_total, :model_spread, :market_spread, :market_total,
             :total_error, :spread_error, :closing_line, :bet_line, :bet_price,
@@ -344,6 +481,20 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
             CAST(:settled_at AS TIMESTAMP), :source
         )
         ON CONFLICT (market_id) DO UPDATE SET
+            selection = EXCLUDED.selection,
+            line = EXCLUDED.line,
+            price = EXCLUDED.price,
+            market_probability = EXCLUDED.market_probability,
+            edge = EXCLUDED.edge,
+            confidence = EXCLUDED.confidence,
+            bet_status = COALESCE(
+                EXCLUDED.bet_status,
+                {FANTASY_SCHEMA}.fact_betting_market_result.bet_status
+            ),
+            bet_label = COALESCE(
+                EXCLUDED.bet_label,
+                {FANTASY_SCHEMA}.fact_betting_market_result.bet_label
+            ),
             result = EXCLUDED.result,
             model_correct = EXCLUDED.model_correct,
             model_probability = COALESCE(
@@ -390,6 +541,8 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
                     "market_probability": row.get("market_probability"),
                     "edge": row.get("edge"),
                     "confidence": row.get("confidence"),
+                    "bet_status": row.get("bet_status"),
+                    "bet_label": row.get("bet_label"),
                     "result": row.get("result"),
                     "model_correct": row.get("model_correct"),
                     "home_score": row.get("home_score"),
@@ -725,5 +878,585 @@ def get_edge_confidence(season: int) -> dict[str, Any] | None:
                 "note": payload.get("note"),
                 "season": payload.get("season"),
             }
+    except Exception:
+        return None
+
+
+def upsert_residual_challenger(
+    model: dict[str, Any],
+    *,
+    season: int,
+) -> None:
+    if not model:
+        return
+    try:
+        ensure_betting_results_tables()
+    except Exception:
+        return
+    import json
+
+    metrics = model.get("metrics") or {}
+    sql = f"""
+        INSERT INTO {FANTASY_SCHEMA}.fact_betting_residual_challenger (
+            season, method, active, sample_size, model_version,
+            model_json, mae_home, mae_away, note, updated_at
+        ) VALUES (
+            :season, :method, :active, :sample_size, :model_version,
+            CAST(:model_json AS JSONB), :mae_home, :mae_away,
+            :note, CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (season) DO UPDATE SET
+            method = EXCLUDED.method,
+            active = EXCLUDED.active,
+            sample_size = EXCLUDED.sample_size,
+            model_version = EXCLUDED.model_version,
+            model_json = EXCLUDED.model_json,
+            mae_home = EXCLUDED.mae_home,
+            mae_away = EXCLUDED.mae_away,
+            note = EXCLUDED.note,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    params = {
+        "season": int(season),
+        "method": str(model.get("method") or "prior"),
+        "active": bool(model.get("active")),
+        "sample_size": int(model.get("sample_size") or 0),
+        "model_version": model.get("model_version"),
+        "model_json": json.dumps(model, sort_keys=True, default=str),
+        "mae_home": metrics.get("mae_home"),
+        "mae_away": metrics.get("mae_away"),
+        "note": model.get("note"),
+    }
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(sql), params)
+    except Exception:
+        return
+
+
+def get_residual_challenger(season: int) -> dict[str, Any] | None:
+    try:
+        ensure_betting_results_tables()
+        sql = f"""
+            SELECT *
+            FROM {FANTASY_SCHEMA}.fact_betting_residual_challenger
+            WHERE season = :season
+        """
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(sql), {"season": int(season)}
+            ).mappings().first()
+            if not row:
+                return None
+            payload = dict(row)
+            model_json = payload.get("model_json")
+            if isinstance(model_json, str):
+                import json
+
+                try:
+                    model_json = json.loads(model_json)
+                except json.JSONDecodeError:
+                    model_json = {}
+            if isinstance(model_json, dict):
+                return {
+                    **model_json,
+                    "season": payload.get("season"),
+                    "updated_at": (
+                        payload.get("updated_at").isoformat()
+                        if hasattr(payload.get("updated_at"), "isoformat")
+                        else payload.get("updated_at")
+                    ),
+                }
+            return None
+    except Exception:
+        return None
+
+
+def upsert_score_distribution(
+    model: dict[str, Any],
+    *,
+    season: int,
+) -> None:
+    if not model:
+        return
+    try:
+        ensure_betting_results_tables()
+    except Exception:
+        return
+    import json
+
+    sql = f"""
+        INSERT INTO {FANTASY_SCHEMA}.fact_betting_score_distribution (
+            season, method, active, sample_size, model_version,
+            model_json, sigma_home, sigma_away, rho, note, updated_at
+        ) VALUES (
+            :season, :method, :active, :sample_size, :model_version,
+            CAST(:model_json AS JSONB), :sigma_home, :sigma_away,
+            :rho, :note, CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (season) DO UPDATE SET
+            method = EXCLUDED.method,
+            active = EXCLUDED.active,
+            sample_size = EXCLUDED.sample_size,
+            model_version = EXCLUDED.model_version,
+            model_json = EXCLUDED.model_json,
+            sigma_home = EXCLUDED.sigma_home,
+            sigma_away = EXCLUDED.sigma_away,
+            rho = EXCLUDED.rho,
+            note = EXCLUDED.note,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    params = {
+        "season": int(season),
+        "method": str(model.get("method") or "prior"),
+        "active": bool(model.get("active")),
+        "sample_size": int(model.get("sample_size") or 0),
+        "model_version": model.get("model_version"),
+        "model_json": json.dumps(model, sort_keys=True, default=str),
+        "sigma_home": model.get("sigma_home"),
+        "sigma_away": model.get("sigma_away"),
+        "rho": model.get("rho"),
+        "note": model.get("note"),
+    }
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(sql), params)
+    except Exception:
+        return
+
+
+def get_score_distribution(season: int) -> dict[str, Any] | None:
+    try:
+        ensure_betting_results_tables()
+        sql = f"""
+            SELECT *
+            FROM {FANTASY_SCHEMA}.fact_betting_score_distribution
+            WHERE season = :season
+        """
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(sql), {"season": int(season)}
+            ).mappings().first()
+            if not row:
+                return None
+            payload = dict(row)
+            model_json = payload.get("model_json")
+            if isinstance(model_json, str):
+                import json
+
+                try:
+                    model_json = json.loads(model_json)
+                except json.JSONDecodeError:
+                    model_json = {}
+            if isinstance(model_json, dict):
+                return {
+                    **model_json,
+                    "season": payload.get("season"),
+                    "updated_at": (
+                        payload.get("updated_at").isoformat()
+                        if hasattr(payload.get("updated_at"), "isoformat")
+                        else payload.get("updated_at")
+                    ),
+                }
+            return None
+    except Exception:
+        return None
+
+
+def upsert_context_ablation(
+    report: dict[str, Any],
+    *,
+    season: int,
+) -> None:
+    if not report:
+        return
+    try:
+        ensure_betting_results_tables()
+    except Exception:
+        return
+    import json
+
+    sql = f"""
+        INSERT INTO {FANTASY_SCHEMA}.fact_betting_context_ablation (
+            season, report_json, best_group, note, updated_at
+        ) VALUES (
+            :season, CAST(:report_json AS JSONB), :best_group,
+            :note, CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (season) DO UPDATE SET
+            report_json = EXCLUDED.report_json,
+            best_group = EXCLUDED.best_group,
+            note = EXCLUDED.note,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    params = {
+        "season": int(season),
+        "report_json": json.dumps(report, sort_keys=True, default=str),
+        "best_group": report.get("best_group"),
+        "note": report.get("note"),
+    }
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(sql), params)
+    except Exception:
+        return
+
+
+def get_context_ablation(season: int) -> dict[str, Any] | None:
+    try:
+        ensure_betting_results_tables()
+        sql = f"""
+            SELECT *
+            FROM {FANTASY_SCHEMA}.fact_betting_context_ablation
+            WHERE season = :season
+        """
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(sql), {"season": int(season)}
+            ).mappings().first()
+            if not row:
+                return None
+            payload = dict(row)
+            report = payload.get("report_json")
+            if isinstance(report, str):
+                import json
+
+                try:
+                    report = json.loads(report)
+                except json.JSONDecodeError:
+                    report = {}
+            if isinstance(report, dict):
+                return {
+                    **report,
+                    "season": payload.get("season"),
+                    "best_group": payload.get("best_group")
+                    or report.get("best_group"),
+                    "updated_at": (
+                        payload.get("updated_at").isoformat()
+                        if hasattr(payload.get("updated_at"), "isoformat")
+                        else payload.get("updated_at")
+                    ),
+                }
+            return None
+    except Exception:
+        return None
+
+
+def upsert_qualification_thresholds(
+    model: dict[str, Any],
+    *,
+    season: int,
+) -> None:
+    if not model:
+        return
+    try:
+        ensure_betting_results_tables()
+    except Exception:
+        return
+    import json
+
+    metrics = model.get("metrics") or {}
+    strong = model.get("strong_bet") or {}
+    lean = model.get("lean") or {}
+    sql = f"""
+        INSERT INTO {FANTASY_SCHEMA}.fact_betting_qualification_thresholds (
+            season, method, active, sample_size, model_json,
+            strong_edge_pp, strong_ev_pct, lean_edge_pp, lean_ev_pct,
+            holdout_strong_roi, note, updated_at
+        ) VALUES (
+            :season, :method, :active, :sample_size,
+            CAST(:model_json AS JSONB),
+            :strong_edge_pp, :strong_ev_pct, :lean_edge_pp, :lean_ev_pct,
+            :holdout_strong_roi, :note, CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (season) DO UPDATE SET
+            method = EXCLUDED.method,
+            active = EXCLUDED.active,
+            sample_size = EXCLUDED.sample_size,
+            model_json = EXCLUDED.model_json,
+            strong_edge_pp = EXCLUDED.strong_edge_pp,
+            strong_ev_pct = EXCLUDED.strong_ev_pct,
+            lean_edge_pp = EXCLUDED.lean_edge_pp,
+            lean_ev_pct = EXCLUDED.lean_ev_pct,
+            holdout_strong_roi = EXCLUDED.holdout_strong_roi,
+            note = EXCLUDED.note,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    params = {
+        "season": int(season),
+        "method": str(model.get("method") or "prior"),
+        "active": bool(model.get("active")),
+        "sample_size": int(model.get("sample_size") or 0),
+        "model_json": json.dumps(model, sort_keys=True, default=str),
+        "strong_edge_pp": strong.get("min_edge_prob_pp"),
+        "strong_ev_pct": strong.get("min_ev_pct"),
+        "lean_edge_pp": lean.get("min_edge_prob_pp"),
+        "lean_ev_pct": lean.get("min_ev_pct"),
+        "holdout_strong_roi": metrics.get("holdout_strong_roi"),
+        "note": model.get("note"),
+    }
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(sql), params)
+    except Exception:
+        return
+
+
+def get_qualification_thresholds(season: int) -> dict[str, Any] | None:
+    try:
+        ensure_betting_results_tables()
+        sql = f"""
+            SELECT *
+            FROM {FANTASY_SCHEMA}.fact_betting_qualification_thresholds
+            WHERE season = :season
+        """
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(sql), {"season": int(season)}
+            ).mappings().first()
+            if not row:
+                return None
+            payload = dict(row)
+            model_json = payload.get("model_json")
+            if isinstance(model_json, str):
+                import json
+
+                try:
+                    model_json = json.loads(model_json)
+                except json.JSONDecodeError:
+                    model_json = {}
+            if isinstance(model_json, dict):
+                return {
+                    **model_json,
+                    "season": payload.get("season"),
+                    "updated_at": (
+                        payload.get("updated_at").isoformat()
+                        if hasattr(payload.get("updated_at"), "isoformat")
+                        else payload.get("updated_at")
+                    ),
+                }
+            return None
+    except Exception:
+        return None
+
+
+def upsert_model_promotion(
+    report: dict[str, Any],
+    *,
+    season: int,
+    component: str = "residual_challenger",
+) -> None:
+    if not report:
+        return
+    try:
+        ensure_betting_results_tables()
+    except Exception:
+        return
+    import json
+
+    promotion = report.get("promotion") or report
+    bootstrap = promotion.get("bootstrap") or {}
+    sql = f"""
+        INSERT INTO {FANTASY_SCHEMA}.fact_betting_model_promotion (
+            season, component, decision, active_model, candidate_version,
+            sample_size, champion_mae, challenger_mae, relative_improvement,
+            bootstrap_confidence, report_json, note, decided_at, updated_at
+        ) VALUES (
+            :season, :component, :decision, :active_model, :candidate_version,
+            :sample_size, :champion_mae, :challenger_mae, :relative_improvement,
+            :bootstrap_confidence, CAST(:report_json AS JSONB), :note,
+            CAST(:decided_at AS TIMESTAMP), CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (season, component) DO UPDATE SET
+            decision = EXCLUDED.decision,
+            active_model = EXCLUDED.active_model,
+            candidate_version = EXCLUDED.candidate_version,
+            sample_size = EXCLUDED.sample_size,
+            champion_mae = EXCLUDED.champion_mae,
+            challenger_mae = EXCLUDED.challenger_mae,
+            relative_improvement = EXCLUDED.relative_improvement,
+            bootstrap_confidence = EXCLUDED.bootstrap_confidence,
+            report_json = EXCLUDED.report_json,
+            note = EXCLUDED.note,
+            decided_at = EXCLUDED.decided_at,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    params = {
+        "season": int(season),
+        "component": str(component),
+        "decision": str(promotion.get("decision") or "hold"),
+        "active_model": str(
+            promotion.get("active_model") or "champion"
+        ),
+        "candidate_version": promotion.get("candidate_version"),
+        "sample_size": int(promotion.get("sample_size") or 0),
+        "champion_mae": promotion.get("champion_projection_mae"),
+        "challenger_mae": promotion.get("challenger_projection_mae"),
+        "relative_improvement": promotion.get("relative_improvement"),
+        "bootstrap_confidence": bootstrap.get("p_challenger_better"),
+        "report_json": json.dumps(report, sort_keys=True, default=str),
+        "note": promotion.get("note") or report.get("note"),
+        "decided_at": promotion.get("decided_at")
+        or datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(sql), params)
+    except Exception:
+        return
+
+
+def get_model_promotion(
+    season: int,
+    *,
+    component: str = "residual_challenger",
+) -> dict[str, Any] | None:
+    try:
+        ensure_betting_results_tables()
+        sql = f"""
+            SELECT *
+            FROM {FANTASY_SCHEMA}.fact_betting_model_promotion
+            WHERE season = :season AND component = :component
+        """
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(sql),
+                {"season": int(season), "component": str(component)},
+            ).mappings().first()
+            if not row:
+                return None
+            payload = dict(row)
+            report_json = payload.get("report_json")
+            if isinstance(report_json, str):
+                import json
+
+                try:
+                    report_json = json.loads(report_json)
+                except json.JSONDecodeError:
+                    report_json = {}
+            return {
+                "season": payload.get("season"),
+                "component": payload.get("component"),
+                "decision": payload.get("decision"),
+                "active_model": payload.get("active_model") or "champion",
+                "candidate_version": payload.get("candidate_version"),
+                "sample_size": payload.get("sample_size"),
+                "champion_mae": payload.get("champion_mae"),
+                "challenger_mae": payload.get("challenger_mae"),
+                "relative_improvement": payload.get(
+                    "relative_improvement"
+                ),
+                "bootstrap_confidence": payload.get(
+                    "bootstrap_confidence"
+                ),
+                "note": payload.get("note"),
+                "report": (
+                    report_json if isinstance(report_json, dict) else {}
+                ),
+                "decided_at": (
+                    payload.get("decided_at").isoformat()
+                    if hasattr(payload.get("decided_at"), "isoformat")
+                    else payload.get("decided_at")
+                ),
+                "updated_at": (
+                    payload.get("updated_at").isoformat()
+                    if hasattr(payload.get("updated_at"), "isoformat")
+                    else payload.get("updated_at")
+                ),
+            }
+    except Exception:
+        return None
+
+
+def get_active_residual_model(season: int) -> str:
+    """Return promoted apply target: champion or challenger."""
+
+    row = get_model_promotion(
+        int(season), component="residual_challenger"
+    )
+    if not row:
+        return "champion"
+    decision = str(row.get("decision") or "")
+    active = str(row.get("active_model") or "champion").lower()
+    if decision == "demote":
+        return "champion"
+    if decision == "promote" or active == "challenger":
+        return "challenger"
+    return "champion"
+
+
+def upsert_learning_report(
+    report: dict[str, Any],
+    *,
+    season: int,
+) -> None:
+    if not report:
+        return
+    try:
+        ensure_betting_results_tables()
+    except Exception:
+        return
+    import json
+
+    sql = f"""
+        INSERT INTO {FANTASY_SCHEMA}.fact_betting_learning_report (
+            season, report_json, n_settled, note, updated_at
+        ) VALUES (
+            :season, CAST(:report_json AS JSONB), :n_settled, :note,
+            CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (season) DO UPDATE SET
+            report_json = EXCLUDED.report_json,
+            n_settled = EXCLUDED.n_settled,
+            note = EXCLUDED.note,
+            updated_at = CURRENT_TIMESTAMP
+    """
+    params = {
+        "season": int(season),
+        "report_json": json.dumps(report, sort_keys=True, default=str),
+        "n_settled": int(report.get("n_settled") or 0),
+        "note": report.get("note"),
+    }
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(sql), params)
+    except Exception:
+        return
+
+
+def get_learning_report(season: int) -> dict[str, Any] | None:
+    try:
+        ensure_betting_results_tables()
+        sql = f"""
+            SELECT *
+            FROM {FANTASY_SCHEMA}.fact_betting_learning_report
+            WHERE season = :season
+        """
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(sql), {"season": int(season)}
+            ).mappings().first()
+            if not row:
+                return None
+            payload = dict(row)
+            report_json = payload.get("report_json")
+            if isinstance(report_json, str):
+                import json
+
+                try:
+                    report_json = json.loads(report_json)
+                except json.JSONDecodeError:
+                    report_json = {}
+            if isinstance(report_json, dict):
+                return {
+                    **report_json,
+                    "season": payload.get("season"),
+                    "updated_at": (
+                        payload.get("updated_at").isoformat()
+                        if hasattr(payload.get("updated_at"), "isoformat")
+                        else payload.get("updated_at")
+                    ),
+                }
+            return None
     except Exception:
         return None

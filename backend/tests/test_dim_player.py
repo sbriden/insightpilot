@@ -182,6 +182,7 @@ class DimPlayerTests(unittest.TestCase):
             make_team_id("CIN"),
         )
         self.assertIsNone(free_agent["current_team_id"])
+        self.assertEqual(free_agent["status"], "Retired")
 
         source_ids = json.loads(chase["source_ids"])
         self.assertEqual(source_ids["gsis_id"], "00-0036900")

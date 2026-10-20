@@ -24,25 +24,50 @@ from app.analysis.insights.betting.pricing import (
     american_to_implied_prob,
     confidence_explanation,
     confidence_from_edge,
+    cover_probability_from_engine,
     expected_value,
+    expected_value_american,
     implied_prob_to_american,
     num,
+    over_probability_from_engine,
     remove_vig_two_way,
     spread_to_cover_probability,
     total_to_over_probability,
+    win_probability_from_engine,
+    win_probability_from_spread,
+)
+from app.analysis.insights.betting.qualification_thresholds import (
+    fit_qualification_thresholds,
+    prior_qualification_thresholds,
+)
+from app.analysis.insights.betting.score_distribution import (
+    build_distribution_features,
+    empty_score_distribution,
+    fit_score_distribution,
+    prior_score_distribution_model,
+    simulate_game_scores,
+)
+from app.analysis.insights.betting.score_distribution_dataset import (
+    build_score_distribution_rows,
+)
+from app.analysis.insights.betting.context_ablation import (
+    run_context_ablation,
 )
 from app.analysis.insights.betting.game_scripts import (
     project_game_scripts,
 )
 from app.analysis.insights.betting.player_context import (
+    combined_impact_sigma,
     combined_score_adjustments,
     load_week_player_context,
+    refine_injury_with_market_move,
     team_injury_context,
 )
 from app.analysis.insights.betting.results import (
+    build_bet_tape_snapshot,
     build_performance_trend,
-    build_projection_snapshot,
     calibration_feedback_from_results,
+    filter_learning_rows,
     is_game_final,
     settle_event_markets,
     summarize_model_results,
@@ -56,6 +81,20 @@ from app.analysis.insights.betting.residual_model import (
     apply_score_residuals,
     calibration_score_deltas,
     predict_score_residuals,
+)
+from app.analysis.insights.betting.residual_features import (
+    build_residual_features,
+)
+from app.analysis.insights.betting.residual_challenger import (
+    challenger_to_residual_payload,
+    compare_champion_challenger,
+    fit_residual_challenger,
+    predict_challenger_residuals,
+    prior_challenger_model,
+)
+from app.analysis.insights.betting.residual_challenger_dataset import (
+    build_challenger_training_rows,
+    rest_days_by_game,
 )
 from app.analysis.insights.betting.model_disagreement import (
     build_model_disagreement,
@@ -130,9 +169,17 @@ def build_betting_slate(
     season: int | None = None,
     week: int | None = None,
     sport: str = "NFL",
+    residual_model: str = "auto",
+    probability_engine: str = "logistic",
 ) -> dict[str, Any]:
     del sport
     resolved_season = _resolve_season(season)
+    applied_residual = _resolve_residual_model(
+        residual_model, season=resolved_season
+    )
+    applied_prob_engine = _resolve_probability_engine(
+        probability_engine
+    )
     resolved_week = _resolve_week(week, season=resolved_season)
     events = _load_events(
         season=resolved_season,
@@ -147,10 +194,19 @@ def build_betting_slate(
         week=resolved_week,
     )
     calibration = _load_calibration_feedback(resolved_season)
-    probability_calibration = _load_probability_calibration(
+    probability_calibrations = _load_probability_calibrations(
         resolved_season
     )
+    probability_calibration = probability_calibrations.get("all")
     edge_confidence = _load_edge_confidence(resolved_season)
+    challenger_model = _load_residual_challenger(resolved_season)
+    score_dist_model = _load_score_distribution(resolved_season)
+    rest_by_game = rest_days_by_game(season=resolved_season)
+    context_ablation = _load_context_ablation(resolved_season)
+    qualification_thresholds = (
+        _load_qualification_thresholds(resolved_season)
+        or prior_qualification_thresholds()
+    )
     enriched: list[dict[str, Any]] = []
     markets: list[dict[str, Any]] = []
     signals: list[dict[str, Any]] = []
@@ -166,6 +222,10 @@ def build_betting_slate(
             for event in events
         ]
     )
+    stored_by_id = _stored_results_by_market(
+        season=resolved_season,
+        week=resolved_week,
+    )
 
     for event in events:
         built = _enrich_event(
@@ -174,7 +234,14 @@ def build_betting_slate(
             player_context=player_context,
             calibration=calibration,
             probability_calibration=probability_calibration,
+            probability_calibrations=probability_calibrations,
+            rest_by_game=rest_by_game,
             edge_confidence=edge_confidence,
+            challenger_model=challenger_model,
+            residual_model=applied_residual,
+            score_distribution_model=score_dist_model,
+            probability_engine=applied_prob_engine,
+            qualification_thresholds=qualification_thresholds,
         )
         event_row = built["event"]
         event_markets = built["markets"]
@@ -186,7 +253,14 @@ def build_betting_slate(
             existing_snapshot=snapshots.get(event_id),
             snapshot_loaded=True,
         )
-        newly_settled.extend(settled_rows)
+        newly_settled.extend(
+            row
+            for row in settled_rows
+            if _settlement_changed(
+                stored_by_id.get(str(row.get("market_id") or "")),
+                row,
+            )
+        )
         enriched.append(event_row)
         markets.extend(event_markets)
         signals.extend(built["signals"])
@@ -295,6 +369,56 @@ def build_betting_slate(
         ),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "injury_report_week": player_context.get("week"),
+        "residual_model": applied_residual,
+        "probability_engine": applied_prob_engine,
+        "score_distribution_model": (
+            {
+                "active": bool(
+                    (score_dist_model or {}).get("active")
+                ),
+                "method": (score_dist_model or {}).get("method"),
+                "sample_size": (score_dist_model or {}).get(
+                    "sample_size"
+                ),
+                "sigma_home": (score_dist_model or {}).get(
+                    "sigma_home"
+                ),
+                "sigma_away": (score_dist_model or {}).get(
+                    "sigma_away"
+                ),
+                "rho": (score_dist_model or {}).get("rho"),
+                "note": (score_dist_model or {}).get("note"),
+            }
+            if score_dist_model
+            else {
+                "active": False,
+                "method": "prior",
+                "sample_size": 0,
+            }
+        ),
+        "residual_challenger": (
+            {
+                "active": bool(
+                    (challenger_model or {}).get("active")
+                ),
+                "method": (challenger_model or {}).get("method"),
+                "sample_size": (challenger_model or {}).get(
+                    "sample_size"
+                ),
+                "model_version": (challenger_model or {}).get(
+                    "model_version"
+                ),
+                "note": (challenger_model or {}).get("note"),
+            }
+            if challenger_model
+            else {
+                "active": False,
+                "method": "prior",
+                "sample_size": 0,
+                "model_version": None,
+                "note": "Challenger model not fitted yet.",
+            }
+        ),
         "probability_calibration": (
             {
                 "active": bool(
@@ -323,6 +447,20 @@ def build_betting_slate(
             }
             if edge_confidence
             else None
+        ),
+        "context_ablation": context_ablation,
+        "qualification_thresholds": {
+            "active": bool(qualification_thresholds.get("active")),
+            "source": qualification_thresholds.get("source"),
+            "method": qualification_thresholds.get("method"),
+            "strong_bet": qualification_thresholds.get("strong_bet"),
+            "lean": qualification_thresholds.get("lean"),
+            "metrics": qualification_thresholds.get("metrics"),
+            "note": qualification_thresholds.get("note"),
+            "sample_size": qualification_thresholds.get("sample_size"),
+        },
+        "model_promotion": _load_model_promotion_summary(
+            resolved_season
         ),
     }
 
@@ -356,17 +494,28 @@ def get_betting_event(
         week=week,
     )
     calibration = _load_calibration_feedback(resolved_season)
-    probability_calibration = _load_probability_calibration(
+    probability_calibrations = _load_probability_calibrations(
         resolved_season
     )
+    probability_calibration = probability_calibrations.get("all")
     edge_confidence = _load_edge_confidence(resolved_season)
+    challenger_model = _load_residual_challenger(resolved_season)
+    score_dist_model = _load_score_distribution(resolved_season)
+    applied_residual = _resolve_residual_model(
+        "auto", season=resolved_season
+    )
     built = _enrich_event(
         events[0],
         strength_context=strength_context,
         player_context=player_context,
         calibration=calibration,
         probability_calibration=probability_calibration,
+        probability_calibrations=probability_calibrations,
         edge_confidence=edge_confidence,
+        challenger_model=challenger_model,
+        residual_model=applied_residual,
+        score_distribution_model=score_dist_model,
+        probability_engine="logistic",
     )
     _sync_event_results(built["event"], built["markets"])
     return built
@@ -430,7 +579,9 @@ def build_betting_results(
         for event in slate.get("events") or []:
             if not is_game_final(event):
                 continue
-            snap = build_projection_snapshot(event)
+            snap = build_bet_tape_snapshot(
+                event, prefer_opening=True
+            )
             live.extend(
                 settle_event_markets(
                     event,
@@ -454,14 +605,8 @@ def build_betting_results(
     feedback = _load_calibration_feedback(
         int(season_value or 0)
     ) or calibration_feedback_from_results(stored)
-    # Keep probability calibration current from season settled bets.
-    try:
-        _refresh_season_calibration(
-            season=int(season_value or resolved_season),
-            extra_rows=season_stored or stored,
-        )
-    except Exception:
-        pass
+    # The slate refits calibration when a final score is new.
+    # Doing it again on every Results view blocked the API.
     probability_calibration = _load_probability_calibration(
         int(season_value) if season_value is not None else resolved_season
     )
@@ -473,6 +618,23 @@ def build_betting_results(
             else resolved_season
         )
     )
+    learning_report = None
+    model_promotion = None
+    try:
+        from app.canonical.fact_betting_results import (
+            get_learning_report,
+            get_model_promotion,
+        )
+
+        sid = int(
+            season_value
+            if season_value is not None
+            else resolved_season
+        )
+        learning_report = get_learning_report(sid)
+        model_promotion = get_model_promotion(sid)
+    except Exception:
+        pass
     return {
         "sport": _SPORT,
         "league": _LEAGUE,
@@ -499,6 +661,8 @@ def build_betting_results(
         ),
         "edge_confidence": edge_confidence,
         "market_performance": (summary or {}).get("market_performance"),
+        "learning": learning_report,
+        "model_promotion": model_promotion,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -525,13 +689,20 @@ def _sync_event_results(
         existing = existing_snapshot
     else:
         existing = get_projection_snapshot(event_id)
-    snap = build_projection_snapshot(event)
+
+    from app.analysis.insights.betting.model_learning import (
+        build_enriched_prediction_snapshot,
+    )
 
     if not is_game_final(event):
-        # Capture a first-publish snapshot for later CLV/settlement
-        # bet_line, but do not freeze yet — open games recompute
-        # live so model upgrades appear on refresh.
+        # Capture a first-publish prediction log (features, versions,
+        # odds, decisions) for later CLV/settlement grading, but do
+        # not freeze yet — open games recompute live so model
+        # upgrades appear on refresh.
         if not existing:
+            snap = build_enriched_prediction_snapshot(
+                event, markets, prefer_opening=False
+            )
             upsert_projection_snapshot(snap, freeze=False)
         return []
 
@@ -539,12 +710,21 @@ def _sync_event_results(
         freeze_projection_snapshot(event_id)
         existing = get_projection_snapshot(event_id)
     elif not existing:
+        # No pregame tape — use opening lines, never close/current.
+        snap = build_enriched_prediction_snapshot(
+            event, markets, prefer_opening=True
+        )
         snap["frozen"] = True
         upsert_projection_snapshot(snap, freeze=True)
         existing = snap
 
     settled = settle_event_markets(
-        event, markets, snapshot=existing or snap
+        event,
+        markets,
+        snapshot=existing
+        or build_enriched_prediction_snapshot(
+            event, markets, prefer_opening=True
+        ),
     )
     if settled:
         upsert_market_results(settled)
@@ -582,14 +762,45 @@ def _load_calibration_feedback(
 def _load_probability_calibration(
     season: int,
 ) -> dict[str, Any] | None:
+    """Load the blended ``all`` calibration model (compat helper)."""
+
+    models = _load_probability_calibrations(season)
+    return models.get("all")
+
+
+def _load_probability_calibrations(
+    season: int,
+) -> dict[str, dict[str, Any]]:
+    """Load per-market + all probability calibration models."""
+
     try:
         from app.canonical.fact_betting_results import (
             get_probability_calibration,
         )
-
-        return get_probability_calibration(int(season))
     except Exception:
+        return {}
+
+    out: dict[str, dict[str, Any]] = {}
+    for mtype in ("all", "spread", "total", "moneyline"):
+        try:
+            model = get_probability_calibration(
+                int(season), market_type=mtype
+            )
+        except Exception:
+            model = None
+        if model:
+            out[mtype] = model
+    return out
+
+
+def _calibration_for_market(
+    calibrations: dict[str, dict[str, Any]] | None,
+    market_type: str,
+) -> dict[str, Any] | None:
+    if not calibrations:
         return None
+    mtype = str(market_type or "").lower()
+    return calibrations.get(mtype) or calibrations.get("all")
 
 
 def _load_edge_confidence(season: int) -> dict[str, Any] | None:
@@ -603,6 +814,160 @@ def _load_edge_confidence(season: int) -> dict[str, Any] | None:
         return None
 
 
+def _load_residual_challenger(season: int) -> dict[str, Any] | None:
+    try:
+        from app.canonical.fact_betting_results import (
+            get_residual_challenger,
+        )
+
+        return get_residual_challenger(int(season))
+    except Exception:
+        return None
+
+
+def _load_model_promotion_summary(
+    season: int,
+) -> dict[str, Any] | None:
+    try:
+        from app.canonical.fact_betting_results import (
+            get_model_promotion,
+        )
+
+        row = get_model_promotion(int(season))
+        if not row:
+            return {
+                "active_model": "champion",
+                "decision": None,
+                "note": "No promotion cycle recorded yet.",
+            }
+        return {
+            "active_model": row.get("active_model") or "champion",
+            "decision": row.get("decision"),
+            "candidate_version": row.get("candidate_version"),
+            "sample_size": row.get("sample_size"),
+            "relative_improvement": row.get("relative_improvement"),
+            "bootstrap_confidence": row.get("bootstrap_confidence"),
+            "note": row.get("note"),
+            "decided_at": row.get("decided_at"),
+        }
+    except Exception:
+        return None
+
+
+def _resolve_residual_model(
+    value: str | None,
+    *,
+    season: int | None = None,
+) -> str:
+    label = str(value or "auto").strip().lower()
+    if label in {"challenger", "challenger_ridge", "ridge"}:
+        return "challenger"
+    if label == "champion":
+        return "champion"
+    # auto: use walk-forward promotion registry when available.
+    if season is not None:
+        try:
+            from app.canonical.fact_betting_results import (
+                get_active_residual_model,
+            )
+
+            return get_active_residual_model(int(season))
+        except Exception:
+            return "champion"
+    return "champion"
+
+
+def _resolve_probability_engine(value: str | None) -> str:
+    label = str(value or "logistic").strip().lower()
+    if label in {
+        "simulation",
+        "sim",
+        "bivariate",
+        "score_distribution",
+        "monte_carlo",
+    }:
+        return "simulation"
+    return "logistic"
+
+
+def _load_score_distribution(season: int) -> dict[str, Any] | None:
+    try:
+        from app.canonical.fact_betting_results import (
+            get_score_distribution,
+        )
+
+        return get_score_distribution(int(season))
+    except Exception:
+        return None
+
+
+def _load_context_ablation(season: int) -> dict[str, Any] | None:
+    try:
+        from app.canonical.fact_betting_results import (
+            get_context_ablation,
+        )
+
+        return get_context_ablation(int(season))
+    except Exception:
+        return None
+
+
+def _load_qualification_thresholds(season: int) -> dict[str, Any] | None:
+    try:
+        from app.canonical.fact_betting_results import (
+            get_qualification_thresholds,
+        )
+
+        return get_qualification_thresholds(int(season))
+    except Exception:
+        return None
+
+
+def _stored_results_by_market(
+    *,
+    season: int,
+    week: int,
+) -> dict[str, dict[str, Any]]:
+    try:
+        from app.canonical.fact_betting_results import (
+            load_market_results,
+        )
+
+        rows = load_market_results(season=season, week=week)
+    except Exception:
+        return {}
+    return {
+        str(row.get("market_id")): row
+        for row in rows
+        if row.get("market_id")
+    }
+
+
+def _settlement_changed(
+    previous: dict[str, Any] | None,
+    row: dict[str, Any],
+) -> bool:
+    """True when this final is new or the score/result moved."""
+
+    if not previous:
+        return True
+    for key in ("result", "home_score", "away_score", "model_correct"):
+        if not _same_result_value(previous.get(key), row.get(key)):
+            return True
+    return False
+
+
+def _same_result_value(left: Any, right: Any) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    if isinstance(left, bool) or isinstance(right, bool):
+        return bool(left) == bool(right)
+    try:
+        return abs(float(left) - float(right)) < 1e-6
+    except (TypeError, ValueError):
+        return str(left) == str(right)
+
+
 def _refresh_season_calibration(
     *,
     season: int,
@@ -614,6 +979,10 @@ def _refresh_season_calibration(
             upsert_calibration,
             upsert_edge_confidence,
             upsert_probability_calibration,
+            upsert_residual_challenger,
+            upsert_score_distribution,
+            upsert_context_ablation,
+            upsert_qualification_thresholds,
         )
     except Exception:
         return
@@ -625,11 +994,22 @@ def _refresh_season_calibration(
             mid = str(row.get("market_id") or "")
             if mid and mid not in seen:
                 rows.append(row)
-    feedback = calibration_feedback_from_results(rows)
+    learn_rows, cohort_label = filter_learning_rows(rows)
+    feedback = calibration_feedback_from_results(learn_rows)
+    feedback["learning_cohort"] = cohort_label
     upsert_calibration(feedback, season=int(season))
 
-    # Probability calibration: fit from raw predicted vs actual.
-    prob_model = fit_probability_calibration(rows, method="auto")
+    # Probability calibration: fit from raw predicted vs actual
+    # on the actionable cohort when available.
+    prob_model = fit_probability_calibration(
+        learn_rows, method="auto"
+    )
+    if isinstance(prob_model, dict):
+        note = str(prob_model.get("note") or "")
+        prob_model["learning_cohort"] = cohort_label
+        prob_model["note"] = (
+            f"{note} Cohort={cohort_label}." if note else note
+        )
     upsert_probability_calibration(
         prob_model,
         season=int(season),
@@ -637,8 +1017,10 @@ def _refresh_season_calibration(
     )
 
     # Learn High/Moderate floors from point-edge bucket backtests.
-    edge_model = fit_confidence_thresholds(rows)
-    market_perf = build_market_performance(rows)
+    edge_model = fit_confidence_thresholds(learn_rows)
+    if isinstance(edge_model, dict):
+        edge_model["learning_cohort"] = cohort_label
+    market_perf = build_market_performance(learn_rows)
     edge_model = merge_edge_confidence_with_markets(
         edge_model, market_perf
     )
@@ -648,7 +1030,7 @@ def _refresh_season_calibration(
     for mtype in ("spread", "total", "moneyline"):
         subset = [
             row
-            for row in rows
+            for row in learn_rows
             if str(row.get("market_type") or "").lower() == mtype
         ]
         if len(subset) < 25:
@@ -656,11 +1038,124 @@ def _refresh_season_calibration(
         m_model = fit_probability_calibration(
             subset, method="auto", market_type=mtype
         )
+        if isinstance(m_model, dict):
+            m_model["learning_cohort"] = cohort_label
         upsert_probability_calibration(
             m_model,
             season=int(season),
             market_type=mtype,
         )
+
+    # Fit residual challenger from reconstructed market-error history.
+    train_rows: list[dict[str, Any]] = []
+    try:
+        train_rows = build_challenger_training_rows(season=int(season))
+        chall_model = fit_residual_challenger(train_rows)
+        upsert_residual_challenger(
+            chall_model, season=int(season)
+        )
+    except Exception:
+        chall_model = None
+
+    # Fit bivariate score-distribution params from market residuals.
+    try:
+        dist_rows = build_score_distribution_rows(season=int(season))
+        dist_model = fit_score_distribution(dist_rows)
+        upsert_score_distribution(
+            dist_model, season=int(season)
+        )
+    except Exception:
+        pass
+
+    # Context feature-group ablation report (injury / rest / move).
+    try:
+        if not train_rows:
+            train_rows = build_challenger_training_rows(
+                season=int(season)
+            )
+        ablation = run_context_ablation(train_rows)
+        upsert_context_ablation(ablation, season=int(season))
+    except Exception:
+        pass
+
+    # Learn Strong/Lean EV + edge floors on time-ordered holdout.
+    try:
+        learn_rows, _ = filter_learning_rows(rows)
+        qual_model = fit_qualification_thresholds(learn_rows)
+        upsert_qualification_thresholds(
+            qual_model, season=int(season)
+        )
+    except Exception:
+        pass
+
+    # Continuous learning report + walk-forward promotion decision.
+    try:
+        from app.analysis.insights.betting.model_learning import (
+            evaluate_settled_learning,
+        )
+        from app.analysis.insights.betting.model_promotion import (
+            run_model_promotion_cycle,
+        )
+        from app.canonical.fact_betting_results import (
+            get_model_promotion,
+            upsert_learning_report,
+            upsert_model_promotion,
+        )
+
+        learning = evaluate_settled_learning(rows)
+        prior = get_model_promotion(int(season)) or {}
+        current_active = str(
+            prior.get("active_model") or "champion"
+        )
+        if not train_rows:
+            train_rows = build_challenger_training_rows(
+                season=int(season)
+            )
+        promotion_cycle = run_model_promotion_cycle(
+            season=int(season),
+            training_rows=train_rows,
+            current_active=current_active,
+            mode="expanding",
+        )
+        upsert_model_promotion(
+            promotion_cycle, season=int(season)
+        )
+        learning["model_promotion"] = {
+            "decision": (
+                (promotion_cycle.get("promotion") or {}).get(
+                    "decision"
+                )
+            ),
+            "active_model": (
+                (promotion_cycle.get("promotion") or {}).get(
+                    "active_model"
+                )
+            ),
+            "relative_improvement": (
+                (promotion_cycle.get("promotion") or {}).get(
+                    "relative_improvement"
+                )
+            ),
+            "bootstrap": (
+                (promotion_cycle.get("promotion") or {}).get(
+                    "bootstrap"
+                )
+            ),
+            "reasons": (
+                (promotion_cycle.get("promotion") or {}).get(
+                    "reasons"
+                )
+            ),
+            "walk_forward_available": bool(
+                (promotion_cycle.get("walk_forward") or {}).get(
+                    "available"
+                )
+            ),
+            "candidate": promotion_cycle.get("candidate"),
+        }
+        upsert_learning_report(learning, season=int(season))
+    except Exception:
+        pass
 
 
 def find_betting_event_by_matchup(
@@ -878,12 +1373,28 @@ def _enrich_event(
     player_context: dict[str, Any] | None = None,
     calibration: dict[str, Any] | None = None,
     probability_calibration: dict[str, Any] | None = None,
+    probability_calibrations: dict[str, dict[str, Any]] | None = None,
     edge_confidence: dict[str, Any] | None = None,
+    challenger_model: dict[str, Any] | None = None,
+    residual_model: str = "champion",
+    score_distribution_model: dict[str, Any] | None = None,
+    probability_engine: str = "logistic",
+    rest_by_game: dict[str, tuple[float, float]] | None = None,
+    qualification_thresholds: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     home = str(raw.get("home_team") or "").upper()
     away = str(raw.get("away_team") or "").upper()
     event_id = str(raw.get("event_id") or "")
     market_spread_raw = num(raw.get("spread"))
+    applied_residual = _resolve_residual_model(residual_model)
+    applied_prob_engine = _resolve_probability_engine(
+        probability_engine
+    )
+    rest_home, rest_away = (7.0, 7.0)
+    if rest_by_game and event_id in rest_by_game:
+        rest_home, rest_away = rest_by_game[event_id]
+    if probability_calibrations is None and probability_calibration:
+        probability_calibrations = {"all": probability_calibration}
     market_total = num(raw.get("over_under"))
     market_home = num(raw.get("home_implied_total"))
     market_away = num(raw.get("away_implied_total"))
@@ -908,9 +1419,44 @@ def _enrich_event(
     home_team_id = str(raw.get("home_team_id") or "")
     away_team_id = str(raw.get("away_team_id") or "")
 
-    home_injury = team_injury_context(player_context, home_team_id)
-    away_injury = team_injury_context(player_context, away_team_id)
+    # Build market movement early so injury edge can residualize
+    # against lines that already moved toward the injury.
+    opening_home_early = num(raw.get("opening_home_implied_total"))
+    opening_away_early = num(raw.get("opening_away_implied_total"))
+    opening_spread_raw_early = num(raw.get("opening_spread"))
+    opening_total_early = num(raw.get("opening_over_under"))
+    if opening_home_early is not None and opening_away_early is not None:
+        opening_spread_early = round(
+            float(opening_away_early) - float(opening_home_early), 1
+        )
+    elif opening_spread_raw_early is not None:
+        opening_spread_early = round(-float(opening_spread_raw_early), 1)
+    else:
+        opening_spread_early = market_spread
+    market_movement_early = build_market_movement(
+        opening_spread=opening_spread_early,
+        current_spread=market_spread,
+        opening_total=opening_total_early or market_total,
+        current_total=market_total,
+    )
+
+    home_injury = refine_injury_with_market_move(
+        team_injury_context(player_context, home_team_id),
+        spread_move=num(market_movement_early.get("spread_move")),
+        total_move=num(market_movement_early.get("total_move")),
+        is_home=True,
+    )
+    away_injury = refine_injury_with_market_move(
+        team_injury_context(player_context, away_team_id),
+        spread_move=num(market_movement_early.get("spread_move")),
+        total_move=num(market_movement_early.get("total_move")),
+        is_home=False,
+    )
     home_adj, away_adj = combined_score_adjustments(
+        home_injury=home_injury,
+        away_injury=away_injury,
+    )
+    injury_sigma = combined_impact_sigma(
         home_injury=home_injury,
         away_injury=away_injury,
     )
@@ -1093,12 +1639,131 @@ def _enrich_event(
         if vs_model.get("explanation"):
             model_drivers.append(str(vs_model["explanation"]))
 
+    # Shadow challenger residual (optional apply). Champion stays default.
+    if not using_locked:
+        prev_applied = applied_residual
+        model_home, model_away, model_total, model_spread, strength_detail = (
+            _merge_challenger_into_scores(
+                model_home=model_home,
+                model_away=model_away,
+                model_total=model_total,
+                model_spread=model_spread,
+                strength_detail=strength_detail,
+                market_home=market_home,
+                market_away=market_away,
+                market_spread=market_spread,
+                market_total=market_total,
+                market_movement=market_movement,
+                home_team_id=home_team_id,
+                away_team_id=away_team_id,
+                strength_context=strength_context,
+                home_injury=home_injury,
+                away_injury=away_injury,
+                home_injury_adj=home_adj,
+                away_injury_adj=away_adj,
+                disagreement=disagreement,
+                week=_as_int(raw.get("week")),
+                calibration=calibration,
+                challenger_model=challenger_model,
+                residual_model=applied_residual,
+                home_rest_days=rest_home,
+                away_rest_days=rest_away,
+            )
+        )
+        residual_meta = strength_detail.get("residuals") or residual_meta
+        residual_home = residual_meta.get("total_residual_home")
+        residual_away = residual_meta.get("total_residual_away")
+        blend_meta = strength_detail.get("blend") or blend_meta
+        compare = (residual_meta.get("compare") or {})
+        if compare.get("challenger"):
+            model_drivers.append(
+                "Challenger residual model attached for comparison "
+                f"(applied={compare.get('applied')})."
+            )
+        if prev_applied == "challenger":
+            game_scripts = project_game_scripts(
+                projected_home=model_home,
+                projected_away=model_away,
+                projected_total=model_total,
+                market_total=market_total,
+                market_spread=market_spread,
+                home_team=home,
+                away_team=away,
+            )
+
+    # Bivariate score simulation (shadow; optional apply in markets).
+    score_distribution = empty_score_distribution()
+    if model_home is not None and model_away is not None:
+        home_prof = (strength_detail.get("home_profile") or {})
+        away_prof = (strength_detail.get("away_profile") or {})
+        home_off = home_prof.get("offense") or {}
+        away_off = away_prof.get("offense") or {}
+        disagree = disagreement or {}
+        dist_features = build_distribution_features(
+            week=_as_int(raw.get("week")),
+            min_games=float(
+                min(
+                    int(strength_detail.get("home_games") or 0),
+                    int(strength_detail.get("away_games") or 0),
+                )
+                if strength_detail.get("available")
+                else 0
+            ),
+            pace_z=num(strength_detail.get("pace_z")),
+            home_turnover_rate=num(home_off.get("turnover_rate")),
+            away_turnover_rate=num(away_off.get("turnover_rate")),
+            disagreement_spread_sd=num(
+                ((disagree.get("spread") or {}).get("stddev"))
+            ),
+            disagreement_total_sd=num(
+                ((disagree.get("total") or {}).get("stddev"))
+            ),
+            missing_strength=(
+                0.0 if strength_detail.get("available") else 1.0
+            ),
+        )
+        if injury_sigma:
+            # Fold injury uncertainty into scale drivers.
+            dist_features["disagreement"] = min(
+                1.0,
+                float(dist_features.get("disagreement") or 0.0)
+                + min(1.0, float(injury_sigma) / 6.0),
+            )
+            dist_features["injury_sigma"] = float(injury_sigma)
+        score_distribution = simulate_game_scores(
+            mean_home=float(model_home),
+            mean_away=float(model_away),
+            model=(
+                score_distribution_model
+                or prior_score_distribution_model()
+            ),
+            features=dist_features,
+            market_spread=market_spread,
+            market_total=market_total,
+            event_id=event_id,
+        )
+        score_distribution.pop("_probs", None)
+
     label = f"{away} @ {home}" if away and home else event_id
     # Prefer schedule kickoff (gameday + gametime stored on
     # fact_game_market.timestamp) over date-only dim_game.game_date.
     # Date-only ISO strings shift a day in US timezones when parsed
     # as UTC midnight in the browser.
     kickoff = raw.get("market_timestamp") or raw.get("start_time")
+    game_forecast = _game_forecast_for_event(
+        event_id=event_id,
+        raw=raw,
+        home=home,
+        away=away,
+        model_home=model_home,
+        model_away=model_away,
+        using_locked=using_locked,
+        locked=locked,
+        strength_detail=strength_detail,
+        score_distribution=score_distribution,
+        game_scripts=game_scripts,
+        timestamp=_iso(kickoff),
+    )
     event = {
         "event_id": event_id,
         "sport": _SPORT,
@@ -1135,6 +1800,7 @@ def _enrich_event(
         "projected_home_score": model_home,
         "projected_away_score": model_away,
         "projected_total": model_total,
+        "game_forecast": game_forecast,
         "model_spread": model_spread,
         "residual_home": residual_home,
         "residual_away": residual_away,
@@ -1143,8 +1809,33 @@ def _enrich_event(
         "residuals": residual_meta or None,
         "model_disagreement": disagreement,
         "game_scripts": game_scripts,
+        "score_distribution": score_distribution,
+        "probability_engine": applied_prob_engine,
         "injury_adjustment_home": home_adj or None,
         "injury_adjustment_away": away_adj or None,
+        "injury_score_impact_home": (
+            float(home_injury.get("score_adjustment_pts") or 0.0)
+            + float(away_injury.get("score_opponent_adjustment_pts") or 0.0)
+        ) or None,
+        "injury_score_impact_away": (
+            float(away_injury.get("score_adjustment_pts") or 0.0)
+            + float(home_injury.get("score_opponent_adjustment_pts") or 0.0)
+        ) or None,
+        "injury_impact_sigma": injury_sigma or None,
+        "injury_context": {
+            "home": {
+                "edge": home_injury.get("adjustment_pts"),
+                "score": home_injury.get("score_adjustment_pts"),
+                "sigma": home_injury.get("impact_sigma"),
+            },
+            "away": {
+                "edge": away_injury.get("adjustment_pts"),
+                "score": away_injury.get("score_adjustment_pts"),
+                "sigma": away_injury.get("impact_sigma"),
+            },
+            "model": "predictive_injury_v1",
+        },
+        "rest_days": {"home": rest_home, "away": rest_away},
         "injuries": injury_notes,
         "model_drivers": model_drivers,
         "injury_report_week": (
@@ -1159,7 +1850,10 @@ def _enrich_event(
     markets = _build_markets(
         event,
         probability_calibration=probability_calibration,
+        probability_calibrations=probability_calibrations,
         edge_confidence=edge_confidence,
+        probability_engine=applied_prob_engine,
+        qualification_thresholds=qualification_thresholds,
     )
     signals = _build_signals(
         event, markets, edge_confidence=edge_confidence
@@ -1200,6 +1894,227 @@ def _enrich_event(
     }
 
 
+def _game_forecast_for_event(
+    *,
+    event_id: str,
+    raw: dict[str, Any],
+    home: str | None,
+    away: str | None,
+    model_home: float | None,
+    model_away: float | None,
+    using_locked: bool,
+    locked: dict[str, Any] | None,
+    strength_detail: dict[str, Any] | None,
+    score_distribution: dict[str, Any] | None,
+    game_scripts: list[dict[str, Any]] | None,
+    timestamp: str | None,
+) -> dict[str, Any] | None:
+    """Attach the shared scoring environment for this game."""
+
+    from app.analysis.insights.game_forecast import (
+        build_game_forecast,
+        forecast_from_snapshot_payload,
+    )
+
+    if using_locked and isinstance(locked, dict):
+        stored = forecast_from_snapshot_payload(locked.get("payload"))
+        if stored:
+            return stored
+    if model_home is None or model_away is None:
+        return None
+    pace_z = None
+    if isinstance(strength_detail, dict):
+        pace_z = num(strength_detail.get("pace_z"))
+    return build_game_forecast(
+        event_id=event_id,
+        season=_as_int(raw.get("season")),
+        week=_as_int(raw.get("week")),
+        home_team=home,
+        away_team=away,
+        projected_home_points=float(model_home),
+        projected_away_points=float(model_away),
+        source="insightpilot_game_model",
+        timestamp=timestamp,
+        pace_z=pace_z,
+        score_distribution_preview=score_distribution,
+        game_scripts_preview=game_scripts,
+    )
+
+
+def _merge_challenger_into_scores(
+    *,
+    model_home: float | None,
+    model_away: float | None,
+    model_total: float | None,
+    model_spread: float | None,
+    strength_detail: dict[str, Any],
+    market_home: float | None,
+    market_away: float | None,
+    market_spread: float | None,
+    market_total: float | None,
+    market_movement: dict[str, Any] | None,
+    home_team_id: str | None,
+    away_team_id: str | None,
+    strength_context: dict[str, Any] | None,
+    home_injury: dict[str, Any] | None,
+    away_injury: dict[str, Any] | None,
+    home_injury_adj: float,
+    away_injury_adj: float,
+    disagreement: dict[str, Any] | None,
+    week: int | None,
+    calibration: dict[str, Any] | None,
+    challenger_model: dict[str, Any] | None,
+    residual_model: str,
+    home_rest_days: float | None = None,
+    away_rest_days: float | None = None,
+) -> tuple[
+    float | None,
+    float | None,
+    float | None,
+    float | None,
+    dict[str, Any],
+]:
+    """Attach challenger shadow; optionally apply it instead of champion."""
+
+    detail = dict(strength_detail or {})
+    residual_meta = dict(detail.get("residuals") or {})
+    move = market_movement or {}
+    feature_payload = build_residual_features(
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        strength_context=strength_context,
+        market_home=market_home,
+        market_away=market_away,
+        market_spread=market_spread,
+        market_total=market_total,
+        spread_move=num(move.get("spread_move")),
+        total_move=num(move.get("total_move")),
+        week=week,
+        home_injury_adj=home_injury_adj,
+        away_injury_adj=away_injury_adj,
+        home_rest_days=home_rest_days,
+        away_rest_days=away_rest_days,
+        home_injury=home_injury,
+        away_injury=away_injury,
+        disagreement=disagreement,
+    )
+    chall_pred = predict_challenger_residuals(
+        feature_payload=feature_payload,
+        model=challenger_model or prior_challenger_model(),
+        market_home=market_home,
+        market_away=market_away,
+    )
+    champion_view = {
+        "residual_home": residual_meta.get("residual_home"),
+        "residual_away": residual_meta.get("residual_away"),
+        "shrink": residual_meta.get("shrink"),
+        "projection_confidence": residual_meta.get("confidence"),
+        "policy_source": (detail.get("blend") or {}).get("policy_source"),
+    }
+    compare = compare_champion_challenger(
+        champion=champion_view,
+        challenger=chall_pred,
+        applied=residual_model,
+    )
+    residual_meta["compare"] = compare
+    residual_meta["feature_snapshot"] = {
+        "available": feature_payload.get("available"),
+        "feature_names": feature_payload.get("feature_names"),
+        "features": feature_payload.get("features"),
+        "vector": feature_payload.get("vector"),
+    }
+    residual_meta["challenger"] = {
+        "residual_home": chall_pred.get("residual_home"),
+        "residual_away": chall_pred.get("residual_away"),
+        "mu_home": chall_pred.get("mu_home"),
+        "mu_away": chall_pred.get("mu_away"),
+        "sigma": chall_pred.get("sigma"),
+        "shrink": chall_pred.get("shrink"),
+        "model_active": chall_pred.get("model_active"),
+        "model_version": chall_pred.get("model_version"),
+        "method": chall_pred.get("method"),
+    }
+
+    out_home = model_home
+    out_away = model_away
+    out_total = model_total
+    out_spread = model_spread
+
+    if residual_model == "challenger":
+        chall_payload = challenger_to_residual_payload(chall_pred)
+        provisional_h, provisional_a, _ = apply_score_residuals(
+            chall_payload
+        )
+        cal_home, cal_away = calibration_score_deltas(
+            projected_home=provisional_h,
+            projected_away=provisional_a,
+            feedback=calibration,
+        )
+        # Injury already in challenger features — only add calibration
+        # here to avoid double-counting personnel impact.
+        chall_payload = add_situational_residuals(
+            chall_payload,
+            home_adjustment=cal_home,
+            away_adjustment=cal_away,
+        )
+        out_home, out_away, apply_meta = apply_score_residuals(
+            chall_payload
+        )
+        residual_meta.update(
+            {
+                "raw_residual_home": chall_payload.get("raw_residual_home"),
+                "raw_residual_away": chall_payload.get("raw_residual_away"),
+                "residual_home": chall_payload.get("residual_home"),
+                "residual_away": chall_payload.get("residual_away"),
+                "situational_residual_home": chall_payload.get(
+                    "situational_residual_home"
+                ),
+                "situational_residual_away": chall_payload.get(
+                    "situational_residual_away"
+                ),
+                "total_residual_home": apply_meta.get(
+                    "total_residual_home"
+                ),
+                "total_residual_away": apply_meta.get(
+                    "total_residual_away"
+                ),
+                "shrink": chall_payload.get("shrink"),
+                "confidence": chall_payload.get("projection_confidence"),
+                "architecture": "market + residual",
+                "applied_model": "challenger",
+            }
+        )
+        detail["blend"] = {
+            "confidence": chall_payload.get("projection_confidence"),
+            "market_weight": chall_payload.get("market_weight"),
+            "model_weight": chall_payload.get("model_weight"),
+            "policy_source": chall_payload.get("policy_source"),
+            "policy_learned": chall_payload.get("policy_learned"),
+            "mode": apply_meta.get("mode"),
+            "formula": chall_payload.get("formula"),
+            "home_applied_delta": apply_meta.get("home_applied_delta"),
+            "away_applied_delta": apply_meta.get("away_applied_delta"),
+        }
+        detail["projection_confidence"] = chall_payload.get(
+            "projection_confidence"
+        )
+        out_total = (
+            round(out_home + out_away, 1)
+            if out_home is not None and out_away is not None
+            else None
+        )
+        out_spread = (
+            round(out_away - out_home, 1)
+            if out_home is not None and out_away is not None
+            else None
+        )
+    else:
+        residual_meta["applied_model"] = "champion"
+
+    detail["residuals"] = residual_meta
+    return out_home, out_away, out_total, out_spread, detail
+
+
 def _model_scores(
     *,
     market_home: float | None,
@@ -1213,7 +2128,7 @@ def _model_scores(
     calibration: dict[str, Any] | None = None,
 ) -> tuple[float | None, float | None, dict[str, Any]]:
     """
-    Market + residual projection.
+    Market + residual projection (champion path).
 
     1. Predict where the market is wrong (team-strength residual)
     2. Shrink residual by projection confidence
@@ -1284,6 +2199,7 @@ def _model_scores(
             "shrink": residual_model.get("shrink"),
             "confidence": residual_model.get("projection_confidence"),
             "architecture": "market + residual",
+            "applied_model": "champion",
         },
         "strength_home": residual_model.get("strength_home"),
         "strength_away": residual_model.get("strength_away"),
@@ -1297,7 +2213,10 @@ def _build_markets(
     event: dict[str, Any],
     *,
     probability_calibration: dict[str, Any] | None = None,
+    probability_calibrations: dict[str, dict[str, Any]] | None = None,
     edge_confidence: dict[str, Any] | None = None,
+    probability_engine: str = "logistic",
+    qualification_thresholds: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     markets: list[dict[str, Any]] = []
     event_id = event["event_id"]
@@ -1305,8 +2224,15 @@ def _build_markets(
     away = event.get("away_team")
     start = event.get("start_time")
     label = event.get("label")
-    cal_model = probability_calibration
+    calibrations = probability_calibrations
+    if calibrations is None and probability_calibration:
+        calibrations = {"all": probability_calibration}
     conf_thresholds = edge_confidence
+    applied_engine = _resolve_probability_engine(probability_engine)
+    simulation = event.get("score_distribution")
+    qual_thresholds = (
+        qualification_thresholds or prior_qualification_thresholds()
+    )
 
     market_spread = num(event.get("market_spread"))
     model_spread = num(event.get("model_spread"))
@@ -1325,10 +2251,25 @@ def _build_markets(
             if home
             else f"Home {market_spread:+g}"
         )
-        cover_p = spread_to_cover_probability(
+        cover_logistic = spread_to_cover_probability(
             model_spread,
             market_spread,
         )
+        cover_p = cover_probability_from_engine(
+            engine=applied_engine,
+            model_spread=model_spread,
+            market_spread=market_spread,
+            simulation=simulation,
+        )
+        event.setdefault("probability_compare", {})["spread"] = {
+            "logistic": cover_logistic,
+            "simulation": (
+                ((simulation or {}).get("cover_at_line") or {}).get(
+                    "home_cover"
+                )
+            ),
+            "applied": applied_engine,
+        }
         # Market at -110 each side → ~52.4% implied before vig.
         market_p_raw = american_to_implied_prob(_DEFAULT_PRICE)
         market_p, _ = remove_vig_two_way(
@@ -1341,7 +2282,8 @@ def _build_markets(
             (1.0 - cover_p) if cover_p is not None else None
         )
         cal = calibrate_market_probability(
-            raw_model_p, model=cal_model
+            raw_model_p,
+            model=_calibration_for_market(calibrations, "spread"),
         )
         model_p = cal["model_probability"]
         if not side_is_home and away:
@@ -1360,7 +2302,17 @@ def _build_markets(
             else None
         )
         fair = implied_prob_to_american(model_p)
-        ev = expected_value(model_p, _DEFAULT_PRICE)
+        push_p = None
+        cover_block = (simulation or {}).get("cover_at_line") or {}
+        if cover_block.get("push") is not None:
+            push_p = float(cover_block["push"])
+        ev = expected_value_american(
+            model_p, _DEFAULT_PRICE, p_push=push_p or 0.0
+        )
+        spread_agreement = (
+            ((event.get("model_disagreement") or {}).get("spread") or {})
+            .get("model_agreement")
+        )
         confidence = confidence_from_edge(
             edge_points=edge_points,
             edge_probability=(
@@ -1371,10 +2323,7 @@ def _build_markets(
             model_coverage=model_spread is not None,
             thresholds=conf_thresholds,
             market_type="spread",
-            model_agreement=(
-                ((event.get("model_disagreement") or {}).get("spread") or {})
-                .get("model_agreement")
-            ),
+            model_agreement=spread_agreement,
         )
         markets.append(
             _market_row(
@@ -1396,11 +2345,15 @@ def _build_markets(
                 probability_calibration_method=cal.get("method"),
                 event=event,
                 market_probability=market_p,
+                no_vig_market_probability=market_p,
                 model_fair_price=fair,
                 edge=edge_points,
                 edge_probability=edge_prob,
                 expected_value=ev,
+                push_probability=push_p,
                 confidence=confidence,
+                model_agreement=spread_agreement,
+                classification_thresholds=qual_thresholds,
                 home_team=home,
                 away_team=away,
                 opening_line=(
@@ -1427,10 +2380,25 @@ def _build_markets(
         )
 
     if market_total is not None:
-        over_p = total_to_over_probability(
+        over_logistic = total_to_over_probability(
             model_total,
             market_total,
         )
+        over_p = over_probability_from_engine(
+            engine=applied_engine,
+            model_total=model_total,
+            market_total=market_total,
+            simulation=simulation,
+        )
+        event.setdefault("probability_compare", {})["total"] = {
+            "logistic": over_logistic,
+            "simulation": (
+                ((simulation or {}).get("over_at_line") or {}).get(
+                    "over"
+                )
+            ),
+            "applied": applied_engine,
+        }
         market_p_raw = american_to_implied_prob(_DEFAULT_PRICE)
         market_p, _ = remove_vig_two_way(
             market_p_raw,
@@ -1441,7 +2409,8 @@ def _build_markets(
             (1.0 - over_p) if over_p is not None else None
         )
         cal = calibrate_market_probability(
-            raw_model_p, model=cal_model
+            raw_model_p,
+            model=_calibration_for_market(calibrations, "total"),
         )
         model_p = cal["model_probability"]
         selection = (
@@ -1460,7 +2429,17 @@ def _build_markets(
             else None
         )
         fair = implied_prob_to_american(model_p)
-        ev = expected_value(model_p, _DEFAULT_PRICE)
+        push_p = None
+        over_block = (simulation or {}).get("over_at_line") or {}
+        if over_block.get("push") is not None:
+            push_p = float(over_block["push"])
+        ev = expected_value_american(
+            model_p, _DEFAULT_PRICE, p_push=push_p or 0.0
+        )
+        total_agreement = (
+            ((event.get("model_disagreement") or {}).get("total") or {})
+            .get("model_agreement")
+        )
         confidence = confidence_from_edge(
             edge_points=edge_points,
             edge_probability=(
@@ -1471,10 +2450,7 @@ def _build_markets(
             model_coverage=model_total is not None,
             thresholds=conf_thresholds,
             market_type="total",
-            model_agreement=(
-                ((event.get("model_disagreement") or {}).get("total") or {})
-                .get("model_agreement")
-            ),
+            model_agreement=total_agreement,
         )
         markets.append(
             _market_row(
@@ -1494,11 +2470,15 @@ def _build_markets(
                 probability_calibration_method=cal.get("method"),
                 event=event,
                 market_probability=market_p,
+                no_vig_market_probability=market_p,
                 model_fair_price=fair,
                 edge=edge_points,
                 edge_probability=edge_prob,
                 expected_value=ev,
+                push_probability=push_p,
                 confidence=confidence,
+                model_agreement=total_agreement,
+                classification_thresholds=qual_thresholds,
                 home_team=home,
                 away_team=away,
                 opening_line=opening_total,
@@ -1512,23 +2492,30 @@ def _build_markets(
             )
         )
 
-    # Moneyline from spread-derived home win probability.
+    # Moneyline from shared probability engine (logistic or sim).
     if model_spread is not None:
-        # Rough home win prob from model spread (no push).
-        home_win_p = 1.0 / (
-            1.0 + math_exp_safe(float(model_spread) / 7.0)
+        home_win_logistic = win_probability_from_spread(model_spread)
+        home_win_p = win_probability_from_engine(
+            engine=applied_engine,
+            model_spread=model_spread,
+            simulation=simulation,
         )
-        # Market home win from market spread.
+        event.setdefault("probability_compare", {})["moneyline"] = {
+            "logistic": home_win_logistic,
+            "simulation": (simulation or {}).get("home_win_prob"),
+            "applied": applied_engine,
+        }
+        # Market home win from market spread (logistic benchmark).
         market_home_win = (
-            1.0
-            / (1.0 + math_exp_safe(float(market_spread) / 7.0))
+            win_probability_from_spread(market_spread) or 0.5
             if market_spread is not None
             else 0.5
         )
-        side_home = home_win_p >= 0.5
-        raw_model_p = home_win_p if side_home else (1.0 - home_win_p)
-        cal = calibrate_market_probability(
-            raw_model_p, model=cal_model
+        side_home, cal = _moneyline_side_after_calibration(
+            home_win_p,
+            cal_model=_calibration_for_market(
+                calibrations, "moneyline"
+            ),
         )
         model_p = cal["model_probability"]
         market_p = (
@@ -1548,7 +2535,12 @@ def _build_markets(
             if model_p is not None
             else None
         )
-        ev = expected_value(model_p, market_price)
+        # Moneyline has no push at full game (ties rare / voided).
+        ev = expected_value_american(model_p, market_price, p_push=0.0)
+        ml_agreement = (
+            ((event.get("model_disagreement") or {}).get("spread") or {})
+            .get("model_agreement")
+        )
         confidence = confidence_from_edge(
             edge_probability=(
                 (model_p - market_p) if model_p is not None else None
@@ -1556,10 +2548,7 @@ def _build_markets(
             model_coverage=True,
             thresholds=conf_thresholds,
             market_type="moneyline",
-            model_agreement=(
-                ((event.get("model_disagreement") or {}).get("spread") or {})
-                .get("model_agreement")
-            ),
+            model_agreement=ml_agreement,
         )
         # Prefer stored/derived home ML; flip for away selection.
         open_home_ml = (
@@ -1599,11 +2588,15 @@ def _build_markets(
                 probability_calibration_method=cal.get("method"),
                 event=event,
                 market_probability=market_p,
+                no_vig_market_probability=market_p,
                 model_fair_price=fair,
                 edge=edge_prob,
                 edge_probability=edge_prob,
                 expected_value=ev,
+                push_probability=0.0,
                 confidence=confidence,
+                model_agreement=ml_agreement,
+                classification_thresholds=qual_thresholds,
                 home_team=home,
                 away_team=away,
                 opening_price=open_price,
@@ -1658,6 +2651,10 @@ def _market_row(
     probability_calibrated: bool = False,
     probability_calibration_method: str | None = None,
     event: dict[str, Any] | None = None,
+    push_probability: float | None = None,
+    no_vig_market_probability: float | None = None,
+    model_agreement: float | None = None,
+    classification_thresholds: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     direction = "aligned"
     if edge is not None:
@@ -1689,6 +2686,9 @@ def _market_row(
         (event or {}).get("model_disagreement"),
         market_type,
     )
+    agreement = model_agreement
+    if agreement is None and isinstance(ensemble_block, dict):
+        agreement = num(ensemble_block.get("model_agreement"))
     decision = evaluate_market_decision(
         market_type=market_type,
         selection=selection,
@@ -1702,7 +2702,16 @@ def _market_row(
         model_confidence=confidence,
         direction=direction,
         event=event,
+        market={
+            "market_type": market_type,
+            "model_disagreement": ensemble_block,
+            "probability_calibrated": probability_calibrated,
+        },
         probability_calibrated=probability_calibrated,
+        offered_odds=price,
+        push_probability=push_probability,
+        model_agreement=agreement,
+        classification_thresholds=classification_thresholds,
     )
     bet = decision.get("bet") or {}
     prediction = decision.get("prediction") or {}
@@ -1721,7 +2730,9 @@ def _market_row(
         "market_subtype": None,
         "selection": selection,
         "line": line,
+        "offered_line": line,
         "price": price,
+        "offered_odds": price,
         "opening_line": opening_line if opening_line is not None else line,
         "opening_price": (
             opening_price if opening_price is not None else price
@@ -1745,6 +2756,11 @@ def _market_row(
                 else None
             )
         ),
+        "push_probability": (
+            round(float(push_probability), 4)
+            if push_probability is not None
+            else None
+        ),
         "probability_calibrated": bool(probability_calibrated),
         "probability_calibration_method": (
             probability_calibration_method
@@ -1753,6 +2769,15 @@ def _market_row(
             round(float(market_probability), 4)
             if market_probability is not None
             else None
+        ),
+        "no_vig_market_probability": (
+            round(float(no_vig_market_probability), 4)
+            if no_vig_market_probability is not None
+            else (
+                round(float(market_probability), 4)
+                if market_probability is not None
+                else None
+            )
         ),
         "model_fair_price": model_fair_price,
         "model_projection": model_projection,
@@ -1771,12 +2796,25 @@ def _market_row(
             (ensemble_block or {}).get("projection_stddev")
         ),
         "model_agreement": (
-            (ensemble_block or {}).get("model_agreement")
+            agreement
+            if agreement is not None
+            else (ensemble_block or {}).get("model_agreement")
         ),
         "model_agreement_label": (ensemble_block or {}).get("label"),
         "ensemble_estimates": (ensemble_block or {}).get("estimates"),
         "ensemble_n_models": (ensemble_block or {}).get("n_models"),
         "model_disagreement": ensemble_block,
+        "uncertainty": bet.get("uncertainty") or {
+            "data_quality": data_quality.get("label"),
+            "model_agreement": agreement,
+            "probability_calibrated": bool(probability_calibrated),
+            "sigma_margin": (
+                ((event or {}).get("score_distribution") or {})
+                .get("uncertainty")
+                or {}
+            ).get("sigma_margin"),
+        },
+        "pricing_audit": bet.get("pricing_audit"),
         "direction": direction,
         # Legacy field — prediction disagreement, not bet advice.
         "primary_signal": prediction_signal,
@@ -1878,6 +2916,44 @@ def _total_opportunity(
         f"environment); taking the {side} {market_total:g} has "
         f"{likelihood}."
     )
+
+
+def _moneyline_side_after_calibration(
+    home_win_p: float,
+    *,
+    cal_model: dict[str, Any] | None,
+) -> tuple[bool, dict[str, Any]]:
+    """Choose the moneyline side that matches the shown win probability.
+
+    The raw favorite can fall under 50% once probability calibration
+    is applied. Selecting that side would say a team with a losing
+    chance is the pick, so the opponent is used instead and the
+    displayed probability is the complement.
+    """
+
+    home_raw = float(home_win_p)
+    side_home = home_raw >= 0.5
+    raw_model_p = home_raw if side_home else (1.0 - home_raw)
+    cal = calibrate_market_probability(
+        raw_model_p,
+        model=cal_model,
+    )
+    model_p = cal.get("model_probability")
+    if model_p is None or float(model_p) >= 0.5:
+        return side_home, cal
+
+    flipped_p = round(1.0 - float(model_p), 4)
+    raw = cal.get("raw_model_probability")
+    flipped = {
+        **cal,
+        "model_probability": flipped_p,
+        "raw_model_probability": (
+            round(1.0 - float(raw), 4)
+            if raw is not None
+            else None
+        ),
+    }
+    return (not side_home), flipped
 
 
 def _moneyline_opportunity(

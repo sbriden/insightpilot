@@ -8,6 +8,7 @@ import {
   setDfsDragData,
 } from "@/components/fantasy/dfs/drag";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
+import TeamLogo from "@/components/teams/TeamLogo";
 import type {
   DfsCorrelationPair,
   DfsLineup,
@@ -187,12 +188,17 @@ export default function LineupCard({
                     }}
                   >
                     <p
-                      className="truncate text-sm font-medium"
+                      className="flex items-center gap-1.5 truncate text-sm font-medium"
                       style={{
                         color: snapshotTokens.textPrimary,
                       }}
                     >
-                      {row.player.name}
+                      <TeamLogo
+                        abbreviation={row.player.team}
+                        size={18}
+                      />
+                      <span className="truncate">
+                        {row.player.name}
                       {row.player.is_captain ? " · CPT" : ""}
                       {playerPairs.length > 0 ? (
                         <span
@@ -203,6 +209,7 @@ export default function LineupCard({
                           ↕
                         </span>
                       ) : null}
+                      </span>
                     </p>
                     <p
                       className="text-[11px]"

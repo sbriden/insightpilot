@@ -29,6 +29,7 @@ export interface RegistryAnalysis {
   /** Runtime component family */
   runtime:
     | "player_snapshot"
+    | "player_overview"
     | "dfs_analyzer"
     | "sports_betting";
   /** Optional nested tab / view within the runtime */
@@ -40,15 +41,54 @@ export interface RegistryAnalysis {
 
 export const ANALYSIS_REGISTRY: RegistryAnalysis[] = [
   {
-    analysis_key: "fantasy.player_overview",
-    name: "Player Overview",
+    analysis_key: "fantasy.player_table",
+    name: "Player Table",
     description:
-      "Analyze a player's performance, usage, trends and fantasy outlook.",
+      "Browse players and compare production, opportunity, and assessment scores.",
     data_product_id: "fantasy_football",
     data_product_label: "Fantasy Football",
     category: "Player",
-    runtime: "player_snapshot",
-    view: "snapshot",
+    runtime: "player_overview",
+    view: "table",
+    supported_context: ["player", "team", "season", "week"],
+    status: "available",
+  },
+  {
+    analysis_key: "fantasy.player_scatter",
+    name: "Player Scatter",
+    description:
+      "Explore how opportunity and production relate across players.",
+    data_product_id: "fantasy_football",
+    data_product_label: "Fantasy Football",
+    category: "Player",
+    runtime: "player_overview",
+    view: "scatter",
+    supported_context: ["player", "team", "season", "week"],
+    status: "available",
+  },
+  {
+    analysis_key: "fantasy.player_compare",
+    name: "Player Compare",
+    description:
+      "Compare value, opportunity, and production for any two players.",
+    data_product_id: "fantasy_football",
+    data_product_label: "Fantasy Football",
+    category: "Player",
+    runtime: "player_overview",
+    view: "compare",
+    supported_context: ["player", "team", "season", "week"],
+    status: "available",
+  },
+  {
+    analysis_key: "fantasy.team_stats",
+    name: "Team Stats",
+    description:
+      "Review team leaders and depth charts.",
+    data_product_id: "fantasy_football",
+    data_product_label: "Fantasy Football",
+    category: "Player",
+    runtime: "player_overview",
+    view: "teams",
     supported_context: ["player", "team", "season", "week"],
     status: "available",
   },
@@ -196,6 +236,34 @@ export const ANALYSIS_REGISTRY: RegistryAnalysis[] = [
     status: "available",
   },
 ];
+
+/** Earlier apps stored Player Overview as one analysis with inner tabs. */
+export const LEGACY_PLAYER_OVERVIEW_KEY = "fantasy.player_overview";
+
+export const PLAYER_OVERVIEW_ANALYSIS_KEYS = [
+  "fantasy.player_table",
+  "fantasy.player_scatter",
+  "fantasy.player_compare",
+  "fantasy.team_stats",
+] as const;
+
+export function expandLegacyOverviewKeys(
+  keys: string[]
+): string[] {
+  const expanded: string[] = [];
+  for (const key of keys) {
+    const next =
+      key === LEGACY_PLAYER_OVERVIEW_KEY
+        ? PLAYER_OVERVIEW_ANALYSIS_KEYS
+        : [key];
+    for (const item of next) {
+      if (!expanded.includes(item)) {
+        expanded.push(item);
+      }
+    }
+  }
+  return expanded;
+}
 
 export function getRegistryAnalysis(
   analysisKey: string

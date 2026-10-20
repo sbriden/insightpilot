@@ -178,6 +178,67 @@ class FactPlayerEfficiencyTests(unittest.TestCase):
         self.assertIsNone(row["yards_per_carry"])
         self.assertIsNone(row["fantasy_points_per_route"])
 
+    def test_qb_td_rate_stays_on_pass_attempts_when_he_scrambles(self):
+        gsis_id = "00-0030200"
+        game = "2024_03_KC_CIN"
+        player_id = make_player_id(
+            player_resolution_key(gsis_id=gsis_id)
+        )
+        game_id = make_game_id(
+            game_resolution_key(nflverse_game_id=game)
+        )
+        stats = pd.DataFrame(
+            [
+                {
+                    "player_id": gsis_id,
+                    "game_id": game,
+                    "season": 2024,
+                    "week": 3,
+                    "season_type": "REG",
+                    "team": "KC",
+                    "position": "QB",
+                    "carries": 4,
+                    "rushing_yards": 21,
+                    "rushing_tds": 2,
+                    "rushing_epa": 1.0,
+                    "targets": 0,
+                    "receptions": 0,
+                    "receiving_yards": 0,
+                    "receiving_tds": 0,
+                    "attempts": 20,
+                    "passing_tds": 0,
+                    "passing_epa": 1.0,
+                    "fantasy_points_ppr": 18.0,
+                }
+            ]
+        )
+        usage = pd.DataFrame(
+            [
+                {
+                    "gsis_id": gsis_id,
+                    "nflverse_game_id": game,
+                    "routes_run": None,
+                    "dropbacks": 22,
+                    "touches": 4,
+                }
+            ]
+        )
+        with patch(
+            "app.canonical.fact_player_efficiency.upsert_fact_player_efficiency"
+        ):
+            fact = build_fact_player_efficiency(
+                [2024],
+                persist=False,
+                source_frames={
+                    "player_stats": stats,
+                    "usage": usage,
+                },
+                player_id_lookup={gsis_id: player_id},
+                game_id_lookup={game: game_id},
+            )
+        # 2 rush scores on 4 carries must not replace 0/20 passing.
+        self.assertAlmostEqual(float(fact.iloc[0]["td_rate"]), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

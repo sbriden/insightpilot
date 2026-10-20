@@ -1,8 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { Info } from "lucide-react";
 
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
+import TeamLogo, {
+  TeamMatchupLabel,
+  teamInSelection,
+} from "@/components/teams/TeamLogo";
 import { formatAmerican } from "@/components/betting/formatMarketValues";
 import {
   exportBettingPortfolio,
@@ -14,6 +19,9 @@ import {
   BettingMarket,
   BettingPortfolioAnalytics,
   BettingPortfolioAnalyzeResult,
+  BettingPortfolioAlert,
+  BettingPortfolioGeneration,
+  BettingPortfolioHealthRow,
   BettingPortfolioPosition,
   BettingSlate,
   createBettingPortfolioPosition,
@@ -33,6 +41,11 @@ interface Props {
 }
 
 type ExposureTab = "team" | "game" | "sport" | "market";
+type DetailTab =
+  | "exposure"
+  | "correlation"
+  | "distributions"
+  | "movement";
 type StatusFilter = "open" | "all" | "settled";
 
 export default function BettingPortfolio({
@@ -56,6 +69,8 @@ export default function BettingPortfolio({
     useState<StatusFilter>("open");
   const [exposureTab, setExposureTab] =
     useState<ExposureTab>("game");
+  const [detailTab, setDetailTab] =
+    useState<DetailTab>("exposure");
   const [addOpen, setAddOpen] = useState(false);
   const [addExposure, setAddExposure] = useState(25);
   const [addNotes, setAddNotes] = useState("");
@@ -63,6 +78,8 @@ export default function BettingPortfolio({
     string | null
   >(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [lastGeneration, setLastGeneration] =
+    useState<BettingPortfolioGeneration | null>(null);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [totalExposureInput, setTotalExposureInput] = useState(250);
   const [riskExposureInput, setRiskExposureInput] = useState(75);
@@ -171,12 +188,19 @@ export default function BettingPortfolio({
       ];
       persist(merged);
       setGenerateOpen(false);
+      setLastGeneration(result.generation);
+      const deployed = Math.round(
+        result.generation.deployment_pct
+          ?? (
+            (result.generation.allocated_exposure
+              / Math.max(result.generation.total_exposure, 1))
+            * 100
+          )
+      );
       setMessage(
         `Generated ${result.generation.position_count} positions (${result.generation.single_count ?? 0} singles · ${result.generation.parlay_count ?? 0} parlays) · $${Math.round(
           result.generation.allocated_exposure
-        )} allocated · max $${Math.round(
-          result.generation.risk_exposure
-        )} per game.`
+        )} of $${Math.round(result.generation.total_exposure)} (${deployed}% deployed).`
       );
     } catch (err) {
       setError(
@@ -391,10 +415,13 @@ export default function BettingPortfolio({
 
       <SummaryBar analytics={analytics} />
 
-      <HealthPanel health={analytics?.health ?? []} />
+      <HealthPanel
+        health={analytics?.health ?? []}
+        alerts={analytics?.alerts ?? []}
+      />
 
-      {(analytics?.alerts?.length ?? 0) > 0 ? (
-        <AlertsPanel alerts={analytics!.alerts} />
+      {lastGeneration ? (
+        <GenerationDiagnostics generation={lastGeneration} />
       ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.7fr)_minmax(260px,0.9fr)]">
@@ -465,12 +492,19 @@ export default function BettingPortfolio({
                         }}
                       >
                         <span
-                          className="font-medium"
+                          className="inline-flex items-center gap-1.5 font-medium"
                           style={{
                             color: snapshotTokens.textPrimary,
                           }}
                         >
-                          {row.selection || "—"}
+                          <TeamLogo
+                            abbreviation={teamInSelection(
+                              row.selection,
+                              [row.away_team, row.home_team]
+                            )}
+                            size={18}
+                          />
+                          <span>{row.selection || "—"}</span>
                         </span>
                         <span
                           className="mt-0.5 block text-xs"
@@ -478,7 +512,12 @@ export default function BettingPortfolio({
                             color: snapshotTokens.textMuted,
                           }}
                         >
-                          {row.event_label}
+                          <TeamMatchupLabel
+                            label={row.event_label}
+                            away={row.away_team}
+                            home={row.home_team}
+                            size={16}
+                          />
                         </span>
                       </button>
                     </td>
@@ -486,9 +525,21 @@ export default function BettingPortfolio({
                       className="px-3 py-2.5"
                       style={{ color: snapshotTokens.textSecondary }}
                     >
-                      {row.bet_type === "parlay"
-                        ? `Parlay · ${row.parlay_size || "small"} (${row.leg_count ?? row.legs?.length ?? "—"})`
-                        : "Single"}
+                      <span className="block">
+                        {row.bet_type === "parlay"
+                          ? `Parlay · ${row.parlay_size || "small"} (${row.leg_count ?? row.legs?.length ?? "—"})`
+                          : "Single"}
+                      </span>
+                      {row.qualification_label || row.allocation_tier ? (
+                        <span
+                          className="mt-0.5 block text-[11px]"
+                          style={{ color: snapshotTokens.textMuted }}
+                          title={row.selection_rationale || undefined}
+                        >
+                          {row.qualification_label
+                            || allocationTierLabel(row.allocation_tier)}
+                        </span>
+                      ) : null}
                     </td>
                     <td
                       className="px-3 py-2.5 capitalize"
@@ -623,38 +674,19 @@ export default function BettingPortfolio({
         </aside>
       </div>
 
-      <ExposurePanel
-        tab={exposureTab}
-        onTab={setExposureTab}
+      <PortfolioDetailTabs
+        tab={detailTab}
+        onTab={setDetailTab}
+        exposureTab={exposureTab}
+        onExposureTab={setExposureTab}
         exposure={analytics?.exposure}
-      />
-
-      <CorrelationPanel
         correlations={analytics?.correlations ?? []}
+        edgeDistribution={analytics?.edge_distribution ?? []}
+        confidenceDistribution={
+          analytics?.confidence_distribution ?? []
+        }
+        movements={analytics?.price_movements ?? []}
       />
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <DistributionPanel
-          title="Edge Distribution"
-          rows={(analytics?.edge_distribution ?? []).map(
-            (row) => ({
-              label: row.bucket,
-              value: row.count,
-            })
-          )}
-        />
-        <DistributionPanel
-          title="Confidence Distribution"
-          rows={(analytics?.confidence_distribution ?? []).map(
-            (row) => ({
-              label: row.confidence,
-              value: `${row.pct}%`,
-            })
-          )}
-        />
-      </div>
-
-      <MovementPanel movements={analytics?.price_movements ?? []} />
 
       {generateOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -972,10 +1004,353 @@ function SummaryBar({
   );
 }
 
+function healthLevel(
+  value: string
+): { level: number; label: string } | null {
+  const key = value.trim().toLowerCase();
+  if (key === "low") return { level: 1, label: "Low" };
+  if (key === "moderate") return { level: 2, label: "Moderate" };
+  if (key === "high") return { level: 3, label: "High" };
+  if (key === "negative") return { level: 1, label: "Negative" };
+  if (key === "neutral") return { level: 2, label: "Neutral" };
+  if (key === "positive") return { level: 3, label: "Positive" };
+  return null;
+}
+
+/** Higher filled segments are desirable for diversification / edge. */
+function higherIsBetter(id: string): boolean {
+  return (
+    id === "market_diversification"
+    || id === "game_diversification"
+    || id === "sport_diversification"
+    || id === "model_edge"
+  );
+}
+
+function healthTone(
+  id: string,
+  level: number
+): string {
+  if (higherIsBetter(id)) {
+    if (level >= 3) return snapshotTokens.success;
+    if (level === 2) return snapshotTokens.warning;
+    return snapshotTokens.negative;
+  }
+  if (level >= 3) return snapshotTokens.negative;
+  if (level === 2) return snapshotTokens.warning;
+  return snapshotTokens.success;
+}
+
+function HealthLevelIndicator({
+  id,
+  value,
+}: {
+  id: string;
+  value: string;
+}) {
+  const parsed = healthLevel(value);
+  if (!parsed) {
+    return (
+      <span
+        className="text-sm font-semibold"
+        style={{ color: snapshotTokens.textPrimary }}
+      >
+        {value || "—"}
+      </span>
+    );
+  }
+  const tone = healthTone(id, parsed.level);
+  return (
+    <span
+      className="inline-flex items-center gap-2"
+      aria-label={`${parsed.label}`}
+      title={parsed.label}
+    >
+      <span className="inline-flex items-end gap-0.5" aria-hidden>
+        {[1, 2, 3].map((step) => (
+          <span
+            key={step}
+            className="w-1.5 rounded-[2px]"
+            style={{
+              height: 6 + step * 3,
+              background:
+                step <= parsed.level
+                  ? tone
+                  : snapshotTokens.divider,
+            }}
+          />
+        ))}
+      </span>
+      <span
+        className="text-xs font-semibold"
+        style={{ color: tone }}
+      >
+        {parsed.label}
+      </span>
+    </span>
+  );
+}
+
+function HealthInsightsTooltip({
+  health,
+  alerts,
+}: {
+  health: BettingPortfolioHealthRow[];
+  alerts: BettingPortfolioAlert[];
+}) {
+  const tooltipId = useId();
+  const details = health.filter((row) => row.detail);
+  const hasContent = alerts.length > 0 || details.length > 0;
+
+  return (
+    <div className="group relative shrink-0">
+      <button
+        type="button"
+        aria-label="Portfolio health insights"
+        aria-describedby={tooltipId}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-lg transition-opacity hover:opacity-80"
+        style={{ color: snapshotTokens.textMuted }}
+      >
+        <Info className="h-4 w-4" aria-hidden />
+      </button>
+      <div
+        id={tooltipId}
+        role="tooltip"
+        className="pointer-events-none absolute right-0 top-full z-50 pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+      >
+        <div
+          className="w-80 rounded-[10px] border bg-white p-3 shadow-lg"
+          style={{ borderColor: snapshotTokens.border }}
+        >
+          {!hasContent ? (
+            <p
+              className="text-sm"
+              style={{ color: snapshotTokens.textMuted }}
+            >
+              Add positions to surface concentration and
+              correlation insights.
+            </p>
+          ) : null}
+          {alerts.length > 0 ? (
+            <div>
+              <p
+                className="text-[11px] font-semibold uppercase tracking-wide"
+                style={{ color: snapshotTokens.textMuted }}
+              >
+                Insights
+              </p>
+              <ul className="mt-2 space-y-2">
+                {alerts.map((alert) => (
+                  <li key={alert.signal_id + alert.title}>
+                    <p
+                      className="text-sm font-semibold"
+                      style={{ color: snapshotTokens.textPrimary }}
+                    >
+                      {alert.title}
+                    </p>
+                    <p
+                      className="mt-0.5 text-xs leading-5"
+                      style={{
+                        color: snapshotTokens.textSecondary,
+                      }}
+                    >
+                      {alert.body}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {details.length > 0 ? (
+            <div className={alerts.length > 0 ? "mt-3" : undefined}>
+              <p
+                className="text-[11px] font-semibold uppercase tracking-wide"
+                style={{ color: snapshotTokens.textMuted }}
+              >
+                Dimensions
+              </p>
+              <ul className="mt-2 space-y-1.5">
+                {details.map((row) => (
+                  <li
+                    key={row.id}
+                    className="text-xs leading-5"
+                    style={{ color: snapshotTokens.textSecondary }}
+                  >
+                    <span
+                      className="font-medium"
+                      style={{ color: snapshotTokens.textPrimary }}
+                    >
+                      {row.label}:
+                    </span>{" "}
+                    {row.detail}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function allocationTierLabel(
+  tier: string | null | undefined
+): string {
+  switch (String(tier || "").toLowerCase()) {
+    case "preferred":
+      return "Tier 1";
+    case "secondary":
+      return "Tier 2";
+    case "remainder":
+      return "Tier 3";
+    case "parlay":
+      return "Parlay";
+    default:
+      return tier || "";
+  }
+}
+
+function deploymentLabel(status: string | null | undefined): string {
+  switch (String(status || "").toLowerCase()) {
+    case "fully_deployed":
+      return "Fully deployed";
+    case "partially_deployed":
+      return "Partially deployed";
+    case "no_eligible_bets":
+      return "No eligible bets";
+    default:
+      return status || "—";
+  }
+}
+
+function GenerationDiagnostics({
+  generation,
+}: {
+  generation: BettingPortfolioGeneration;
+}) {
+  const requested =
+    generation.requested_exposure ?? generation.total_exposure;
+  const allocated = generation.allocated_exposure;
+  const unallocated =
+    generation.unallocated_exposure
+    ?? Math.max(0, requested - allocated);
+  const deployed =
+    generation.deployment_pct
+    ?? (
+      requested > 0 ? (allocated / requested) * 100 : 0
+    );
+  const tiers = generation.selected_by_tier ?? {};
+  const quals = generation.selected_by_qualification ?? {};
+  return (
+    <section
+      className="rounded-[10px] border bg-white p-4"
+      style={{ borderColor: snapshotTokens.border }}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3
+            className="text-sm font-semibold"
+            style={{ color: snapshotTokens.navy }}
+          >
+            Allocation
+          </h3>
+          <p
+            className="mt-1 text-xs"
+            style={{ color: snapshotTokens.textSecondary }}
+          >
+            Progressive Strong → Lean → remainder under risk limits
+          </p>
+        </div>
+        <span
+          className="rounded-lg px-2.5 py-1 text-xs font-semibold"
+          style={{
+            background:
+              generation.deployment_status === "fully_deployed"
+                ? snapshotTokens.successLight
+                : generation.deployment_status
+                  === "no_eligible_bets"
+                  ? snapshotTokens.negativeLight
+                  : snapshotTokens.warningLight,
+            color:
+              generation.deployment_status === "fully_deployed"
+                ? snapshotTokens.success
+                : generation.deployment_status
+                  === "no_eligible_bets"
+                  ? snapshotTokens.negative
+                  : snapshotTokens.warning,
+          }}
+        >
+          {deploymentLabel(generation.deployment_status)}
+        </span>
+      </div>
+      <dl className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          ["Requested", `$${Math.round(requested)}`],
+          ["Allocated", `$${Math.round(allocated)}`],
+          ["Unallocated", `$${Math.round(unallocated)}`],
+          ["Deployed", `${Math.round(deployed)}%`],
+        ].map(([label, value]) => (
+          <div key={label}>
+            <dt
+              className="text-[11px] font-semibold uppercase tracking-wide"
+              style={{ color: snapshotTokens.textMuted }}
+            >
+              {label}
+            </dt>
+            <dd
+              className="mt-1 text-sm font-semibold tabular-nums"
+              style={{ color: snapshotTokens.textPrimary }}
+            >
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <div
+        className="mt-3 grid gap-3 text-xs sm:grid-cols-2"
+        style={{ color: snapshotTokens.textSecondary }}
+      >
+        <p>
+          Candidates {generation.candidates_selected ?? generation.position_count}
+          {" / "}
+          {generation.candidates_evaluated
+            ?? generation.candidates_considered
+            ?? "—"}
+          {" selected"}
+        </p>
+        <p>
+          Tiers · preferred {tiers.preferred ?? 0} · secondary{" "}
+          {tiers.secondary ?? 0} · remainder {tiers.remainder ?? 0}
+          {" · "}parlay {tiers.parlay ?? 0}
+        </p>
+        <p>
+          Qualification · Strong {quals.strong_bet ?? 0} · Lean{" "}
+          {quals.lean ?? 0} · Pass {quals.pass ?? 0}
+        </p>
+        <p>
+          Strategy {generation.risk} · min stake $
+          {Math.round(generation.min_stake ?? 1)}
+        </p>
+      </div>
+      {generation.unallocated_reason ? (
+        <p
+          className="mt-3 text-xs leading-5"
+          style={{ color: snapshotTokens.textSecondary }}
+        >
+          {generation.unallocated_reason}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function HealthPanel({
   health,
+  alerts,
 }: {
   health: BettingPortfolioAnalytics["health"];
+  alerts: BettingPortfolioAnalytics["alerts"];
 }) {
   if (!health.length) return null;
   return (
@@ -983,26 +1358,30 @@ function HealthPanel({
       className="rounded-[10px] border bg-white p-4"
       style={{ borderColor: snapshotTokens.border }}
     >
-      <h3
-        className="text-sm font-semibold"
-        style={{ color: snapshotTokens.navy }}
-      >
-        Portfolio Health
-      </h3>
-      <p
-        className="mt-1 text-xs"
-        style={{ color: snapshotTokens.textSecondary }}
-      >
-        Descriptive dimensions of the current portfolio — not
-        universal quality rankings.
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3
+            className="text-sm font-semibold"
+            style={{ color: snapshotTokens.navy }}
+          >
+            Portfolio Health
+          </h3>
+          <p
+            className="mt-1 text-xs"
+            style={{ color: snapshotTokens.textSecondary }}
+          >
+            Descriptive dimensions of the current portfolio — not
+            universal quality rankings.
+          </p>
+        </div>
+        <HealthInsightsTooltip health={health} alerts={alerts} />
+      </div>
       <ul className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {health.map((row) => (
           <li
             key={row.id}
             className="rounded-lg border px-3 py-2"
             style={{ borderColor: snapshotTokens.border }}
-            title={row.detail || undefined}
           >
             <div className="flex items-center justify-between gap-2">
               <span
@@ -1011,50 +1390,11 @@ function HealthPanel({
               >
                 {row.label}
               </span>
-              <span
-                className="text-sm font-semibold"
-                style={{ color: snapshotTokens.textPrimary }}
-              >
-                {row.value}
-              </span>
+              <HealthLevelIndicator id={row.id} value={row.value} />
             </div>
           </li>
         ))}
       </ul>
-    </section>
-  );
-}
-
-function AlertsPanel({
-  alerts,
-}: {
-  alerts: BettingPortfolioAnalytics["alerts"];
-}) {
-  return (
-    <section className="space-y-2">
-      {alerts.map((alert) => (
-        <div
-          key={alert.signal_id + alert.title}
-          className="rounded-[10px] border px-4 py-3"
-          style={{
-            borderColor: "#FDE68A",
-            background: snapshotTokens.warningLight,
-          }}
-        >
-          <p
-            className="text-sm font-semibold"
-            style={{ color: snapshotTokens.textPrimary }}
-          >
-            {alert.title}
-          </p>
-          <p
-            className="mt-1 text-sm"
-            style={{ color: snapshotTokens.textSecondary }}
-          >
-            {alert.body}
-          </p>
-        </div>
-      ))}
     </section>
   );
 }
@@ -1175,6 +1515,107 @@ function AssumptionsPanel({
   );
 }
 
+function PortfolioDetailTabs({
+  tab,
+  onTab,
+  exposureTab,
+  onExposureTab,
+  exposure,
+  correlations,
+  edgeDistribution,
+  confidenceDistribution,
+  movements,
+}: {
+  tab: DetailTab;
+  onTab: (tab: DetailTab) => void;
+  exposureTab: ExposureTab;
+  onExposureTab: (tab: ExposureTab) => void;
+  exposure?: BettingPortfolioAnalytics["exposure"];
+  correlations: BettingPortfolioAnalytics["correlations"];
+  edgeDistribution: BettingPortfolioAnalytics["edge_distribution"];
+  confidenceDistribution: BettingPortfolioAnalytics["confidence_distribution"];
+  movements: BettingPortfolioAnalytics["price_movements"];
+}) {
+  const tabs: Array<{ id: DetailTab; label: string }> = [
+    { id: "exposure", label: "Exposure" },
+    { id: "correlation", label: "Correlation" },
+    { id: "distributions", label: "Distributions" },
+    { id: "movement", label: "Market Movement" },
+  ];
+  return (
+    <section
+      id="portfolio-exposure"
+      className="rounded-[10px] border bg-white"
+      style={{ borderColor: snapshotTokens.border }}
+    >
+      <div
+        className="flex flex-wrap gap-1 border-b px-3 py-2"
+        style={{ borderColor: snapshotTokens.divider }}
+        role="tablist"
+        aria-label="Portfolio details"
+      >
+        {tabs.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            onClick={() => onTab(item.id)}
+            className="rounded-lg px-3 py-1.5 text-xs font-medium"
+            style={
+              tab === item.id
+                ? {
+                    background: snapshotTokens.blue,
+                    color: snapshotTokens.white,
+                  }
+                : {
+                    background: "transparent",
+                    color: snapshotTokens.textSecondary,
+                  }
+            }
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div className="p-4">
+        {tab === "exposure" ? (
+          <ExposurePanel
+            tab={exposureTab}
+            onTab={onExposureTab}
+            exposure={exposure}
+          />
+        ) : null}
+        {tab === "correlation" ? (
+          <CorrelationPanel correlations={correlations} />
+        ) : null}
+        {tab === "distributions" ? (
+          <div className="grid gap-6 md:grid-cols-2">
+            <DistributionPanel
+              title="Edge Distribution"
+              rows={edgeDistribution.map((row) => ({
+                label: row.bucket,
+                value: row.count,
+              }))}
+            />
+            <DistributionPanel
+              title="Confidence Distribution"
+              rows={confidenceDistribution.map((row) => ({
+                label: row.confidence,
+                value: row.count,
+                display: `${row.count} · ${row.pct}%`,
+              }))}
+            />
+          </div>
+        ) : null}
+        {tab === "movement" ? (
+          <MovementPanel movements={movements} />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function ExposurePanel({
   tab,
   onTab,
@@ -1192,18 +1633,14 @@ function ExposurePanel({
   ];
   const rows = exposure?.[tab] ?? [];
   return (
-    <section
-      id="portfolio-exposure"
-      className="rounded-[10px] border bg-white p-4"
-      style={{ borderColor: snapshotTokens.border }}
-    >
+    <div>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3
-          className="text-sm font-semibold"
-          style={{ color: snapshotTokens.navy }}
+        <p
+          className="text-xs"
+          style={{ color: snapshotTokens.textSecondary }}
         >
-          Exposure
-        </h3>
+          Share of portfolio stake by dimension
+        </p>
         <div className="flex flex-wrap gap-1">
           {tabs.map((item) => (
             <button
@@ -1214,8 +1651,8 @@ function ExposurePanel({
               style={
                 tab === item.id
                   ? {
-                      background: snapshotTokens.blue,
-                      color: snapshotTokens.white,
+                      background: snapshotTokens.blueLight,
+                      color: snapshotTokens.blue,
                     }
                   : {
                       background: snapshotTokens.background,
@@ -1269,11 +1706,22 @@ function ExposurePanel({
                   className="py-2 pr-3 capitalize"
                   style={{ color: snapshotTokens.textPrimary }}
                 >
-                  {row.game
+                  {tab === "team" && row.team ? (
+                    <span className="inline-flex items-center gap-1.5 normal-case">
+                      <TeamLogo abbreviation={row.team} size={18} />
+                      <span>{row.team}</span>
+                    </span>
+                  ) : tab === "game" ? (
+                    <span className="normal-case">
+                      <TeamMatchupLabel label={row.game} size={18} />
+                    </span>
+                  ) : (
+                    row.game
                     || row.team
                     || row.market
                     || row.sport
-                    || "—"}
+                    || "—"
+                  )}
                 </td>
                 <td
                   className="py-2 pr-3 text-right tabular-nums"
@@ -1303,7 +1751,7 @@ function ExposurePanel({
           </tbody>
         </table>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -1314,18 +1762,9 @@ function CorrelationPanel({
 }) {
   const high = correlations.filter((row) => row.score >= 0.45);
   return (
-    <section
-      className="rounded-[10px] border bg-white p-4"
-      style={{ borderColor: snapshotTokens.border }}
-    >
-      <h3
-        className="text-sm font-semibold"
-        style={{ color: snapshotTokens.navy }}
-      >
-        Portfolio Correlation
-      </h3>
+    <div>
       <p
-        className="mt-1 text-xs"
+        className="text-xs"
         style={{ color: snapshotTokens.textSecondary }}
       >
         Highly correlated positions share similar game outcomes
@@ -1379,7 +1818,7 @@ function CorrelationPanel({
           ))}
         </ul>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -1388,47 +1827,52 @@ function DistributionPanel({
   rows,
 }: {
   title: string;
-  rows: Array<{ label: string; value: string | number }>;
+  rows: Array<{
+    label: string;
+    value: number;
+    display?: string;
+  }>;
 }) {
   const max =
-    Math.max(
-      ...rows.map((row) =>
-        typeof row.value === "number" ? row.value : 0
-      ),
-      1
-    ) || 1;
+    Math.max(...rows.map((row) => row.value), 1) || 1;
   return (
-    <section
-      className="rounded-[10px] border bg-white p-4"
-      style={{ borderColor: snapshotTokens.border }}
-    >
+    <div>
       <h3
         className="text-sm font-semibold"
         style={{ color: snapshotTokens.navy }}
       >
         {title}
       </h3>
-      <ul className="mt-3 space-y-2">
-        {rows.map((row) => (
-          <li key={row.label}>
-            <div className="flex items-center justify-between text-sm">
-              <span style={{ color: snapshotTokens.textSecondary }}>
-                {row.label}
-              </span>
-              <span
-                className="tabular-nums"
-                style={{ color: snapshotTokens.textPrimary }}
-              >
-                {row.value}
-              </span>
-            </div>
-            {typeof row.value === "number" ? (
+      {rows.length === 0 ? (
+        <p
+          className="mt-3 text-sm"
+          style={{ color: snapshotTokens.textMuted }}
+        >
+          No distribution yet.
+        </p>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {rows.map((row) => (
+            <li key={row.label}>
+              <div className="flex items-center justify-between text-sm">
+                <span
+                  style={{ color: snapshotTokens.textSecondary }}
+                >
+                  {row.label}
+                </span>
+                <span
+                  className="tabular-nums"
+                  style={{ color: snapshotTokens.textPrimary }}
+                >
+                  {row.display ?? row.value}
+                </span>
+              </div>
               <div
-                className="mt-1 h-1.5 overflow-hidden rounded-full"
+                className="mt-1 h-1.5 overflow-hidden rounded-[2px]"
                 style={{ background: snapshotTokens.divider }}
               >
                 <div
-                  className="h-full rounded-full"
+                  className="h-full rounded-[2px]"
                   style={{
                     width: `${Math.max(
                       4,
@@ -1438,11 +1882,11 @@ function DistributionPanel({
                   }}
                 />
               </div>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-    </section>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -1452,18 +1896,9 @@ function MovementPanel({
   movements: BettingPortfolioAnalytics["price_movements"];
 }) {
   return (
-    <section
-      className="rounded-[10px] border bg-white p-4"
-      style={{ borderColor: snapshotTokens.border }}
-    >
-      <h3
-        className="text-sm font-semibold"
-        style={{ color: snapshotTokens.navy }}
-      >
-        Market Movement
-      </h3>
+    <div>
       <p
-        className="mt-1 text-xs"
+        className="text-xs"
         style={{ color: snapshotTokens.textSecondary }}
       >
         Entry vs current price. Favorable movement does not
@@ -1528,6 +1963,6 @@ function MovementPanel({
           </tbody>
         </table>
       </div>
-    </section>
+    </div>
   );
 }

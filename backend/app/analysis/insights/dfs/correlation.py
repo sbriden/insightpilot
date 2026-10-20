@@ -386,11 +386,15 @@ def summarize_portfolio_correlations(
     pos_counts: dict[tuple[str, str], dict[str, Any]] = {}
     neg_counts: dict[tuple[str, str], dict[str, Any]] = {}
 
-    for lineup in lineups:
+    for order, lineup in enumerate(lineups, start=1):
         players = list(lineup.get("players") or [])
         scored = score_lineup_correlation(players, context)
         seen_pos: set[tuple[str, str]] = set()
         seen_neg: set[tuple[str, str]] = set()
+        try:
+            lineup_no = int(lineup.get("portfolio_index") or order)
+        except (TypeError, ValueError):
+            lineup_no = order
         for row in scored.get("pairs") or []:
             key = _pair_key(
                 str(row["player_id"]),
@@ -415,9 +419,13 @@ def summarize_portfolio_correlations(
                             "correlation_reason"
                         ],
                         "lineups": 0,
+                        "lineup_indexes": [],
                     },
                 )
                 bucket["lineups"] += 1
+                indexes = bucket["lineup_indexes"]
+                if lineup_no not in indexes:
+                    indexes.append(lineup_no)
                 bucket["correlation_score"] = max(
                     float(bucket["correlation_score"]), score
                 )
@@ -439,9 +447,13 @@ def summarize_portfolio_correlations(
                             "correlation_reason"
                         ],
                         "lineups": 0,
+                        "lineup_indexes": [],
                     },
                 )
                 bucket["lineups"] += 1
+                indexes = bucket["lineup_indexes"]
+                if lineup_no not in indexes:
+                    indexes.append(lineup_no)
                 bucket["correlation_score"] = min(
                     float(bucket["correlation_score"]), score
                 )
@@ -454,9 +466,17 @@ def summarize_portfolio_correlations(
         out = []
         for item in raw.values():
             exposure = item["lineups"] / float(n)
+            indexes = sorted(
+                {
+                    int(value)
+                    for value in (item.get("lineup_indexes") or [])
+                    if value is not None
+                }
+            )
             out.append(
                 {
                     **item,
+                    "lineup_indexes": indexes,
                     "exposure": round(exposure, 4),
                     "exposure_pct": round(exposure * 100.0, 1),
                     "correlation_score": round(

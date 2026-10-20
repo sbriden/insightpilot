@@ -2,6 +2,7 @@
 
 import { Component, type ReactNode } from "react";
 
+import { AnalysisFormatProvider } from "@/components/analysis/AnalysisFormatContext";
 import DailyFantasyAnalyzer from "@/components/fantasy/dfs/DailyFantasyAnalyzer";
 import PlayerAnalysisRuntime from "@/components/applications/PlayerAnalysisRuntime";
 import SportsBettingAnalyzer from "@/components/betting/SportsBettingAnalyzer";
@@ -67,6 +68,17 @@ class AnalysisErrorBoundary extends Component<
 }
 
 function RuntimeBody({ analysis }: { analysis: RegistryAnalysis }) {
+  if (analysis.runtime === "player_overview") {
+    const view = analysis.view || "table";
+    const overview =
+      view === "scatter" ||
+      view === "compare" ||
+      view === "teams" ||
+      view === "table"
+        ? view
+        : "table";
+    return <PlayerAnalysisRuntime view={overview} />;
+  }
   if (analysis.runtime === "player_snapshot") {
     const view = (analysis.view || "snapshot") as SnapshotTabId;
     return <PlayerAnalysisRuntime view={view} />;
@@ -132,41 +144,19 @@ export default function AnalysisRuntime({ analysisKey }: Props) {
 
   return (
     <AnalysisErrorBoundary name={analysis.name}>
-      <div className="min-h-0 flex-1 space-y-4">
-        <header className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p
-              className="text-[11px] font-semibold uppercase tracking-[0.18em]"
-              style={{ color: appTheme.cyan }}
-            >
-              {analysis.data_product_label}
-            </p>
-            <h2
-              className="ip-heading mt-1 text-[28px] font-semibold tracking-tight lg:text-[32px]"
-              style={{ color: appTheme.white }}
-            >
-              {analysis.name}
-            </h2>
-            <p
-              className="mt-1 max-w-2xl text-sm"
-              style={{ color: appTheme.silver }}
-            >
-              {analysis.description}
-            </p>
-          </div>
-        </header>
-        <div
-          className="ip-analysis-panel overflow-hidden rounded-xl"
-          style={{
-            background: "#F5F7FA",
-            color: "#0A1624",
-            border: `1px solid ${appTheme.borderActive}`,
-            boxShadow: `0 0 0 1px rgba(3,5,7,0.35), ${appTheme.glowSoft}`,
-          }}
-        >
-          <div className="p-4 sm:p-5">
+      <div
+        className="ip-analysis-panel overflow-hidden rounded-xl"
+        style={{
+          background: appTheme.midnight,
+          color: appTheme.white,
+          border: `1px solid ${appTheme.border}`,
+          boxShadow: appTheme.glowSoft,
+        }}
+      >
+        <div className="p-4 sm:p-5">
+          <AnalysisFormatProvider format="application">
             <RuntimeBody analysis={analysis} />
-          </div>
+          </AnalysisFormatProvider>
         </div>
       </div>
     </AnalysisErrorBoundary>

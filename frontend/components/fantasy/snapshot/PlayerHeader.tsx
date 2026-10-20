@@ -6,6 +6,10 @@ import {
   FantasyPlayerSnapshot,
 } from "@/services/api";
 
+import TeamLogo, {
+  canonicalTeamAbbreviation,
+} from "@/components/teams/TeamLogo";
+
 import {
   assessmentStyles,
   formatMetricValue,
@@ -59,6 +63,14 @@ export default function PlayerHeader({
               />
             </div>
           )}
+          {canonicalTeamAbbreviation(active.team) ? (
+            <span
+              className="absolute -bottom-1 -right-1 rounded-full border bg-white p-0.5"
+              style={{ borderColor: snapshotTokens.border }}
+            >
+              <TeamLogo abbreviation={active.team} size={28} />
+            </span>
+          ) : null}
         </div>
 
         <div className="min-w-0 pt-0.5">

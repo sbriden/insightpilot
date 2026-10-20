@@ -72,14 +72,34 @@ function lineupFingerprint(lineup: DfsPortfolioLineup): string {
   return ids.join("|");
 }
 
+type PortfolioDetailTab =
+  | "included"
+  | "excluded"
+  | "constrained"
+  | "insights"
+  | "correlation";
+
+const PORTFOLIO_DETAIL_TABS: Array<{
+  id: PortfolioDetailTab;
+  label: string;
+}> = [
+  { id: "included", label: "Included" },
+  { id: "excluded", label: "Excluded" },
+  { id: "constrained", label: "Constrained" },
+  { id: "insights", label: "Insights" },
+  { id: "correlation", label: "Correlation Exposure" },
+];
+
+type PortfolioDefaults = {
+  maxSimilarity: number;
+  minUniquePlayers: number;
+  defaultMaxExposure: number;
+  defaultMaxCaptainExposure: number;
+};
+
 const STRATEGY_DEFAULTS: Record<
   DfsPortfolioStrategy,
-  {
-    maxSimilarity: number;
-    minUniquePlayers: number;
-    defaultMaxExposure: number;
-    defaultMaxCaptainExposure: number;
-  }
+  PortfolioDefaults
 > = {
   max_projection: {
     maxSimilarity: 0.92,
@@ -126,6 +146,35 @@ const STRATEGY_DEFAULTS: Record<
   },
 };
 
+const SHOWDOWN_MAX_EXPOSURE: Record<DfsPortfolioStrategy, number> = {
+  max_projection: 0.6,
+  balanced: 0.45,
+  tournament: 0.35,
+  contrarian: 0.3,
+  cash: 0.6,
+  gpp: 0.35,
+  custom: 0.45,
+};
+
+function portfolioDefaults(
+  strategy: DfsPortfolioStrategy,
+  showdown: boolean
+): PortfolioDefaults {
+  const base = STRATEGY_DEFAULTS[strategy];
+  if (!showdown) {
+    return base;
+  }
+  return {
+    maxSimilarity: Math.min(base.maxSimilarity, 0.75),
+    minUniquePlayers: Math.min(4, base.minUniquePlayers + 1),
+    defaultMaxExposure: SHOWDOWN_MAX_EXPOSURE[strategy],
+    defaultMaxCaptainExposure: Math.min(
+      base.defaultMaxCaptainExposure,
+      0.35
+    ),
+  };
+}
+
 export default function PortfolioBuilder({
   slate,
   site,
@@ -135,15 +184,21 @@ export default function PortfolioBuilder({
   seedExcludedIds,
 }: Props) {
   const isShowdown = contestType === "showdown";
+  const opening = portfolioDefaults("balanced", isShowdown);
   const [lineupCount, setLineupCount] = useState(20);
   const [strategy, setStrategy] =
     useState<DfsPortfolioStrategy>("balanced");
-  const [maxSimilarity, setMaxSimilarity] = useState(0.8);
-  const [minUniquePlayers, setMinUniquePlayers] = useState(2);
-  const [defaultMaxExposure, setDefaultMaxExposure] =
-    useState(0.7);
+  const [maxSimilarity, setMaxSimilarity] = useState(
+    opening.maxSimilarity
+  );
+  const [minUniquePlayers, setMinUniquePlayers] = useState(
+    opening.minUniquePlayers
+  );
+  const [defaultMaxExposure, setDefaultMaxExposure] = useState(
+    opening.defaultMaxExposure
+  );
   const [defaultMaxCaptainExposure, setDefaultMaxCaptainExposure] =
-    useState(0.45);
+    useState(opening.defaultMaxCaptainExposure);
   const [minMap, setMinMap] = useState<Record<string, number>>(
     {}
   );
@@ -165,6 +220,8 @@ export default function PortfolioBuilder({
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [positionFilter, setPositionFilter] = useState("All");
+  const [detailTab, setDetailTab] =
+    useState<PortfolioDetailTab>("included");
   const [selectedLineupId, setSelectedLineupId] = useState<
     string | null
   >(null);
@@ -192,6 +249,21 @@ export default function PortfolioBuilder({
         storageKey(slate.slate_id, site, contestType)
       );
       if (!raw) {
+        const defaults = portfolioDefaults(
+          "balanced",
+          contestType === "showdown"
+        );
+        setLineupCount(20);
+        setStrategy("balanced");
+        setMaxSimilarity(defaults.maxSimilarity);
+        setMinUniquePlayers(defaults.minUniquePlayers);
+        setDefaultMaxExposure(defaults.defaultMaxExposure);
+        setDefaultMaxCaptainExposure(
+          defaults.defaultMaxCaptainExposure
+        );
+        setMinMap({});
+        setMaxMap({});
+        setCaptainMaxMap({});
         setResult(null);
         setChangedLineupIds(new Set());
         setSelectedLineupId(null);
@@ -272,6 +344,45 @@ export default function PortfolioBuilder({
     );
   }, [result, selectedLineupId]);
 
+  const teamByPlayerId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const player of slate.players ?? []) {
+      if (player.player_id && player.team) {
+        map.set(player.player_id, player.team);
+      }
+    }
+    for (const row of result?.exposure.players ?? []) {
+      if (row.player_id && row.team) {
+        map.set(row.player_id, row.team);
+      }
+    }
+    return map;
+  }, [slate.players, result?.exposure.players]);
+
+  const insightCore = useMemo(
+    () =>
+      (result?.core ?? []).map((item) => ({
+        ...item,
+        team:
+          item.team ??
+          teamByPlayerId.get(item.player_id) ??
+          null,
+      })),
+    [result?.core, teamByPlayerId]
+  );
+
+  const insightDifferentiators = useMemo(
+    () =>
+      (result?.differentiators ?? []).map((item) => ({
+        ...item,
+        team:
+          item.team ??
+          teamByPlayerId.get(item.player_id) ??
+          null,
+      })),
+    [result?.differentiators, teamByPlayerId]
+  );
+
   const slots =
     slate.roster.map((item) => item.slot) ??
     (contestType === "showdown"
@@ -290,7 +401,7 @@ export default function PortfolioBuilder({
 
   function applyStrategy(next: DfsPortfolioStrategy) {
     setStrategy(next);
-    const defaults = STRATEGY_DEFAULTS[next];
+    const defaults = portfolioDefaults(next, isShowdown);
     setMaxSimilarity(defaults.maxSimilarity);
     setMinUniquePlayers(defaults.minUniquePlayers);
     setDefaultMaxExposure(defaults.defaultMaxExposure);
@@ -584,6 +695,7 @@ export default function PortfolioBuilder({
           signals={result.signals}
           alerts={result.alerts}
           onViewExposure={() => {
+            setDetailTab("included");
             document
               .getElementById("portfolio-exposure")
               ?.scrollIntoView({ behavior: "smooth" });
@@ -639,236 +751,214 @@ export default function PortfolioBuilder({
         )}
       </div>
 
-      <PlayerExposureTable
-        rows={result?.exposure.players ?? []}
-        slatePlayers={slate.players ?? []}
-        positionFilter={positionFilter}
-        minMap={minMap}
-        maxMap={maxMap}
-        captainMaxMap={captainMaxMap}
-        lockedIds={lockedIds}
-        excludedIds={excludedIds}
-        showCaptainLimits={isShowdown}
-        onPositionFilter={setPositionFilter}
-        onSelectPlayer={(playerId) => {
-          void openPlayerOverview(playerId);
-        }}
-        onMin={(playerId, value) => {
-          setMinMap((current) => {
-            const next = { ...current };
-            if (value == null) {
-              delete next[playerId];
-            } else {
-              next[playerId] = value;
-            }
-            return next;
-          });
-          if (value != null && value > 0) {
-            setExcludedIds((current) => {
-              if (!current.has(playerId)) {
-                return current;
-              }
-              const cleaned = new Set(current);
-              cleaned.delete(playerId);
-              return cleaned;
-            });
-          }
-        }}
-        onMax={(playerId, value) => {
-          setMaxMap((current) => {
-            const next = { ...current };
-            if (value == null) {
-              delete next[playerId];
-            } else {
-              next[playerId] = value;
-            }
-            return next;
-          });
-        }}
-        onCaptainMax={(playerId, value) => {
-          setCaptainMaxMap((current) => {
-            const next = { ...current };
-            if (value == null) {
-              delete next[playerId];
-            } else {
-              next[playerId] = value;
-            }
-            return next;
-          });
-        }}
-        onLock={(playerId) => {
-          setLockedIds((current) => {
-            const next = new Set(current);
-            if (next.has(playerId)) {
-              next.delete(playerId);
-            } else {
-              next.add(playerId);
-              setExcludedIds((excluded) => {
-                const cleaned = new Set(excluded);
-                cleaned.delete(playerId);
-                return cleaned;
-              });
-            }
-            return next;
-          });
-        }}
-        onExclude={(playerId) => {
-          setExcludedIds((current) => {
-            const next = new Set(current);
-            next.add(playerId);
-            return next;
-          });
-          setLockedIds((locked) => {
-            if (!locked.has(playerId)) {
-              return locked;
-            }
-            const cleaned = new Set(locked);
-            cleaned.delete(playerId);
-            return cleaned;
-          });
-          setMinMap((current) => {
-            if (!(playerId in current)) {
-              return current;
-            }
-            const next = { ...current };
-            delete next[playerId];
-            return next;
-          });
-        }}
-        onInclude={(playerId) => {
-          setExcludedIds((current) => {
-            if (!current.has(playerId)) {
-              return current;
-            }
-            const next = new Set(current);
-            next.delete(playerId);
-            return next;
-          });
-        }}
-        onForceInclude={(playerId, minExposure) => {
-          const floor = Math.max(0.01, Math.min(1, minExposure));
-          setExcludedIds((current) => {
-            if (!current.has(playerId)) {
-              return current;
-            }
-            const next = new Set(current);
-            next.delete(playerId);
-            return next;
-          });
-          setMinMap((current) => ({
-            ...current,
-            [playerId]: floor,
-          }));
-          setMaxMap((current) => {
-            const existing = current[playerId];
-            if (existing != null && existing >= floor) {
-              return current;
-            }
-            return {
-              ...current,
-              [playerId]: Math.max(floor, defaultMaxExposure),
-            };
-          });
-        }}
-      />
-
-      {result?.player_diagnostics &&
-      result.player_diagnostics.length > 0 ? (
-        <section
-          className="rounded-[10px] border p-4"
+      <section
+        id="portfolio-exposure"
+        className="rounded-[10px] border p-4"
+        style={{ borderColor: snapshotTokens.border }}
+      >
+        <div
+          className="flex flex-wrap gap-1 border-b pb-2"
           style={{ borderColor: snapshotTokens.border }}
+          role="tablist"
+          aria-label="Portfolio player analysis"
         >
-          <h3
-            className="text-sm font-semibold"
-            style={{ color: snapshotTokens.navy }}
-          >
-            Why isn’t this player appearing?
-          </h3>
-          <p
-            className="mt-1 text-xs"
-            style={{ color: snapshotTokens.textSecondary }}
-          >
-            Top projected players and constrained players with
-            exposure below their configured caps.
-          </p>
-          <div className="mt-3 space-y-2">
-            {result.player_diagnostics
-              .filter(
-                (row) =>
-                  row.remaining_capacity > 0 ||
-                  (row.reasons?.length ?? 0) > 0
-              )
-              .slice(0, 8)
-              .map((row) => (
-                <div
-                  key={row.player_id}
-                  className="rounded-md border px-3 py-2"
-                  style={{ borderColor: snapshotTokens.border }}
-                >
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <p
-                      className="text-sm font-semibold"
-                      style={{ color: snapshotTokens.textPrimary }}
-                    >
-                      {row.name || row.player_id}
-                      {row.position ? ` · ${row.position}` : ""}
-                    </p>
-                    <p
-                      className="text-xs tabular-nums"
-                      style={{ color: snapshotTokens.textSecondary }}
-                    >
-                      Proj {Number(row.projection ?? 0).toFixed(1)} ·
-                      Exposure {row.exposure_pct.toFixed(0)}% /{" "}
-                      {Math.round(row.max_exposure * 100)}%
-                    </p>
-                  </div>
-                  <p
-                    className="mt-1 text-xs"
-                    style={{ color: snapshotTokens.textSecondary }}
-                  >
-                    {row.why_not_more}
-                  </p>
-                </div>
-              ))}
-          </div>
-          {result.optimization_metadata ? (
-            <p
-              className="mt-3 text-[11px]"
-              style={{ color: snapshotTokens.textMuted }}
-            >
-              Audit:{" "}
-              {String(
-                result.optimization_metadata
-                  .candidate_lineups_generated ??
-                  result.optimization_metadata.candidates_generated ??
-                  "—"
-              )}{" "}
-              candidates →{" "}
-              {String(
-                result.optimization_metadata
-                  .candidate_lineups_selected ??
-                  result.optimization_metadata.lineups_selected ??
-                  "—"
-              )}{" "}
-              selected
-              {result.optimization_metadata.rejected
-                ? ` · Rejected: ${JSON.stringify(
-                    result.optimization_metadata.rejected
-                  )}`
-                : ""}
-            </p>
-          ) : null}
-        </section>
-      ) : null}
+          {PORTFOLIO_DETAIL_TABS.map((tab) => {
+            const active = detailTab === tab.id;
+            const excludedCount =
+              tab.id === "excluded" ? excludedIds.size : 0;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setDetailTab(tab.id)}
+                className="rounded-md px-3 py-1.5 text-sm font-semibold"
+                style={{
+                  background: active
+                    ? snapshotTokens.blueLight
+                    : "transparent",
+                  color: active
+                    ? snapshotTokens.blue
+                    : snapshotTokens.textSecondary,
+                }}
+              >
+                {tab.label}
+                {excludedCount > 0 ? ` (${excludedCount})` : ""}
+              </button>
+            );
+          })}
+        </div>
 
-      <PortfolioInsights
-        signals={result?.signals ?? []}
-        core={result?.core}
-        differentiators={result?.differentiators}
-        similarPairs={result?.similarity.most_similar_pairs}
-      />
+        <div className="mt-4" role="tabpanel">
+          {(detailTab === "included" ||
+            detailTab === "excluded") && (
+            <PlayerExposureTable
+              rows={result?.exposure.players ?? []}
+              slatePlayers={slate.players ?? []}
+              positionFilter={positionFilter}
+              minMap={minMap}
+              maxMap={maxMap}
+              captainMaxMap={captainMaxMap}
+              lockedIds={lockedIds}
+              excludedIds={excludedIds}
+              showCaptainLimits={isShowdown}
+              variant={detailTab}
+              onPositionFilter={setPositionFilter}
+              onSelectPlayer={(playerId) => {
+                void openPlayerOverview(playerId);
+              }}
+              onMin={(playerId, value) => {
+                setMinMap((current) => {
+                  const next = { ...current };
+                  if (value == null) {
+                    delete next[playerId];
+                  } else {
+                    next[playerId] = value;
+                  }
+                  return next;
+                });
+                if (value != null && value > 0) {
+                  setExcludedIds((current) => {
+                    if (!current.has(playerId)) {
+                      return current;
+                    }
+                    const cleaned = new Set(current);
+                    cleaned.delete(playerId);
+                    return cleaned;
+                  });
+                }
+              }}
+              onMax={(playerId, value) => {
+                setMaxMap((current) => {
+                  const next = { ...current };
+                  if (value == null) {
+                    delete next[playerId];
+                  } else {
+                    next[playerId] = value;
+                  }
+                  return next;
+                });
+              }}
+              onCaptainMax={(playerId, value) => {
+                setCaptainMaxMap((current) => {
+                  const next = { ...current };
+                  if (value == null) {
+                    delete next[playerId];
+                  } else {
+                    next[playerId] = value;
+                  }
+                  return next;
+                });
+              }}
+              onLock={(playerId) => {
+                setLockedIds((current) => {
+                  const next = new Set(current);
+                  if (next.has(playerId)) {
+                    next.delete(playerId);
+                  } else {
+                    next.add(playerId);
+                    setExcludedIds((excluded) => {
+                      const cleaned = new Set(excluded);
+                      cleaned.delete(playerId);
+                      return cleaned;
+                    });
+                  }
+                  return next;
+                });
+              }}
+              onExclude={(playerId) => {
+                setExcludedIds((current) => {
+                  const next = new Set(current);
+                  next.add(playerId);
+                  return next;
+                });
+                setLockedIds((locked) => {
+                  if (!locked.has(playerId)) {
+                    return locked;
+                  }
+                  const cleaned = new Set(locked);
+                  cleaned.delete(playerId);
+                  return cleaned;
+                });
+                setMinMap((current) => {
+                  if (!(playerId in current)) {
+                    return current;
+                  }
+                  const next = { ...current };
+                  delete next[playerId];
+                  return next;
+                });
+              }}
+              onInclude={(playerId) => {
+                setExcludedIds((current) => {
+                  if (!current.has(playerId)) {
+                    return current;
+                  }
+                  const next = new Set(current);
+                  next.delete(playerId);
+                  return next;
+                });
+              }}
+              onForceInclude={(playerId, minExposure) => {
+                const floor = Math.max(
+                  0.01,
+                  Math.min(1, minExposure)
+                );
+                setExcludedIds((current) => {
+                  if (!current.has(playerId)) {
+                    return current;
+                  }
+                  const next = new Set(current);
+                  next.delete(playerId);
+                  return next;
+                });
+                setMinMap((current) => ({
+                  ...current,
+                  [playerId]: floor,
+                }));
+                setMaxMap((current) => {
+                  const existing = current[playerId];
+                  if (existing != null && existing >= floor) {
+                    return current;
+                  }
+                  return {
+                    ...current,
+                    [playerId]: Math.max(
+                      floor,
+                      defaultMaxExposure
+                    ),
+                  };
+                });
+              }}
+            />
+          )}
 
-      <PortfolioCorrelation correlation={result?.correlation} />
+          {detailTab === "constrained" && (
+            <ConstrainedPlayersPanel
+              diagnostics={result?.player_diagnostics}
+              metadata={result?.optimization_metadata}
+            />
+          )}
+
+          {detailTab === "insights" && (
+            <PortfolioInsights
+              signals={result?.signals ?? []}
+              core={insightCore}
+              differentiators={insightDifferentiators}
+              similarPairs={result?.similarity.most_similar_pairs}
+              embedded
+            />
+          )}
+
+          {detailTab === "correlation" && (
+            <PortfolioCorrelation
+              correlation={result?.correlation}
+              embedded
+            />
+          )}
+        </div>
+      </section>
 
       {overviewOpen && (
         <PlayerSnapshotModal
@@ -881,6 +971,173 @@ export default function PortfolioBuilder({
           }}
         />
       )}
+    </div>
+  );
+}
+
+function ConstrainedPlayersPanel({
+  diagnostics,
+  metadata,
+}: {
+  diagnostics?: DfsPortfolioResult["player_diagnostics"];
+  metadata?: DfsPortfolioResult["optimization_metadata"];
+}) {
+  const rows = [...(diagnostics ?? [])]
+    .filter(
+      (row) =>
+        row.remaining_capacity > 0 ||
+        (row.reasons?.length ?? 0) > 0
+    )
+    .sort((a, b) => {
+      const aGap =
+        Math.max(0, a.max_exposure) - Math.max(0, a.exposure);
+      const bGap =
+        Math.max(0, b.max_exposure) - Math.max(0, b.exposure);
+      if (bGap !== aGap) {
+        return bGap - aGap;
+      }
+      return (
+        Number(b.projection ?? 0) - Number(a.projection ?? 0)
+      );
+    })
+    .slice(0, 16);
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p
+          className="text-xs"
+          style={{ color: snapshotTokens.textSecondary }}
+        >
+          Players below their exposure caps — muted segment is
+          unused room to max.
+        </p>
+        <div
+          className="flex items-center gap-3 text-[11px]"
+          style={{ color: snapshotTokens.textMuted }}
+        >
+          <span className="inline-flex items-center gap-1">
+            <span
+              className="inline-block h-1.5 w-1.5 rounded-sm"
+              style={{ background: snapshotTokens.blue, opacity: 0.55 }}
+            />
+            Exposure
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span
+              className="inline-block h-1.5 w-1.5 rounded-sm"
+              style={{ background: snapshotTokens.border }}
+            />
+            Gap to max
+          </span>
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <p
+          className="mt-3 text-sm"
+          style={{ color: snapshotTokens.textSecondary }}
+        >
+          Generate a portfolio to see constrained-player diagnostics.
+        </p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {rows.map((row) => {
+            const maxPct = Math.max(
+              0,
+              Math.min(100, Math.round(row.max_exposure * 100))
+            );
+            const exposurePct = Math.max(
+              0,
+              Math.min(
+                100,
+                Math.round(
+                  row.exposure_pct ?? row.exposure * 100
+                )
+              )
+            );
+            const usedPct = Math.min(exposurePct, maxPct);
+            const gapPct = Math.max(0, maxPct - usedPct);
+            return (
+              <div
+                key={row.player_id}
+                className="rounded-md border px-3 py-2"
+                style={{ borderColor: snapshotTokens.border }}
+              >
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <p
+                    className="text-sm font-semibold"
+                    style={{ color: snapshotTokens.textPrimary }}
+                  >
+                    {row.name || row.player_id}
+                    {row.position ? ` · ${row.position}` : ""}
+                  </p>
+                  <p
+                    className="text-xs tabular-nums"
+                    style={{ color: snapshotTokens.textSecondary }}
+                  >
+                    Proj {Number(row.projection ?? 0).toFixed(1)} ·{" "}
+                    {exposurePct}% / {maxPct}%
+                    {gapPct > 0 ? ` · −${gapPct} pts` : ""}
+                  </p>
+                </div>
+                <div
+                  className="relative mt-1.5 h-1 w-full overflow-hidden rounded-full"
+                  style={{ background: snapshotTokens.divider }}
+                  title={`${exposurePct}% of ${maxPct}% max`}
+                >
+                  <div
+                    className="absolute inset-y-0 left-0 rounded-full"
+                    style={{
+                      width: `${usedPct}%`,
+                      background: snapshotTokens.blue,
+                      opacity: 0.45,
+                    }}
+                  />
+                  {gapPct > 0 && (
+                    <div
+                      className="absolute inset-y-0"
+                      style={{
+                        left: `${usedPct}%`,
+                        width: `${gapPct}%`,
+                        background: snapshotTokens.border,
+                      }}
+                    />
+                  )}
+                </div>
+                <p
+                  className="mt-1.5 text-xs"
+                  style={{ color: snapshotTokens.textSecondary }}
+                >
+                  {row.why_not_more}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {metadata ? (
+        <p
+          className="mt-3 text-[11px]"
+          style={{ color: snapshotTokens.textMuted }}
+        >
+          Audit:{" "}
+          {String(
+            metadata.candidate_lineups_generated ??
+              metadata.candidates_generated ??
+              "—"
+          )}{" "}
+          candidates →{" "}
+          {String(
+            metadata.candidate_lineups_selected ??
+              metadata.lineups_selected ??
+              "—"
+          )}{" "}
+          selected
+          {metadata.rejected
+            ? ` · Rejected: ${JSON.stringify(metadata.rejected)}`
+            : ""}
+        </p>
+      ) : null}
     </div>
   );
 }

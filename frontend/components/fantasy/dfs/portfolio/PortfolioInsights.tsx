@@ -1,18 +1,20 @@
 "use client";
 
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
+import TeamLogo from "@/components/teams/TeamLogo";
 import type { DfsPortfolioSignal } from "@/services/api";
+
+interface InsightPlayerRow {
+  player_id?: string;
+  name?: string | null;
+  team?: string | null;
+  exposure_pct: number;
+}
 
 interface Props {
   signals: DfsPortfolioSignal[];
-  core?: Array<{
-    name?: string | null;
-    exposure_pct: number;
-  }>;
-  differentiators?: Array<{
-    name?: string | null;
-    exposure_pct: number;
-  }>;
+  core?: InsightPlayerRow[];
+  differentiators?: InsightPlayerRow[];
   similarPairs?: Array<{
     index_a?: number;
     index_b?: number;
@@ -20,6 +22,8 @@ interface Props {
     roster_size: number;
     similarity: number;
   }>;
+  /** When true, omit outer card chrome (parent tabs own it). */
+  embedded?: boolean;
 }
 
 export default function PortfolioInsights({
@@ -27,20 +31,10 @@ export default function PortfolioInsights({
   core,
   differentiators,
   similarPairs,
+  embedded = false,
 }: Props) {
-  return (
-    <section
-      className="rounded-[10px] border p-4"
-      style={{ borderColor: snapshotTokens.border }}
-    >
-      <h3
-        className="text-sm font-semibold"
-        style={{ color: snapshotTokens.navy }}
-      >
-        InsightPilot Portfolio Insights
-      </h3>
-
-      <div className="mt-3 grid gap-4 lg:grid-cols-3">
+  const body = (
+      <div className={embedded ? "grid gap-4 lg:grid-cols-3" : "mt-3 grid gap-4 lg:grid-cols-3"}>
         <div>
           <p
             className="text-[11px] font-semibold uppercase tracking-wide"
@@ -95,16 +89,10 @@ export default function PortfolioInsights({
               </li>
             )}
             {(core ?? []).map((item) => (
-              <li
+              <InsightPlayerListItem
                 key={`${item.name}-${item.exposure_pct}`}
-                className="flex justify-between text-sm"
-                style={{ color: snapshotTokens.textPrimary }}
-              >
-                <span>{item.name}</span>
-                <span className="tabular-nums">
-                  {item.exposure_pct.toFixed(0)}%
-                </span>
-              </li>
+                item={item}
+              />
             ))}
           </ul>
           <p
@@ -123,16 +111,10 @@ export default function PortfolioInsights({
               </li>
             )}
             {(differentiators ?? []).map((item) => (
-              <li
+              <InsightPlayerListItem
                 key={`${item.name}-${item.exposure_pct}`}
-                className="flex justify-between text-sm"
-                style={{ color: snapshotTokens.textPrimary }}
-              >
-                <span>{item.name}</span>
-                <span className="tabular-nums">
-                  {item.exposure_pct.toFixed(0)}%
-                </span>
-              </li>
+                item={item}
+              />
             ))}
           </ul>
         </div>
@@ -170,6 +152,41 @@ export default function PortfolioInsights({
           </ul>
         </div>
       </div>
+  );
+
+  if (embedded) {
+    return body;
+  }
+
+  return (
+    <section
+      className="rounded-[10px] border p-4"
+      style={{ borderColor: snapshotTokens.border }}
+    >
+      <h3
+        className="text-sm font-semibold"
+        style={{ color: snapshotTokens.navy }}
+      >
+        InsightPilot Portfolio Insights
+      </h3>
+      {body}
     </section>
+  );
+}
+
+function InsightPlayerListItem({ item }: { item: InsightPlayerRow }) {
+  return (
+    <li
+      className="flex items-center justify-between gap-2 text-sm"
+      style={{ color: snapshotTokens.textPrimary }}
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        <TeamLogo abbreviation={item.team} size={16} />
+        <span className="truncate">{item.name}</span>
+      </span>
+      <span className="shrink-0 tabular-nums">
+        {item.exposure_pct.toFixed(0)}%
+      </span>
+    </li>
   );
 }

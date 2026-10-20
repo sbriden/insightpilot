@@ -14,6 +14,7 @@ import {
   FantasyTeamOffense,
   FantasyTeamPlayerStats,
   FantasyTeamRecord,
+  FantasyTeamStatComparison,
   FantasyTeamStats,
   FantasyTeamSummary,
   FantasyTeamTotals,
@@ -25,10 +26,22 @@ import {
   formatMetricValue,
   snapshotTokens,
 } from "@/components/fantasy/snapshot/tokens";
+import TeamLogo from "@/components/teams/TeamLogo";
 
 interface Props {
   onSelectPlayer: (playerId: string) => void;
 }
+
+type TeamStatsTab = "totals" | "players" | "depth";
+
+const TEAM_STATS_TABS: Array<{
+  id: TeamStatsTab;
+  label: string;
+}> = [
+  { id: "totals", label: "Team totals" },
+  { id: "players", label: "Player stats" },
+  { id: "depth", label: "Depth chart" },
+];
 
 function formatCount(
   value: number | null | undefined
@@ -78,6 +91,98 @@ function formatPercent(
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function formatLeagueAvg(
+  key: string,
+  value: number | null | undefined
+): string {
+  if (value == null || Number.isNaN(value)) {
+    return "—";
+  }
+  if (
+    key.includes("rate")
+    || key.includes("pct")
+    || key.includes("catch_rate")
+    || key.includes("completion")
+  ) {
+    return formatPercent(value);
+  }
+  if (key.includes("epa")) {
+    return formatSigned(
+      value,
+      key.includes("per_play") || key.includes("per_attempt")
+        ? 3
+        : 2
+    );
+  }
+  if (
+    key.includes("per_game")
+    || key.includes("yards_per")
+  ) {
+    const precise =
+      key.includes("play")
+      || key.includes("attempt")
+      || key.includes("carry")
+      || key.includes("target")
+      || key.includes("reception");
+    return formatDecimal(value, precise ? 2 : 1);
+  }
+  if (key.includes("differential")) {
+    return formatSigned(value, 0);
+  }
+  return formatDecimal(value, 1);
+}
+
+type StatTier = "good" | "average" | "poor";
+
+function tierStyles(tier: StatTier | string | null | undefined): {
+  border: string;
+  background: string;
+  value: string;
+  badge: string;
+} {
+  if (tier === "good") {
+    return {
+      border: "rgba(37, 214, 149, 0.45)",
+      background: snapshotTokens.successLight,
+      value: snapshotTokens.success,
+      badge: snapshotTokens.success,
+    };
+  }
+  if (tier === "poor") {
+    return {
+      border: "rgba(255, 85, 112, 0.45)",
+      background: snapshotTokens.negativeLight,
+      value: snapshotTokens.negative,
+      badge: snapshotTokens.negative,
+    };
+  }
+  return {
+    border: snapshotTokens.divider,
+    background: snapshotTokens.background,
+    value: snapshotTokens.navy,
+    badge: snapshotTokens.textMuted,
+  };
+}
+
+function tierLabel(
+  tier: StatTier | string | null | undefined
+): string {
+  if (tier === "good") {
+    return "Good";
+  }
+  if (tier === "poor") {
+    return "Poor";
+  }
+  return "Avg";
+}
+
+type StatTile = {
+  label: string;
+  value: string;
+  metricKey?: string;
+  comparison?: FantasyTeamStatComparison | null;
+};
+
 function recordLabel(record: FantasyTeamRecord): string {
   const base = `${record.wins}–${record.losses}`;
   if (record.ties > 0) {
@@ -87,49 +192,33 @@ function recordLabel(record: FantasyTeamRecord): string {
 }
 
 function statTiles(
-  pairs: Array<[string, string]>
-): Array<{ label: string; value: string }> {
+  pairs: Array<[string, string, string?]>
+): StatTile[] {
   return pairs
     .filter(([, value]) => value !== "—")
-    .map(([label, value]) => ({ label, value }));
+    .map(([label, value, metricKey]) => ({
+      label,
+      value,
+      metricKey,
+    }));
 }
 
-function TeamLogo({
-  abbreviation,
-  logoUrl,
-  size = 36,
-}: {
-  abbreviation: string;
-  logoUrl?: string | null;
-  size?: number;
-}) {
-  const [failed, setFailed] = useState(false);
-  if (!logoUrl || failed) {
-    return (
-      <span
-        className="inline-flex shrink-0 items-center justify-center rounded-full text-[10px] font-semibold"
-        style={{
-          width: size,
-          height: size,
-          background: snapshotTokens.blueLight,
-          color: snapshotTokens.blue,
-        }}
-      >
-        {abbreviation.slice(0, 3)}
-      </span>
-    );
+function withComparisons(
+  tiles: StatTile[],
+  comparisons:
+    | Record<string, FantasyTeamStatComparison>
+    | null
+    | undefined
+): StatTile[] {
+  if (!comparisons) {
+    return tiles;
   }
-  return (
-    <img
-      src={logoUrl}
-      alt=""
-      width={size}
-      height={size}
-      className="shrink-0 object-contain"
-      style={{ width: size, height: size }}
-      onError={() => setFailed(true)}
-    />
-  );
+  return tiles.map((tile) => ({
+    ...tile,
+    comparison: tile.metricKey
+      ? comparisons[tile.metricKey] ?? null
+      : null,
+  }));
 }
 
 function StatGroup({
@@ -137,7 +226,7 @@ function StatGroup({
   tiles,
 }: {
   title: string;
-  tiles: Array<{ label: string; value: string }>;
+  tiles: StatTile[];
 }) {
   if (tiles.length === 0) {
     return null;
@@ -151,29 +240,63 @@ function StatGroup({
         {title}
       </h5>
       <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-        {tiles.map((tile) => (
-          <div
-            key={tile.label}
-            className="rounded-lg border px-3 py-2"
-            style={{
-              borderColor: snapshotTokens.divider,
-              background: snapshotTokens.background,
-            }}
-          >
-            <p
-              className="text-[10px] font-semibold uppercase tracking-wide"
-              style={{ color: snapshotTokens.textMuted }}
+        {tiles.map((tile) => {
+          const styles = tierStyles(tile.comparison?.tier);
+          const rank = tile.comparison?.rank;
+          const rankOf = tile.comparison?.rank_of;
+          const leagueAvg = tile.comparison?.league_avg;
+          return (
+            <div
+              key={tile.label}
+              className="rounded-lg border px-3 py-2"
+              style={{
+                borderColor: styles.border,
+                background: styles.background,
+              }}
+              title={
+                tile.comparison
+                  ? `${tierLabel(tile.comparison.tier)} vs league`
+                  : undefined
+              }
             >
-              {tile.label}
-            </p>
-            <p
-              className="mt-1 text-base font-semibold tabular-nums"
-              style={{ color: snapshotTokens.navy }}
-            >
-              {tile.value}
-            </p>
-          </div>
-        ))}
+              <div className="flex items-start justify-between gap-2">
+                <p
+                  className="text-[10px] font-semibold uppercase tracking-wide"
+                  style={{ color: snapshotTokens.textMuted }}
+                >
+                  {tile.label}
+                </p>
+                {tile.comparison?.tier ? (
+                  <span
+                    className="shrink-0 text-[9px] font-semibold uppercase tracking-wide"
+                    style={{ color: styles.badge }}
+                  >
+                    {tierLabel(tile.comparison.tier)}
+                  </span>
+                ) : null}
+              </div>
+              <p
+                className="mt-1 text-base font-semibold tabular-nums"
+                style={{ color: styles.value }}
+              >
+                {tile.value}
+              </p>
+              {tile.comparison
+                && rank != null
+                && rankOf != null ? (
+                <p
+                  className="mt-1 text-[10px] tabular-nums"
+                  style={{ color: snapshotTokens.textSecondary }}
+                >
+                  #{rank}/{rankOf}
+                  {leagueAvg != null && tile.metricKey
+                    ? ` · Lg ${formatLeagueAvg(tile.metricKey, leagueAvg)}`
+                    : ""}
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -184,23 +307,53 @@ function offenseTiles(offense: FantasyTeamOffense | null | undefined) {
     return [];
   }
   return statTiles([
-    ["Points", formatCount(offense.points)],
-    ["PPG", formatDecimal(offense.points_per_game, 1)],
-    ["Yards", formatCount(offense.yards)],
-    ["Yds/G", formatDecimal(offense.yards_per_game, 1)],
-    ["Yds/play", formatDecimal(offense.yards_per_play, 2)],
-    ["EPA/play", formatSigned(offense.epa_per_play, 3)],
+    ["Points", formatCount(offense.points), "offense.points"],
+    [
+      "PPG",
+      formatDecimal(offense.points_per_game, 1),
+      "offense.points_per_game",
+    ],
+    ["Yards", formatCount(offense.yards), "offense.yards"],
+    [
+      "Yds/G",
+      formatDecimal(offense.yards_per_game, 1),
+      "offense.yards_per_game",
+    ],
+    [
+      "Yds/play",
+      formatDecimal(offense.yards_per_play, 2),
+      "offense.yards_per_play",
+    ],
+    [
+      "EPA/play",
+      formatSigned(offense.epa_per_play, 3),
+      "offense.epa_per_play",
+    ],
     [
       "Pass EPA/att",
       formatSigned(offense.pass_epa_per_attempt, 3),
+      "offense.pass_epa_per_attempt",
     ],
     [
       "Rush EPA/att",
       formatSigned(offense.rush_epa_per_attempt, 3),
+      "offense.rush_epa_per_attempt",
     ],
-    ["Pass rate", formatPercent(offense.pass_rate)],
-    ["RZ TD%", formatPercent(offense.red_zone_td_rate)],
-    ["TO/G", formatDecimal(offense.turnovers_per_game, 2)],
+    [
+      "Pass rate",
+      formatPercent(offense.pass_rate),
+      "offense.pass_rate",
+    ],
+    [
+      "RZ TD%",
+      formatPercent(offense.red_zone_td_rate),
+      "offense.red_zone_td_rate",
+    ],
+    [
+      "TO/G",
+      formatDecimal(offense.turnovers_per_game, 2),
+      "offense.turnovers_per_game",
+    ],
   ]);
 }
 
@@ -209,31 +362,56 @@ function defenseTiles(defense: FantasyTeamDefense | null | undefined) {
     return [];
   }
   return statTiles([
-    ["PA", formatCount(defense.points_allowed)],
-    ["PA/G", formatDecimal(defense.points_allowed_per_game, 1)],
-    ["Yds allowed", formatCount(defense.yards_allowed)],
+    [
+      "PA",
+      formatCount(defense.points_allowed),
+      "defense.points_allowed",
+    ],
+    [
+      "PA/G",
+      formatDecimal(defense.points_allowed_per_game, 1),
+      "defense.points_allowed_per_game",
+    ],
+    [
+      "Yds allowed",
+      formatCount(defense.yards_allowed),
+      "defense.yards_allowed",
+    ],
     [
       "Yds allowed/G",
       formatDecimal(defense.yards_allowed_per_game, 1),
+      "defense.yards_allowed_per_game",
     ],
     [
       "Pass yds/G",
       formatDecimal(defense.pass_yards_allowed_per_game, 1),
+      "defense.pass_yards_allowed_per_game",
     ],
     [
       "Rush yds/G",
       formatDecimal(defense.rush_yards_allowed_per_game, 1),
+      "defense.rush_yards_allowed_per_game",
     ],
     [
       "Pass EPA/G",
       formatSigned(defense.pass_epa_allowed_per_game, 2),
+      "defense.pass_epa_allowed_per_game",
     ],
     [
       "Rush EPA/G",
       formatSigned(defense.rush_epa_allowed_per_game, 2),
+      "defense.rush_epa_allowed_per_game",
     ],
-    ["Sack%", formatPercent(defense.sack_rate)],
-    ["Pressure%", formatPercent(defense.pressure_rate)],
+    [
+      "Sack%",
+      formatPercent(defense.sack_rate),
+      "defense.sack_rate",
+    ],
+    [
+      "Pressure%",
+      formatPercent(defense.pressure_rate),
+      "defense.pressure_rate",
+    ],
   ]);
 }
 
@@ -244,12 +422,36 @@ function efficiencyTiles(
     return [];
   }
   return statTiles([
-    ["Cmp%", formatPercent(efficiency.completion_pct)],
-    ["Y/A", formatDecimal(efficiency.yards_per_attempt, 2)],
-    ["Y/C", formatDecimal(efficiency.yards_per_carry, 2)],
-    ["Catch%", formatPercent(efficiency.catch_rate)],
-    ["Y/Tgt", formatDecimal(efficiency.yards_per_target, 2)],
-    ["Y/Rec", formatDecimal(efficiency.yards_per_reception, 2)],
+    [
+      "Cmp%",
+      formatPercent(efficiency.completion_pct),
+      "efficiency.completion_pct",
+    ],
+    [
+      "Y/A",
+      formatDecimal(efficiency.yards_per_attempt, 2),
+      "efficiency.yards_per_attempt",
+    ],
+    [
+      "Y/C",
+      formatDecimal(efficiency.yards_per_carry, 2),
+      "efficiency.yards_per_carry",
+    ],
+    [
+      "Catch%",
+      formatPercent(efficiency.catch_rate),
+      "efficiency.catch_rate",
+    ],
+    [
+      "Y/Tgt",
+      formatDecimal(efficiency.yards_per_target, 2),
+      "efficiency.yards_per_target",
+    ],
+    [
+      "Y/Rec",
+      formatDecimal(efficiency.yards_per_reception, 2),
+      "efficiency.yards_per_reception",
+    ],
   ]);
 }
 
@@ -258,9 +460,19 @@ function TeamTotalsPanel({
 }: {
   totals: FantasyTeamTotals;
 }) {
-  const offense = offenseTiles(totals.offense);
-  const defense = defenseTiles(totals.defense);
-  const efficiency = efficiencyTiles(totals.efficiency);
+  const comparisons = totals.comparisons ?? null;
+  const offense = withComparisons(
+    offenseTiles(totals.offense),
+    comparisons
+  );
+  const defense = withComparisons(
+    defenseTiles(totals.defense),
+    comparisons
+  );
+  const efficiency = withComparisons(
+    efficiencyTiles(totals.efficiency),
+    comparisons
+  );
   if (
     !totals.record
     && offense.length === 0
@@ -271,6 +483,8 @@ function TeamTotalsPanel({
   }
 
   const differential = totals.record?.point_differential;
+  const differentialCmp =
+    comparisons?.["record.point_differential"] ?? null;
 
   return (
     <section
@@ -291,6 +505,7 @@ function TeamTotalsPanel({
           {totals.games != null
             ? `${totals.games} regular-season game${totals.games === 1 ? "" : "s"}`
             : "Season aggregates"}
+          {comparisons ? " · vs league" : ""}
         </p>
       </div>
       {totals.record && (
@@ -303,15 +518,14 @@ function TeamTotalsPanel({
             <span
               className="ml-2 font-medium"
               style={{
-                color:
-                  differential > 0
-                    ? snapshotTokens.success
-                    : differential < 0
-                      ? snapshotTokens.negative
-                      : snapshotTokens.textSecondary,
+                color: tierStyles(differentialCmp?.tier).value,
               }}
             >
               · {formatSigned(differential, 0)} pts
+              {differentialCmp?.rank != null
+                && differentialCmp.rank_of != null
+                ? ` (#${differentialCmp.rank}/${differentialCmp.rank_of})`
+                : ""}
             </span>
           )}
         </p>
@@ -452,6 +666,8 @@ export default function PlayerOverviewTeamStats({
   const [loadingTeams, setLoadingTeams] = useState(true);
   const [loadingStats, setLoadingStats] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] =
+    useState<TeamStatsTab>("totals");
 
   useEffect(() => {
     let cancelled = false;
@@ -582,14 +798,23 @@ export default function PlayerOverviewTeamStats({
                 className="text-[15px] font-semibold"
                 style={{ color: snapshotTokens.navy }}
               >
-                Team Stats
+                {selectedTeam?.name || "Select a team"}
               </h3>
               <p
                 className="mt-1 text-xs"
                 style={{ color: snapshotTokens.textSecondary }}
               >
-                Season totals, efficiency, leaders, and the
-                depth chart for one franchise.
+                {selectedTeam
+                  ? [
+                      selectedTeam.conference,
+                      selectedTeam.division,
+                      stats?.season != null
+                        ? `${stats.season} season`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : "Season totals, player production, and the depth chart for one franchise."}
               </p>
             </div>
           </div>
@@ -673,23 +898,36 @@ export default function PlayerOverviewTeamStats({
           </div>
         </div>
 
-        {selectedTeam && (
-          <p
-            className="mt-3 text-sm"
-            style={{ color: snapshotTokens.textSecondary }}
-          >
-            {[
-              selectedTeam.name,
-              selectedTeam.conference,
-              selectedTeam.division,
-              stats?.season != null
-                ? `${stats.season} season`
-                : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </p>
-        )}
+        <div
+          className="mt-4 flex flex-wrap gap-1 border-b pb-2"
+          style={{ borderColor: snapshotTokens.border }}
+          role="tablist"
+          aria-label="Team stats views"
+        >
+          {TEAM_STATS_TABS.map((tab) => {
+            const selected = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                onClick={() => setActiveTab(tab.id)}
+                className="rounded-md px-3 py-1.5 text-sm font-semibold"
+                style={{
+                  background: selected
+                    ? snapshotTokens.blueLight
+                    : "transparent",
+                  color: selected
+                    ? snapshotTokens.blue
+                    : snapshotTokens.textSecondary,
+                }}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
       </section>
 
       {error && (
@@ -714,11 +952,21 @@ export default function PlayerOverviewTeamStats({
         </div>
       )}
 
-      {!loadingStats && stats && (
+      {!loadingStats && stats && activeTab === "totals" && (
+        stats.team_totals ? (
+          <TeamTotalsPanel totals={stats.team_totals} />
+        ) : (
+          <p
+            className="text-sm"
+            style={{ color: snapshotTokens.textSecondary }}
+          >
+            No team totals for this season yet.
+          </p>
+        )
+      )}
+
+      {!loadingStats && stats && activeTab === "players" && (
         <>
-          {stats.team_totals && (
-            <TeamTotalsPanel totals={stats.team_totals} />
-          )}
           <div className="grid gap-4 lg:grid-cols-3">
             <LeaderTable
               title="Passing leaders"
@@ -754,97 +1002,6 @@ export default function PlayerOverviewTeamStats({
               ]}
             />
           </div>
-
-          <section
-            className="rounded-[10px] border bg-white p-4 sm:p-5"
-            style={{ borderColor: snapshotTokens.border }}
-          >
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h4
-                className="text-[15px] font-semibold"
-                style={{ color: snapshotTokens.navy }}
-              >
-                Depth chart
-              </h4>
-              <p
-                className="text-xs"
-                style={{ color: snapshotTokens.textMuted }}
-              >
-                {stats.depth_season != null
-                  ? `As of ${stats.depth_season}`
-                    + (stats.depth_week != null
-                      ? ` W${stats.depth_week}`
-                      : "")
-                    + (stats.depth_as_of
-                      ? ` · ${stats.depth_as_of}`
-                      : "")
-                  : "No depth chart available"}
-              </p>
-            </div>
-            {stats.depth_chart.length === 0 ? (
-              <p
-                className="mt-3 text-sm"
-                style={{ color: snapshotTokens.textSecondary }}
-              >
-                Depth chart data is not available for this
-                team yet.
-              </p>
-            ) : (
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {stats.depth_chart.map((group) => (
-                  <div
-                    key={group.position}
-                    className="rounded-lg border px-3 py-3"
-                    style={{
-                      borderColor: snapshotTokens.divider,
-                      background: snapshotTokens.background,
-                    }}
-                  >
-                    <p
-                      className="text-[11px] font-semibold uppercase tracking-wide"
-                      style={{ color: snapshotTokens.textMuted }}
-                    >
-                      {group.position}
-                    </p>
-                    <ul className="mt-2 space-y-1.5">
-                      {group.players.map((player) => (
-                        <li key={player.player_id}>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onSelectPlayer(player.player_id)
-                            }
-                            className="flex w-full items-center justify-between gap-2 text-left text-sm"
-                          >
-                            <span
-                              className="truncate font-medium"
-                              style={{
-                                color: snapshotTokens.textPrimary,
-                              }}
-                            >
-                              {player.depth_order != null
-                                && `${player.depth_order}. `}
-                              {player.name || "—"}
-                            </span>
-                            {player.role && (
-                              <span
-                                className="shrink-0 text-[11px] capitalize"
-                                style={{
-                                  color: snapshotTokens.textMuted,
-                                }}
-                              >
-                                {player.role}
-                              </span>
-                            )}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
 
           <section
             className="rounded-[10px] border bg-white p-4 sm:p-5"
@@ -969,6 +1126,99 @@ export default function PlayerOverviewTeamStats({
             )}
           </section>
         </>
+      )}
+
+      {!loadingStats && stats && activeTab === "depth" && (
+          <section
+            className="rounded-[10px] border bg-white p-4 sm:p-5"
+            style={{ borderColor: snapshotTokens.border }}
+          >
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h4
+                className="text-[15px] font-semibold"
+                style={{ color: snapshotTokens.navy }}
+              >
+                Depth chart
+              </h4>
+              <p
+                className="text-xs"
+                style={{ color: snapshotTokens.textMuted }}
+              >
+                {stats.depth_season != null
+                  ? `As of ${stats.depth_season}`
+                    + (stats.depth_week != null
+                      ? ` W${stats.depth_week}`
+                      : "")
+                    + (stats.depth_as_of
+                      ? ` · ${stats.depth_as_of}`
+                      : "")
+                  : "No depth chart available"}
+              </p>
+            </div>
+            {stats.depth_chart.length === 0 ? (
+              <p
+                className="mt-3 text-sm"
+                style={{ color: snapshotTokens.textSecondary }}
+              >
+                Depth chart data is not available for this
+                team yet.
+              </p>
+            ) : (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {stats.depth_chart.map((group) => (
+                  <div
+                    key={group.position}
+                    className="rounded-lg border px-3 py-3"
+                    style={{
+                      borderColor: snapshotTokens.divider,
+                      background: snapshotTokens.background,
+                    }}
+                  >
+                    <p
+                      className="text-[11px] font-semibold uppercase tracking-wide"
+                      style={{ color: snapshotTokens.textMuted }}
+                    >
+                      {group.position}
+                    </p>
+                    <ul className="mt-2 space-y-1.5">
+                      {group.players.map((player) => (
+                        <li key={player.player_id}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onSelectPlayer(player.player_id)
+                            }
+                            className="flex w-full items-center justify-between gap-2 text-left text-sm"
+                          >
+                            <span
+                              className="truncate font-medium"
+                              style={{
+                                color: snapshotTokens.textPrimary,
+                              }}
+                            >
+                              {player.depth_order != null
+                                && `${player.depth_order}. `}
+                              {player.name || "—"}
+                            </span>
+                            {player.role && (
+                              <span
+                                className="shrink-0 text-[11px] capitalize"
+                                style={{
+                                  color: snapshotTokens.textMuted,
+                                }}
+                              >
+                                {player.role}
+                              </span>
+                            )}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
       )}
     </div>
   );

@@ -8,6 +8,10 @@ import random
 from collections import Counter
 from typing import Any
 
+from app.analysis.insights.dfs.forecast_contract import (
+    evaluate_lineup_outcomes,
+    lineup_decision_score,
+)
 from app.analysis.insights.dfs.correlation import (
     CorrelationContext,
     build_correlation_context,
@@ -38,6 +42,7 @@ STRATEGY_DEFAULTS: dict[str, dict[str, float]] = {
         "max_lineup_similarity": 0.92,
         "selection_ceiling_weight": 0.05,
         "selection_leverage_weight": 0.0,
+        "selection_correlation_weight": 0.08,
         "stage1_noise": 1.0,
         "stage1_anchor_exclude_rate": 0.0,
         "stage1_noisy_exclude_rate": 0.0,
@@ -47,6 +52,7 @@ STRATEGY_DEFAULTS: dict[str, dict[str, float]] = {
         "max_lineup_similarity": 0.80,
         "selection_ceiling_weight": 0.15,
         "selection_leverage_weight": 0.0,
+        "selection_correlation_weight": 0.18,
         "stage1_noise": 2.5,
         "stage1_anchor_exclude_rate": 0.0,
         "stage1_noisy_exclude_rate": 0.08,
@@ -56,6 +62,7 @@ STRATEGY_DEFAULTS: dict[str, dict[str, float]] = {
         "max_lineup_similarity": 0.70,
         "selection_ceiling_weight": 0.28,
         "selection_leverage_weight": 0.12,
+        "selection_correlation_weight": 0.24,
         "stage1_noise": 3.0,
         "stage1_anchor_exclude_rate": 0.0,
         "stage1_noisy_exclude_rate": 0.10,
@@ -65,6 +72,7 @@ STRATEGY_DEFAULTS: dict[str, dict[str, float]] = {
         "max_lineup_similarity": 0.65,
         "selection_ceiling_weight": 0.20,
         "selection_leverage_weight": 0.22,
+        "selection_correlation_weight": 0.20,
         "stage1_noise": 3.5,
         "stage1_anchor_exclude_rate": 0.0,
         "stage1_noisy_exclude_rate": 0.12,
@@ -75,6 +83,7 @@ STRATEGY_DEFAULTS: dict[str, dict[str, float]] = {
         "max_lineup_similarity": 0.92,
         "selection_ceiling_weight": 0.05,
         "selection_leverage_weight": 0.0,
+        "selection_correlation_weight": 0.08,
         "stage1_noise": 1.0,
         "stage1_anchor_exclude_rate": 0.0,
         "stage1_noisy_exclude_rate": 0.0,
@@ -84,6 +93,7 @@ STRATEGY_DEFAULTS: dict[str, dict[str, float]] = {
         "max_lineup_similarity": 0.70,
         "selection_ceiling_weight": 0.28,
         "selection_leverage_weight": 0.12,
+        "selection_correlation_weight": 0.24,
         "stage1_noise": 3.0,
         "stage1_anchor_exclude_rate": 0.0,
         "stage1_noisy_exclude_rate": 0.10,
@@ -93,14 +103,14 @@ STRATEGY_DEFAULTS: dict[str, dict[str, float]] = {
         "max_lineup_similarity": 0.80,
         "selection_ceiling_weight": 0.15,
         "selection_leverage_weight": 0.05,
+        "selection_correlation_weight": 0.16,
         "stage1_noise": 2.5,
         "stage1_anchor_exclude_rate": 0.0,
         "stage1_noisy_exclude_rate": 0.08,
     },
 }
 
-# Stage 1 always builds strong lineups; portfolio strategy does not
-# demote chalk projection during candidate generation.
+# Legacy / max-projection Stage 1 prior (projection-heavy).
 CANDIDATE_WEIGHTS: dict[str, float] = {
     "projection": 0.72,
     "floor": 0.05,
@@ -109,6 +119,39 @@ CANDIDATE_WEIGHTS: dict[str, float] = {
     "ceiling": 0.08,
     "correlation": 0.05,
 }
+
+# Classic portfolio Stage 1: keep projection, but loosen it so
+# mid-tier players can enter, and lean on correlation for
+# QB↔WR/TE stacks and DST fades vs opposing starters.
+CLASSIC_CANDIDATE_WEIGHTS: dict[str, float] = {
+    "projection": 0.34,
+    "floor": 0.08,
+    "value": 0.10,
+    "ownership": 0.0,
+    "ceiling": 0.20,
+    "correlation": 0.28,
+}
+
+# Showdown keeps projection in the score, but points-per-dollar
+# must not crowd an expensive primary (RB1, WR1) out of the pool.
+# Ceiling and correlation pick up the weight projection gives up.
+SHOWDOWN_CANDIDATE_WEIGHTS: dict[str, float] = {
+    "projection": 0.40,
+    "floor": 0.10,
+    "value": 0.03,
+    "ownership": 0.0,
+    "ceiling": 0.30,
+    "correlation": 0.17,
+}
+
+# Viable skill players should show up in a meaningful share of
+# lineups even when a higher-projection core scores a bit more.
+CLASSIC_COVERAGE_FLOOR = 0.16
+SHOWDOWN_COVERAGE_FLOOR = 0.22
+_SHOWDOWN_ROLE_COUNTS = {"QB": 1, "RB": 1, "WR": 2, "TE": 1}
+_SHOWDOWN_PRIMARY_ROLE_BONUS = 4.5
+_SHOWDOWN_SECONDARY_ROLE_BONUS = 1.5
+_SHOWDOWN_MIN_ROLE_PROJECTION = 6.0
 
 STRATEGY_ALIASES: dict[str, str] = {
     "cash": "max_projection",
@@ -217,11 +260,47 @@ def generate_portfolio(
         roster_size=roster_size,
     )
 
-    # Stage 1 always optimizes strong individual lineups.
-    stage1_weights = dict(CANDIDATE_WEIGHTS)
+    # Classic / showdown Stage 1 still use projection, with less
+    # weight on it so coverage is not limited to the chalk core.
+    # max_projection keeps the legacy projection-heavy prior.
+    if format_key == "showdown":
+        stage1_weights = dict(SHOWDOWN_CANDIDATE_WEIGHTS)
+    elif strategy_key == "max_projection":
+        stage1_weights = dict(CANDIDATE_WEIGHTS)
+    else:
+        stage1_weights = dict(CLASSIC_CANDIDATE_WEIGHTS)
     # Stage 2 selection uses strategy-specific soft preferences
     # (ceiling/leverage) while hard constraints gate feasibility.
     stage2_defaults = dict(defaults)
+    if format_key == "showdown":
+        stage2_defaults["stage1_noise"] = (
+            float(stage2_defaults.get("stage1_noise") or 2.5) + 0.75
+        )
+        stage2_defaults["coverage_floor"] = SHOWDOWN_COVERAGE_FLOOR
+        stage2_defaults["coverage_projection_scale"] = (
+            _coverage_projection_scale(players)
+        )
+    elif (
+        format_key == "classic"
+        and strategy_key != "max_projection"
+    ):
+        stage2_defaults["stage1_noise"] = (
+            float(stage2_defaults.get("stage1_noise") or 2.5) + 1.0
+        )
+        stage2_defaults["stage1_noisy_exclude_rate"] = max(
+            float(
+                stage2_defaults.get("stage1_noisy_exclude_rate")
+                or 0.0
+            ),
+            0.12,
+        )
+        stage2_defaults["coverage_floor"] = CLASSIC_COVERAGE_FLOOR
+        stage2_defaults["coverage_projection_scale"] = (
+            _coverage_projection_scale(players)
+        )
+        # Soften Stage 2 projection dominance so coverage bonuses
+        # can lift under-used viable players into the portfolio.
+        stage2_defaults["selection_projection_scale"] = 0.62
     rng = random.Random(
         seed
         if seed is not None
@@ -241,8 +320,9 @@ def generate_portfolio(
             else None
         ),
     )
-    # Keep correlation subordinate during Stage 1 so projection
-    # remains the primary driver of candidate quality.
+    # Correlation drives QB↔pass-catcher stacks and DST fades.
+    # Classic uses a shortlist re-rank in the optimizer so this
+    # stays affordable on large main slates.
     corr_weight = float(stage1_weights.get("correlation") or 0.0)
 
     script_context = None
@@ -275,7 +355,14 @@ def generate_portfolio(
             stage_defaults=stage2_defaults,
         )
     else:
-        candidate_target = max(count * 16, 80)
+        # Classic main slates can have 400+ players. Oversampling
+        # 16× with full-pool optimize was taking minutes; 8× on a
+        # trimmed pool is enough for selection without long refills.
+        candidate_target = (
+            max(count * 8, 60)
+            if format_key == "classic"
+            else max(count * 16, 80)
+        )
         candidates = _generate_candidates(
             players=players,
             site_config=site_config,
@@ -300,6 +387,37 @@ def generate_portfolio(
 
     rejection_counts: Counter[str] = Counter()
     if script_allocations:
+        def _refill_showdown_scripts(
+            counts: Counter[str],
+            captain_counts: Counter[str],
+        ) -> list[dict[str, Any]]:
+            del captain_counts
+            at_cap = _players_at_max_exposure(
+                counts,
+                lineup_count=count,
+                default_max_exposure=max_exp,
+                exposure_cfg=exposure_cfg,
+            )
+            refill_cfg = dict(exposure_cfg)
+            refill_exclude = set(exposure_cfg["exclude"]) | at_cap
+            refill_exclude -= set(exposure_cfg["lock"])
+            refill_cfg["exclude"] = sorted(refill_exclude)
+            return _generate_showdown_script_candidates(
+                players=players,
+                site_config=site_config,
+                weights=stage1_weights,
+                exposure_cfg=refill_cfg,
+                rng=rng,
+                strategy_key=strategy_key,
+                risk_key=risk_key,
+                slate=slate,
+                script_context=script_context,
+                allocations=script_allocations,
+                correlation_context=correlation_context,
+                correlation_weight=corr_weight,
+                stage_defaults=stage2_defaults,
+            )
+
         selected, conflicts = _select_portfolio_by_script(
             candidates=candidates,
             allocations=script_allocations,
@@ -311,6 +429,7 @@ def generate_portfolio(
             exposure_cfg=exposure_cfg,
             strategy_defaults=stage2_defaults,
             rejection_counts=rejection_counts,
+            refill_candidates=_refill_showdown_scripts,
         )
     else:
         def _refill_for_selection(
@@ -327,13 +446,34 @@ def generate_portfolio(
             refill_exclude = set(exposure_cfg["exclude"]) | at_cap
             refill_exclude -= set(exposure_cfg["lock"])
             refill_cfg["exclude"] = sorted(refill_exclude)
+            # Enough fresh lineups without capped chalk to finish
+            # the requested portfolio size.
+            refill_target = (
+                max(count * 5, 40)
+                if format_key == "classic"
+                else max(count * 6, 30)
+            )
+            # More noise on refill so replacements are not clones
+            # of the capped chalk cores.
+            refill_defaults = dict(stage2_defaults)
+            refill_defaults["stage1_noise"] = (
+                float(refill_defaults.get("stage1_noise") or 2.5)
+                + 1.5
+            )
+            refill_defaults["stage1_noisy_exclude_rate"] = max(
+                float(
+                    refill_defaults.get("stage1_noisy_exclude_rate")
+                    or 0.0
+                ),
+                0.18,
+            )
             return _generate_candidates(
                 players=players,
                 site_config=site_config,
                 format_key=format_key,
                 weights=stage1_weights,
                 exposure_cfg=refill_cfg,
-                target_count=max(count * 6, 30),
+                target_count=refill_target,
                 rng=rng,
                 strategy_key=strategy_key,
                 risk_key=risk_key,
@@ -341,7 +481,7 @@ def generate_portfolio(
                 seen_keys=seen_lineup_keys,
                 correlation_context=correlation_context,
                 correlation_weight=corr_weight,
-                stage_defaults=stage2_defaults,
+                stage_defaults=refill_defaults,
             )
 
         selected, conflicts = _select_portfolio(
@@ -550,15 +690,28 @@ def analyze_portfolio(
 
     player_counts: Counter[str] = Counter()
     captain_counts: Counter[str] = Counter()
+    script_counts: dict[str, Counter[str]] = {}
+    importance_sum: dict[str, float] = {}
+    importance_n: Counter[str] = Counter()
     player_meta: dict[str, dict[str, Any]] = {}
     for lineup in lineups:
         seen: set[str] = set()
+        script_id = str(lineup.get("game_script_id") or "")
+        outcomes = lineup.get("lineup_outcomes") or {}
+        importance = outcomes.get("player_importance") or {}
         for player in lineup.get("players") or []:
             pid = str(player.get("player_id") or "")
             if not pid or pid in seen:
                 continue
             seen.add(pid)
             player_counts[pid] += 1
+            if script_id:
+                script_counts.setdefault(pid, Counter())[script_id] += 1
+            if pid in importance:
+                importance_sum[pid] = importance_sum.get(pid, 0.0) + float(
+                    importance[pid]
+                )
+                importance_n[pid] += 1
             if pid not in player_meta:
                 player_meta[pid] = {
                     "player_id": pid,
@@ -614,6 +767,23 @@ def analyze_portfolio(
                 "remaining_capacity": max(0, max_apps - appearances),
                 "locked": pid in exposure_cfg["lock"],
                 "excluded": pid in exposure_cfg["exclude"],
+                "script_exposure": {
+                    script: {
+                        "lineups": count,
+                        "exposure": round(count / float(n), 4),
+                    }
+                    for script, count in (
+                        script_counts.get(pid) or {}
+                    ).items()
+                },
+                "high_lineup_rate": (
+                    round(
+                        importance_sum[pid] / float(importance_n[pid]),
+                        3,
+                    )
+                    if importance_n.get(pid)
+                    else None
+                ),
             }
         )
 
@@ -678,6 +848,7 @@ def analyze_portfolio(
             "player_id": row["player_id"],
             "name": row["name"],
             "position": row["position"],
+            "team": row.get("team"),
             "exposure": row["exposure"],
             "exposure_pct": row["exposure_pct"],
             "lineups": row["lineups"],
@@ -690,6 +861,7 @@ def analyze_portfolio(
             "player_id": row["player_id"],
             "name": row["name"],
             "position": row["position"],
+            "team": row.get("team"),
             "exposure": row["exposure"],
             "exposure_pct": row["exposure_pct"],
             "lineups": row["lineups"],
@@ -959,6 +1131,11 @@ def _generate_candidates(
     noisy_exclude_rate = float(
         defaults.get("stage1_noisy_exclude_rate") or 0.0
     )
+    role_bonuses = (
+        _showdown_primary_role_bonuses(players)
+        if format_key == "showdown"
+        else {}
+    )
 
     scored = []
     for player in players:
@@ -969,7 +1146,16 @@ def _generate_candidates(
             max_ownership=None,
         )
         pid = str(row.get("player_id") or "")
-        row["_base_opt_score"] = base + boosts.get(pid, 0.0)
+        opportunity = float(row.get("opportunity_rating") or 0.0)
+        # Usage is salary-blind. A lead back with a real role
+        # stays competitive when his points-per-dollar is ordinary.
+        usage_bonus = min(4.0, opportunity * 0.04) if opportunity > 0 else 0.0
+        row["_base_opt_score"] = (
+            base
+            + boosts.get(pid, 0.0)
+            + role_bonuses.get(pid, 0.0)
+            + usage_bonus
+        )
         scored.append(row)
     scored.sort(
         key=lambda item: (
@@ -977,6 +1163,17 @@ def _generate_candidates(
             -float(item.get("projection") or 0.0),
         )
     )
+    if format_key == "classic":
+        # Keep locks / min-exposure players, then top-N by position
+        # so each optimize pass is not O(full slate).
+        scored = _trim_classic_candidate_pool(
+            scored,
+            protect_ids=(
+                set(base_lock)
+                | set(exposure_cfg.get("min") or {})
+                | set(soft_lock)
+            ),
+        )
 
     anchors = _anchor_player_ids(scored, format_key=format_key)
     if captain_pool:
@@ -998,7 +1195,7 @@ def _generate_candidates(
     used_captains: set[str] = set()
     candidates: list[dict[str, Any]] = []
     attempts = 0
-    max_attempts = max(target_count * 10, 120)
+    max_attempts = max(target_count * 5, 80)
 
     while len(candidates) < target_count and attempts < max_attempts:
         attempts += 1
@@ -1054,15 +1251,26 @@ def _generate_candidates(
                 lock.add(required_captain)
 
         if noisy_exclude_rate > 0:
+            # Classic uses a wider band so mid-projection players
+            # get unlocked seats more often.
+            noise_slice = (
+                scored[10:60]
+                if format_key == "classic"
+                else scored[8:40]
+            )
             noisy_exclude = [
                 str(player.get("player_id"))
-                for player in scored[8:40]
+                for player in noise_slice
                 if player.get("player_id")
                 and str(player.get("player_id")) not in lock
                 and str(player.get("player_id")) != required_captain
                 and rng.random() < noisy_exclude_rate
             ]
             exclude.update(noisy_exclude)
+
+        stack_teams, fade_dst_teams = _classic_stack_context(
+            scored, lock
+        )
 
         pool = []
         for player in scored:
@@ -1071,8 +1279,30 @@ def _generate_candidates(
                 continue
             row = dict(player)
             noise = rng.uniform(-noise_amp, noise_amp)
+            stack_bonus = 0.0
+            position = str(row.get("position") or "").upper()
+            team = str(row.get("team") or "").upper()
+            if (
+                format_key == "classic"
+                and stack_teams
+                and position in {"WR", "TE"}
+                and team in stack_teams
+            ):
+                # Pull own pass-catchers into the shortlist with the
+                # locked QB so correlation can finish the stack.
+                stack_bonus = 6.0
+            if (
+                format_key == "classic"
+                and fade_dst_teams
+                and position in {"DEF", "DST"}
+                and team in fade_dst_teams
+            ):
+                # Avoid DST against a locked starting QB.
+                stack_bonus -= 8.0
             row["_opt_score"] = (
-                float(row.get("_base_opt_score") or 0.0) + noise
+                float(row.get("_base_opt_score") or 0.0)
+                + noise
+                + stack_bonus
             )
             pool.append(row)
 
@@ -1136,6 +1366,221 @@ def _generate_candidates(
     return candidates
 
 
+def _coverage_projection_scale(
+    players: list[dict[str, Any]],
+) -> float:
+    """Highest skill-player projection, used to judge who is viable."""
+
+    best = 0.0
+    for player in players:
+        position = str(player.get("position") or "").upper()
+        if position not in {"QB", "RB", "WR", "TE"}:
+            continue
+        best = max(best, float(player.get("projection") or 0.0))
+    return best
+
+
+# Back-compat alias for earlier showdown-only name.
+_showdown_projection_scale = _coverage_projection_scale
+
+
+def _showdown_primary_role_bonuses(
+    players: list[dict[str, Any]],
+) -> dict[str, float]:
+    """
+    Salary-blind bump for each team's primary skill players.
+
+    An expensive RB1 stays in the candidate pool when his
+    points-per-dollar trails cheaper secondary pieces.
+    """
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for player in players:
+        position = str(player.get("position") or "").upper()
+        team = str(player.get("team") or "").upper()
+        if position not in _SHOWDOWN_ROLE_COUNTS or not team:
+            continue
+        grouped.setdefault((team, position), []).append(player)
+
+    bonuses: dict[str, float] = {}
+    for (_team, position), group in grouped.items():
+        group.sort(
+            key=lambda item: -float(item.get("projection") or 0.0)
+        )
+        keep = _SHOWDOWN_ROLE_COUNTS[position]
+        for index, player in enumerate(group[:keep]):
+            if (
+                float(player.get("projection") or 0.0)
+                < _SHOWDOWN_MIN_ROLE_PROJECTION
+            ):
+                continue
+            pid = str(player.get("player_id") or "")
+            if not pid:
+                continue
+            bonuses[pid] = (
+                _SHOWDOWN_PRIMARY_ROLE_BONUS
+                if index == 0
+                else _SHOWDOWN_SECONDARY_ROLE_BONUS
+            )
+    return bonuses
+
+
+def _near_cap_penalty(
+    player_ids: set[str],
+    *,
+    counts: Counter[str],
+    lineup_count: int,
+    exposure_cfg: dict[str, Any],
+    default_max_exposure: float,
+) -> float:
+    """
+    Penalize lineups that would push many players near their hard
+    max-exposure cap. Leaves room to finish the requested size.
+    """
+
+    requested = max(int(lineup_count), 1)
+    penalty = 0.0
+    locked = set(exposure_cfg.get("lock") or [])
+    for pid in player_ids:
+        if pid in locked:
+            continue
+        cap = float(
+            exposure_cfg["max"].get(pid, default_max_exposure)
+        )
+        cap = max(0.0, min(1.0, cap))
+        max_apps = int(cap * requested + 1e-9)
+        if max_apps <= 1:
+            continue
+        next_apps = int(counts.get(pid, 0)) + 1
+        # Start softening once a player is past ~65% of their cap.
+        threshold = max(1, int(max_apps * 0.65 + 1e-9))
+        if next_apps <= threshold:
+            continue
+        frac = next_apps / float(max_apps)
+        penalty += (frac - 0.65) * 22.0
+    return penalty
+
+
+def _coverage_bonus(
+    candidate: dict[str, Any],
+    *,
+    counts: Counter[str],
+    lineup_count: int,
+    defaults: dict[str, Any],
+) -> float:
+    """
+    Prefer lineups that lift viable players toward a coverage floor.
+
+    Players already at the floor are not penalized, and low-projection
+    punts do not earn the bonus.
+    """
+
+    floor = float(defaults.get("coverage_floor") or 0.0)
+    scale = float(defaults.get("coverage_projection_scale") or 0.0)
+    if floor <= 0 or scale <= 0:
+        return 0.0
+
+    projections: dict[str, float] = {}
+    for player in candidate.get("players") or []:
+        pid = str(player.get("player_id") or "")
+        if not pid:
+            continue
+        projections[pid] = float(
+            player.get("base_projection")
+            or player.get("projection")
+            or 0.0
+        )
+
+    bonus = 0.0
+    size = float(max(lineup_count, 1))
+    for pid, projection in projections.items():
+        viable = projection / scale
+        if viable < 0.45:
+            continue
+        rate = counts.get(pid, 0) / size
+        if rate >= floor:
+            continue
+        bonus += (floor - rate) * min(viable, 1.0) * 36.0
+    return min(7.5, bonus)
+
+
+_showdown_coverage_bonus = _coverage_bonus
+
+
+_CLASSIC_POOL_CAPS: dict[str, int] = {
+    "QB": 14,
+    "RB": 34,
+    "WR": 48,
+    "TE": 18,
+    "DEF": 12,
+    "DST": 12,
+    "K": 6,
+}
+
+
+def _classic_stack_context(
+    players: list[dict[str, Any]],
+    locked_ids: set[str],
+) -> tuple[set[str], set[str]]:
+    """
+    From locked QBs: own teams to stack with, opponent teams whose
+    DST should be faded.
+    """
+
+    if not locked_ids:
+        return set(), set()
+    stack_teams: set[str] = set()
+    fade_dst: set[str] = set()
+    for player in players:
+        pid = str(player.get("player_id") or "")
+        if pid not in locked_ids:
+            continue
+        if str(player.get("position") or "").upper() != "QB":
+            continue
+        team = str(player.get("team") or "").upper()
+        opp = str(player.get("opponent") or "").upper()
+        if team:
+            stack_teams.add(team)
+        if opp:
+            fade_dst.add(opp)
+    return stack_teams, fade_dst
+
+
+def _trim_classic_candidate_pool(
+    players: list[dict[str, Any]],
+    *,
+    protect_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Limit classic Stage 1 optimize pools to viable players.
+
+    Main slates can exceed 400 Active players; greedy fill + upgrade
+    against the full pool dominates portfolio runtime.
+    """
+
+    protect = {str(pid) for pid in (protect_ids or set()) if pid}
+    kept: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    by_pos: dict[str, int] = {}
+
+    for player in players:
+        pid = str(player.get("player_id") or "")
+        if not pid or pid in seen:
+            continue
+        position = str(player.get("position") or "").upper()
+        if position == "DEF":
+            position = "DST"
+        protected = pid in protect
+        if not protected:
+            cap = _CLASSIC_POOL_CAPS.get(position, 8)
+            if by_pos.get(position, 0) >= cap:
+                continue
+        seen.add(pid)
+        by_pos[position] = by_pos.get(position, 0) + 1
+        kept.append(player)
+    return kept or list(players)
+
+
 def _captain_rotation_ids(
     players: list[dict[str, Any]],
 ) -> list[str]:
@@ -1156,26 +1601,32 @@ def _anchor_player_ids(
 ) -> list[str]:
     anchors: list[str] = []
     if format_key == "showdown":
-        for player in players[:16]:
+        for player in players[:12]:
             pid = str(player.get("player_id") or "")
-            if pid:
+            if pid and pid not in anchors:
+                anchors.append(pid)
+        # Rotate each team's primary skill players through the
+        # lock so coverage is not limited to the top projection cluster.
+        for pid in _showdown_primary_role_bonuses(players):
+            if pid not in anchors:
                 anchors.append(pid)
         return anchors
 
-    # Prefer distinct QBs then high-proj skill players.
+    # Prefer distinct QBs then a wider band of skill players so
+    # Stage 1 locks rotate past the pure top-projection cluster.
     for player in players:
         if player.get("position") == "QB":
             pid = str(player.get("player_id") or "")
             if pid and pid not in anchors:
                 anchors.append(pid)
-            if len(anchors) >= 8:
+            if len(anchors) >= 12:
                 break
     for player in players:
         if player.get("position") in {"RB", "WR", "TE"}:
             pid = str(player.get("player_id") or "")
             if pid and pid not in anchors:
                 anchors.append(pid)
-            if len(anchors) >= 16:
+            if len(anchors) >= 28:
                 break
     return anchors
 
@@ -1248,6 +1699,9 @@ def _package_lineup(
             }
         ),
     }
+    outcomes = evaluate_lineup_outcomes(selected)
+    if outcomes is not None:
+        packaged["lineup_outcomes"] = outcomes
     if correlation_context is not None:
         correlation = score_lineup_correlation(
             selected,
@@ -1294,12 +1748,15 @@ def _select_portfolio_by_script(
     min_unique_players: int = 2,
     strategy_defaults: dict[str, float] | None = None,
     rejection_counts: Counter[str] | None = None,
+    refill_candidates: Any | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Fill script quotas so lineup mix tracks normalized weights.
 
     Under-filled scripts keep priority on top-off instead of letting
-    higher-projection archetypes steal leftover seats.
+    higher-projection archetypes steal leftover seats. When exposure
+    caps stall the pool, refill builds new candidates that leave
+    capped players out so the remaining seats cover more of the game.
     """
 
     selected: list[dict[str, Any]] = []
@@ -1443,6 +1900,8 @@ def _select_portfolio_by_script(
 
     # Pass 3: top off remaining seats from under-quota scripts first
     # (largest unmet weight), then any leftover candidates.
+    refill_rounds = 0
+    max_refill_rounds = 3
     while len(selected) < lineup_count:
         underfilled = [
             (
@@ -1479,18 +1938,38 @@ def _select_portfolio_by_script(
             if _lineup_key(candidate.get("players") or [])
             not in used_keys
         ]
-        if not leftovers:
-            break
-        leftovers.sort(
-            key=lambda item: (
-                -float(item.get("projected_points") or 0.0),
-                -float(item.get("projected_ceiling") or 0.0),
+        taken = 0
+        if leftovers:
+            leftovers.sort(
+                key=lambda item: (
+                    -float(item.get("projected_points") or 0.0),
+                    -float(item.get("projected_ceiling") or 0.0),
+                )
             )
+            taken = _take_from_pool(
+                leftovers, seats_left=1, strict=False
+            )
+        if taken > 0:
+            continue
+        if (
+            refill_candidates is None
+            or refill_rounds >= max_refill_rounds
+        ):
+            break
+        refill_rounds += 1
+        extra = list(
+            refill_candidates(counts, captain_counts) or []
         )
-        taken = _take_from_pool(
-            leftovers, seats_left=1, strict=False
-        )
-        if taken <= 0:
+        added = 0
+        for item in extra:
+            key = _lineup_key(item.get("players") or [])
+            if not key or key in used_keys:
+                continue
+            script_id = str(item.get("game_script_id") or "")
+            by_script.setdefault(script_id, []).append(item)
+            candidates.append(item)
+            added += 1
+        if added <= 0:
             break
 
     # Persist actual seat fills on allocations for the UI mix panel.
@@ -1623,7 +2102,10 @@ def _select_portfolio(
     conflicts: list[dict[str, Any]] = []
     remaining = list(candidates)
     refill_rounds = 0
-    max_refill_rounds = 4
+    # Classic main slates often hit the default max-exposure wall
+    # around floor(cap * N) shared chalk lineups (e.g. 11 of 20 at
+    # 55%). Keep refilling without those players until full.
+    max_refill_rounds = 8
 
     # Prefer higher projection first as the quality prior.
     remaining.sort(
@@ -1633,7 +2115,33 @@ def _select_portfolio(
         )
     )
 
-    while len(selected) < lineup_count and remaining:
+    def _ingest_refill(extra: list[dict[str, Any]]) -> int:
+        existing = {
+            _lineup_key(item.get("players") or [])
+            for item in remaining
+        }
+        existing.update(
+            _lineup_key(item.get("players") or [])
+            for item in selected
+        )
+        added = 0
+        for item in extra:
+            key = _lineup_key(item.get("players") or [])
+            if not key or key in existing:
+                continue
+            remaining.append(item)
+            existing.add(key)
+            added += 1
+        if added:
+            remaining.sort(
+                key=lambda row: (
+                    -float(row.get("projected_points") or 0.0),
+                    -float(row.get("projected_ceiling") or 0.0),
+                )
+            )
+        return added
+
+    while len(selected) < lineup_count:
         best_idx = None
         best_score = float("-inf")
         for index, candidate in enumerate(remaining):
@@ -1691,51 +2199,47 @@ def _select_portfolio(
                 strategy_defaults=strategy_defaults,
                 rejection_counts=rejection_counts,
             )
-            if relaxed is None:
-                if (
-                    refill_candidates is not None
-                    and refill_rounds < max_refill_rounds
-                ):
-                    refill_rounds += 1
-                    extra = list(
-                        refill_candidates(counts, captain_counts)
-                        or []
-                    )
-                    if extra:
-                        existing = {
-                            _lineup_key(item.get("players") or [])
-                            for item in remaining
-                        }
-                        existing.update(
-                            _lineup_key(item.get("players") or [])
-                            for item in selected
-                        )
-                        added = 0
-                        for item in extra:
-                            key = _lineup_key(
-                                item.get("players") or []
-                            )
-                            if key in existing:
-                                continue
-                            remaining.append(item)
-                            existing.add(key)
-                            added += 1
-                        if added:
-                            remaining.sort(
-                                key=lambda row: (
-                                    -float(
-                                        row.get("projected_points")
-                                        or 0.0
-                                    ),
-                                    -float(
-                                        row.get("projected_ceiling")
-                                        or 0.0
-                                    ),
-                                )
-                            )
-                            continue
+            if relaxed is not None:
+                best_idx = relaxed
+            elif (
+                refill_candidates is not None
+                and refill_rounds < max_refill_rounds
+            ):
+                refill_rounds += 1
+                extra = list(
+                    refill_candidates(counts, captain_counts) or []
+                )
+                if _ingest_refill(extra):
+                    continue
+                # Last resort in-pool: any exposure-legal unique
+                # lineup, ignoring similarity floors.
+                selected_keys = {
+                    _lineup_key(row.get("players") or [])
+                    for row in selected
+                }
+                for index, candidate in enumerate(remaining):
+                    if not _passes_max_exposure(
+                        candidate,
+                        counts=counts,
+                        captain_counts=captain_counts,
+                        lineup_count=lineup_count,
+                        selected_count=len(selected),
+                        default_max_exposure=default_max_exposure,
+                        default_max_captain_exposure=(
+                            default_max_captain_exposure
+                        ),
+                        exposure_cfg=exposure_cfg,
+                    ):
+                        continue
+                    key = _lineup_key(candidate.get("players") or [])
+                    if key in selected_keys:
+                        continue
+                    best_idx = index
+                    break
+                if best_idx is None:
+                    continue
+            else:
                 break
-            best_idx = relaxed
 
         pick = remaining.pop(best_idx)
         selected.append(pick)
@@ -1888,29 +2392,66 @@ def _candidate_select_score(
     strategy_defaults: dict[str, float] | None = None,
 ) -> float:
     """
-    Stage 2 ranking: projection-first.
+    Stage 2 ranking: projection-first with coverage and near-cap
+    balance.
 
-    Soft exposure penalties are intentionally omitted. Hard max
-    exposure gates already enforce configured caps; scoring must not
-    demote elite players merely because they already appear.
+    Soft penalties do not apply at low exposure — elites stay
+    competitive early. Approaching the hard max-exposure wall is
+    penalized so the portfolio does not spend its entire chalk
+    budget in the first floor(cap * N) lineups and then stall.
     """
 
-    del default_max_exposure  # caps are hard constraints, not scores
     projection = float(candidate.get("projected_points") or 0.0)
     ceiling = float(candidate.get("projected_ceiling") or 0.0)
     ownership = float(candidate.get("projected_ownership") or 0.0)
     defaults = strategy_defaults or {}
     ceil_w = float(defaults.get("selection_ceiling_weight") or 0.15)
     lev_w = float(defaults.get("selection_leverage_weight") or 0.0)
+    corr_w = float(
+        defaults.get("selection_correlation_weight") or 0.0
+    )
+    proj_scale = float(
+        defaults.get("selection_projection_scale") or 1.0
+    )
     # Ownership is stored as sum of player ownership percentages.
     leverage = max(0.0, 120.0 - ownership)
-    score = projection + ceil_w * ceiling + lev_w * (leverage * 0.04)
+    lineup_corr = float(
+        candidate.get("lineup_correlation_score") or 0.0
+    )
+    decided = lineup_decision_score(
+        list(candidate.get("players") or [])
+    )
+    if decided is not None:
+        # Joint outcomes outrank a median sum. Salary stays a
+        # feasibility constraint, not this ranking.
+        score = decided + lev_w * (leverage * 0.04)
+        score += corr_w * lineup_corr * 14.0
+    else:
+        score = (
+            proj_scale * projection
+            + ceil_w * ceiling
+            + lev_w * (leverage * 0.04)
+            + corr_w * lineup_corr * 14.0
+        )
+    score += _coverage_bonus(
+        candidate,
+        counts=counts,
+        lineup_count=lineup_count,
+        defaults=defaults,
+    )
 
     ids = {
         str(pid)
         for pid in (candidate.get("player_ids") or [])
         if pid
     }
+    score -= _near_cap_penalty(
+        ids,
+        counts=counts,
+        lineup_count=lineup_count,
+        exposure_cfg=exposure_cfg,
+        default_max_exposure=default_max_exposure,
+    )
 
     # Soft nudge toward optional exposure targets only (not max caps).
     for pid in ids:

@@ -240,30 +240,35 @@ def build_script_hints(
         )
         soft_lock = _ids(_pos(fav_players, {"RB", "DST", "DEF"}))[:2]
         soft_exclude = _ids(_pos(dog_players, {"QB", "WR", "TE"}))[:4]
-        _boost(boosts, fav_players, {"RB", "DST", "DEF", "QB"}, 8.0)
-        _boost(boosts, dog_players, {"WR", "TE", "QB"}, -6.0)
+        _boost(boosts, fav_players, {"RB", "DST", "DEF", "QB"}, 3.2)
+        _boost(boosts, dog_players, {"WR", "TE", "QB"}, -2.4)
 
     elif script_id == "shootout":
         captain_pool = _ids(
-            _pos(fav_players + dog_players, {"QB", "WR", "TE"})
+            _pos(fav_players + dog_players, {"QB", "WR", "TE", "RB"})
         )
         soft_lock = _ids(_pos(fav_players + dog_players, {"QB"}))[:2]
         soft_exclude = _ids(
             _pos(fav_players + dog_players, {"DST", "DEF", "K"})
         )
-        _boost(boosts, fav_players + dog_players, {"QB", "WR", "TE"}, 9.0)
-        _boost(boosts, fav_players + dog_players, {"DST", "DEF", "K"}, -8.0)
+        _boost(boosts, fav_players + dog_players, {"QB", "WR", "TE"}, 3.6)
+        _boost(boosts, fav_players + dog_players, {"RB"}, 1.2)
+        _boost(boosts, fav_players + dog_players, {"DST", "DEF", "K"}, -3.2)
 
     elif script_id == "underdog_comeback":
-        captain_pool = _ids(_pos(dog_players, {"QB", "WR", "TE"}))
+        captain_pool = _ids(_pos(dog_players, {"QB", "WR", "TE", "RB"}))
         soft_lock = (
             _ids(_pos(dog_players, {"QB", "WR"}))[:2]
             + _ids(_pos(fav_players, {"WR", "TE"}))[:1]
         )
-        soft_exclude = _ids(_pos(fav_players, {"DST", "DEF", "RB"}))[:3]
-        _boost(boosts, dog_players, {"QB", "WR", "TE"}, 10.0)
-        _boost(boosts, fav_players, {"WR", "TE"}, 5.0)
-        _boost(boosts, fav_players, {"RB", "DST", "DEF"}, -5.0)
+        # Keep the favorite RB rosterable. A lead back still gets
+        # check-downs and goal-line work in a comeback script.
+        soft_exclude = _ids(_pos(fav_players, {"DST", "DEF"}))[:2]
+        _boost(boosts, dog_players, {"QB", "WR", "TE"}, 4.0)
+        _boost(boosts, dog_players, {"RB"}, 1.6)
+        _boost(boosts, fav_players, {"WR", "TE"}, 2.0)
+        _boost(boosts, fav_players, {"RB"}, 0.8)
+        _boost(boosts, fav_players, {"DST", "DEF"}, -2.0)
 
     elif script_id == "low_scoring":
         # Prefer ground/defense without locking out the pass game —
@@ -278,30 +283,44 @@ def build_script_hints(
         soft_exclude = _ids(
             _pos(fav_players + dog_players, {"WR", "TE"})
         )[4:]
-        _boost(boosts, fav_players + dog_players, {"RB", "DST", "DEF", "K"}, 11.0)
-        _boost(boosts, fav_players + dog_players, {"QB"}, -2.0)
-        _boost(boosts, fav_players + dog_players, {"WR", "TE"}, -4.0)
+        _boost(
+            boosts, fav_players + dog_players, {"RB", "DST", "DEF", "K"}, 4.4
+        )
+        _boost(boosts, fav_players + dog_players, {"QB"}, -0.8)
+        _boost(boosts, fav_players + dog_players, {"WR", "TE"}, -1.6)
 
     elif script_id == "favorite_passing_win":
-        captain_pool = _ids(_pos(fav_players, {"QB", "WR", "TE"}))
+        captain_pool = _ids(_pos(fav_players, {"QB", "WR", "TE", "RB"}))
         soft_lock = _ids(_pos(fav_players, {"QB", "WR", "TE"}))[:3]
-        soft_exclude = _ids(_pos(dog_players, {"RB", "DST", "DEF"}))[:3]
-        _boost(boosts, fav_players, {"QB", "WR", "TE"}, 10.0)
-        _boost(boosts, dog_players, {"WR"}, 3.0)
-        _boost(boosts, fav_players, {"RB", "DST", "DEF"}, -3.0)
+        soft_exclude = _ids(_pos(dog_players, {"DST", "DEF"}))[:2]
+        _boost(boosts, fav_players, {"QB", "WR", "TE"}, 4.0)
+        _boost(boosts, fav_players, {"RB"}, 1.2)
+        _boost(boosts, dog_players, {"WR"}, 1.2)
+        _boost(boosts, dog_players, {"RB"}, 0.6)
+        _boost(boosts, fav_players, {"DST", "DEF"}, -1.2)
 
     elif script_id == "contrarian_upset":
         captain_pool = _ids(
             _pos(dog_players, {"QB", "WR", "RB", "TE"})
         )
         soft_lock = _ids(_pos(dog_players, {"QB", "WR", "TE", "RB"}))[:3]
-        soft_exclude = _ids(_pos(fav_players, {"QB", "RB", "DST", "DEF"}))[:4]
-        _boost(boosts, dog_players, {"QB", "WR", "TE", "RB"}, 11.0)
-        _boost(boosts, fav_players, {"WR"}, 2.0)
-        _boost(boosts, fav_players, {"QB", "RB", "DST", "DEF"}, -7.0)
+        soft_exclude = _ids(_pos(fav_players, {"QB", "DST", "DEF"}))[:3]
+        _boost(boosts, dog_players, {"QB", "WR", "TE", "RB"}, 4.4)
+        _boost(boosts, fav_players, {"WR"}, 0.8)
+        _boost(boosts, fav_players, {"RB"}, 0.6)
+        _boost(boosts, fav_players, {"QB", "DST", "DEF"}, -2.8)
 
     else:
         captain_pool = _ids(players)[:12]
+
+    # Every script should be able to captain a team's lead back.
+    # Passing scripts used to omit them, so an RB1 only survived in
+    # the one or two ground-game seats.
+    for group in (fav_players, dog_players):
+        lead_backs = _ids(_pos(group, {"RB"}))[:1]
+        for pid in lead_backs:
+            if pid not in captain_pool:
+                captain_pool.append(pid)
 
     return {
         "script_id": script_id,

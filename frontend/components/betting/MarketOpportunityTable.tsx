@@ -5,6 +5,10 @@ import {
   formatModelValue,
 } from "@/components/betting/formatMarketValues";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
+import TeamLogo, {
+  TeamMatchupLabel,
+  teamInSelection,
+} from "@/components/teams/TeamLogo";
 import { BettingMarket } from "@/services/api";
 
 interface Props {
@@ -77,7 +81,11 @@ export default function MarketOpportunityTable({
                   className="px-3 py-2.5 font-medium"
                   style={{ color: snapshotTokens.textPrimary }}
                 >
-                  {market.event_label || "—"}
+                  <TeamMatchupLabel
+                    label={market.event_label}
+                    away={market.away_team}
+                    home={market.home_team}
+                  />
                 </td>
                 <td
                   className="px-3 py-2.5 capitalize"
@@ -89,7 +97,16 @@ export default function MarketOpportunityTable({
                   className="px-3 py-2.5"
                   style={{ color: snapshotTokens.textPrimary }}
                 >
-                  {market.selection}
+                  <span className="inline-flex items-center gap-1.5">
+                    <TeamLogo
+                      abbreviation={teamInSelection(
+                        market.selection,
+                        [market.away_team, market.home_team]
+                      )}
+                      size={18}
+                    />
+                    <span>{market.selection}</span>
+                  </span>
                 </td>
                 <td
                   className="px-3 py-2.5 text-right tabular-nums"
