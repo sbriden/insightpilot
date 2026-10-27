@@ -30,7 +30,7 @@ from app.analysis.insights.betting.residual_features import (
 MIN_FIT_SAMPLES = 40
 RIDGE_LAMBDA = 8.0
 DEFAULT_PRIOR_VARIANCE = 9.0  # ~3 pts SD prior on residual
-MODEL_VERSION = "challenger_ridge_v1"
+MODEL_VERSION = "challenger_ridge_v2"
 
 # Regime buckets for σ (min_games band, disagreement, injury flag).
 UNCERTAINTY_BUCKETS = (

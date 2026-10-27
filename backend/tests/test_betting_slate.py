@@ -321,6 +321,12 @@ class BettingInjuryContextTests(unittest.TestCase):
             "over_under": 47.5,
             "home_implied_total": 25.5,
             "away_implied_total": 22.0,
+            # Distinct opening quotes (not current) so movement is real
+            # and injury residualization stays deterministic.
+            "opening_spread": 3.5,
+            "opening_over_under": 47.5,
+            "opening_home_implied_total": 25.5,
+            "opening_away_implied_total": 22.0,
             "home_team": "BUF",
             "away_team": "MIA",
             "home_team_id": "t-buf",
@@ -340,7 +346,9 @@ class BettingInjuryContextTests(unittest.TestCase):
                 "t-buf": {
                     "adjustment_pts": qb_out_impact,
                     "opponent_adjustment_pts": 0.0,
-                    "raw_adjustment_pts": -5.5,
+                    "score_adjustment_pts": qb_out_impact,
+                    "score_opponent_adjustment_pts": 0.0,
+                    "raw_adjustment_pts": qb_out_impact,
                     "raw_opponent_adjustment_pts": 0.0,
                     "injuries": [
                         {
@@ -356,6 +364,8 @@ class BettingInjuryContextTests(unittest.TestCase):
                             "projection_impact_pts": qb_out_impact,
                             "own_score_delta": qb_out_impact,
                             "opponent_score_delta": 0.0,
+                            "score_own_delta": qb_out_impact,
+                            "score_opponent_delta": 0.0,
                         }
                     ],
                     "drivers": [
@@ -378,15 +388,16 @@ class BettingInjuryContextTests(unittest.TestCase):
                 recent_ppg={"t-buf": 28.0, "t-mia": 21.0},
                 player_context=context,
             )
-        self.assertAlmostEqual(
+        # Injury edge is market-residualized again inside enrich, so the
+        # applied home adjustment is a fraction of qb_out_impact.
+        self.assertLess(
             adjusted["event"]["projected_home_score"],
-            baseline["event"]["projected_home_score"] + qb_out_impact,
-            places=1,
+            baseline["event"]["projected_home_score"],
         )
-        self.assertEqual(
-            adjusted["event"]["injury_adjustment_home"],
-            qb_out_impact,
+        self.assertIsNotNone(
+            adjusted["event"]["injury_adjustment_home"]
         )
+        self.assertLess(adjusted["event"]["injury_adjustment_home"], 0)
         self.assertTrue(adjusted["event"]["injuries"])
         self.assertEqual(adjusted["event"]["injuries"][0]["team"], "BUF")
         signal_types = {

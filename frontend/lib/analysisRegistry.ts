@@ -184,6 +184,19 @@ export const ANALYSIS_REGISTRY: RegistryAnalysis[] = [
     status: "available",
   },
   {
+    analysis_key: "betting.daily_slate",
+    name: "Daily Bet Slate",
+    description:
+      "Generate a market-probability randomized daily card across sports with risk-based unit allocation and parlays.",
+    data_product_id: "sports_betting",
+    data_product_label: "Sports Betting",
+    category: "Betting",
+    runtime: "sports_betting",
+    view: "daily",
+    supported_context: ["slate", "market", "game"],
+    status: "available",
+  },
+  {
     analysis_key: "betting.games",
     name: "Games",
     description:

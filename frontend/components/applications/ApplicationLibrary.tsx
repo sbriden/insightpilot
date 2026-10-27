@@ -4,7 +4,10 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { appTheme } from "@/components/applications/appTheme";
-import ApplicationLogo from "@/components/applications/ApplicationLogo";
+import ApplicationLogo, {
+  isLogoDataUrl,
+  normalizeLogoType,
+} from "@/components/applications/ApplicationLogo";
 import {
   getRegistryAnalysis,
   sourceProductLabels,
@@ -12,6 +15,7 @@ import {
 import {
   deleteAnalyticalApplication,
   listAnalyticalApplications,
+  normalizeApplicationSettings,
   type AnalyticalApplication,
 } from "@/services/api";
 
@@ -19,13 +23,11 @@ function formatUpdated(value?: string) {
   if (!value) return "Updated recently";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Updated recently";
-  const deltaMs = Date.now() - date.getTime();
-  const minutes = Math.round(deltaMs / 60000);
-  if (minutes < 1) return "Updated just now";
-  if (minutes < 60) return `Updated ${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `Updated ${hours}h ago`;
-  return `Updated ${date.toLocaleDateString()}`;
+  // Stable, locale-independent label avoids SSR/client hydration mismatch.
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  return `Updated ${yyyy}-${mm}-${dd}`;
 }
 
 export default function ApplicationLibrary() {
@@ -183,31 +185,60 @@ export default function ApplicationLibrary() {
             const names = keys
               .map((key) => getRegistryAnalysis(key)?.name || key)
               .slice(0, 5);
+            const logoType = normalizeLogoType(
+              normalizeApplicationSettings(app.settings).logo_type
+            );
+            const hasWordmark =
+              logoType === "wordmark" &&
+              Boolean(
+                isLogoDataUrl(app.icon) ||
+                  (app.icon && app.icon.startsWith("http"))
+              );
             return (
               <article
                 key={app.id}
                 className="ip-app-panel flex flex-col rounded-2xl p-6 transition-all duration-200"
               >
                 <div className="flex items-start gap-3">
-                  <ApplicationLogo
-                    src={app.icon}
-                    name={app.name}
-                    size={36}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <h2
-                      className="ip-heading text-xl font-semibold"
-                      style={{ color: appTheme.white }}
-                    >
-                      {app.name}
-                    </h2>
-                    <p
-                      className="mt-2 text-sm"
-                      style={{ color: appTheme.silver }}
-                    >
-                      {app.description || names.join(" · ")}
-                    </p>
-                  </div>
+                  {hasWordmark ? (
+                    <div className="min-w-0 flex-1">
+                      <ApplicationLogo
+                        src={app.icon}
+                        name={app.name}
+                        variant="wordmark"
+                        size={40}
+                      />
+                      <p
+                        className="mt-2 text-sm"
+                        style={{ color: appTheme.silver }}
+                      >
+                        {app.description || names.join(" · ")}
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <ApplicationLogo
+                        src={app.icon}
+                        name={app.name}
+                        variant="square"
+                        size={36}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <h2
+                          className="ip-heading text-xl font-semibold"
+                          style={{ color: appTheme.white }}
+                        >
+                          {app.name}
+                        </h2>
+                        <p
+                          className="mt-2 text-sm"
+                          style={{ color: appTheme.silver }}
+                        >
+                          {app.description || names.join(" · ")}
+                        </p>
+                      </div>
+                    </>
+                  )}
                 </div>
                 <p
                   className="mt-4 text-sm font-medium"
@@ -229,6 +260,19 @@ export default function ApplicationLibrary() {
                     className="ip-app-cta rounded-lg px-3 py-1.5 text-sm"
                   >
                     Open
+                  </Link>
+                  <Link
+                    href={`/applications/${app.id}/published`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-lg px-3 py-1.5 text-sm font-medium"
+                    style={{
+                      color: appTheme.cyan,
+                      border: `1px solid ${appTheme.borderActive}`,
+                      background: "rgba(0,229,255,0.08)",
+                    }}
+                  >
+                    Published
                   </Link>
                   <Link
                     href={`/applications/${app.id}/edit`}

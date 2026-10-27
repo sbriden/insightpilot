@@ -7,17 +7,20 @@ import {
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
 import TeamLogo, {
   TeamMatchupLabel,
+  TeamSport,
   teamInSelection,
 } from "@/components/teams/TeamLogo";
 import { BettingMarket } from "@/services/api";
 
 interface Props {
   markets: BettingMarket[];
+  sport?: TeamSport;
   onSelect: (market: BettingMarket) => void;
 }
 
 export default function MarketOpportunityTable({
   markets,
+  sport = "NFL",
   onSelect,
 }: Props) {
   if (!markets.length) {
@@ -85,6 +88,9 @@ export default function MarketOpportunityTable({
                     label={market.event_label}
                     away={market.away_team}
                     home={market.home_team}
+                    awayLogoUrl={market.away_logo_url}
+                    homeLogoUrl={market.home_logo_url}
+                    sport={sport}
                   />
                 </td>
                 <td
@@ -101,8 +107,11 @@ export default function MarketOpportunityTable({
                     <TeamLogo
                       abbreviation={teamInSelection(
                         market.selection,
-                        [market.away_team, market.home_team]
+                        [market.away_team, market.home_team],
+                        sport
                       )}
+                      logoUrl={selectionLogoUrl(market, sport)}
+                      sport={sport}
                       size={18}
                     />
                     <span>{market.selection}</span>
@@ -173,6 +182,39 @@ export default function MarketOpportunityTable({
       </div>
     </div>
   );
+}
+
+function selectionLogoUrl(
+  market: BettingMarket,
+  sport: TeamSport
+): string | null {
+  const selected = teamInSelection(
+    market.selection,
+    [market.away_team, market.home_team],
+    sport
+  );
+  if (!selected) return null;
+  if (
+    selected
+    === teamInSelection(
+      market.away_team,
+      [market.away_team],
+      sport
+    )
+  ) {
+    return market.away_logo_url ?? null;
+  }
+  if (
+    selected
+    === teamInSelection(
+      market.home_team,
+      [market.home_team],
+      sport
+    )
+  ) {
+    return market.home_logo_url ?? null;
+  }
+  return null;
 }
 
 function formatEdge(market: BettingMarket): string {

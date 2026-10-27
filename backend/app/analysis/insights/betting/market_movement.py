@@ -66,23 +66,27 @@ def build_market_movement(
     cur_spread = num(current_spread)
     open_total = num(opening_total)
     cur_total = num(current_total)
-
-    # Fall back: no distinct opening → treat current as opening.
-    if open_spread is None:
-        open_spread = cur_spread
-    if open_total is None:
-        open_total = cur_total
+    # Do not substitute current for missing opening — leave unavailable.
 
     open_ml = (
-        int(opening_moneyline)
-        if opening_moneyline is not None
-        else spread_to_home_moneyline(open_spread)
+        int(opening_moneyline) if opening_moneyline is not None else None
     )
     cur_ml = (
-        int(current_moneyline)
-        if current_moneyline is not None
-        else spread_to_home_moneyline(cur_spread)
+        int(current_moneyline) if current_moneyline is not None else None
     )
+    # Synthetic ML from spread is diagnostic only (not a book quote).
+    open_ml_synthetic = (
+        spread_to_home_moneyline(open_spread)
+        if open_ml is None
+        else None
+    )
+    cur_ml_synthetic = (
+        spread_to_home_moneyline(cur_spread)
+        if cur_ml is None
+        else None
+    )
+    open_ml_display = open_ml if open_ml is not None else open_ml_synthetic
+    cur_ml_display = cur_ml if cur_ml is not None else cur_ml_synthetic
 
     spread_move = (
         round(float(cur_spread) - float(open_spread), 1)
@@ -125,6 +129,9 @@ def build_market_movement(
         "current_total": cur_total,
         "opening_moneyline": open_ml,
         "current_moneyline": cur_ml,
+        "opening_moneyline_display": open_ml_display,
+        "current_moneyline_display": cur_ml_display,
+        "opening_available": open_spread is not None or open_total is not None,
         "spread_move": spread_move,
         "total_move": total_move,
         "moneyline_move": moneyline_move,
@@ -137,8 +144,9 @@ def build_market_movement(
         "consensus_move": consensus_move,
         "vs_model": vs_model,
         "note": (
-            "Movement asks whether the market has started "
-            "incorporating what the residual model sees."
+            "Missing opening quotes stay unavailable — current is "
+            "never copied into opening. Movement asks whether the "
+            "market has started incorporating the residual view."
         ),
     }
 

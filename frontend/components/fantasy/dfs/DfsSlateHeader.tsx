@@ -1,5 +1,6 @@
 "use client";
 
+import { useShowAnalysisTitle } from "@/components/analysis/AnalysisFormatContext";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
 import type {
   DfsContestType,
@@ -70,6 +71,7 @@ export default function DfsSlateHeader({
   freshness,
   hideTabs = false,
 }: Props) {
+  const showTitle = useShowAnalysisTitle();
   const title =
     activeTab === "portfolio"
       ? "Daily Fantasy Portfolio"
@@ -82,10 +84,13 @@ export default function DfsSlateHeader({
       : activeTab === "optimizer"
         ? "Construct and optimize a single lineup for this slate."
         : "Analyze today's slate, identify the strongest DFS opportunities, and review player signals.";
+  const showOptimize = activeTab === "optimizer";
 
   return (
     <header className="space-y-4">
+      {showTitle || showOptimize ? (
       <div className="flex flex-wrap items-start justify-between gap-3">
+        {showTitle ? (
         <div>
           <span
             className="inline-flex rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide"
@@ -109,7 +114,10 @@ export default function DfsSlateHeader({
             {subtitle}
           </p>
         </div>
-        {activeTab === "optimizer" && (
+        ) : (
+          <div />
+        )}
+        {showOptimize ? (
           <button
             type="button"
             onClick={onOptimize}
@@ -119,8 +127,9 @@ export default function DfsSlateHeader({
           >
             {optimizing ? "Optimizing…" : "Optimize Lineup"}
           </button>
-        )}
+        ) : null}
       </div>
+      ) : null}
 
       {!hideTabs ? (
       <div

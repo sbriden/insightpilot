@@ -1,11 +1,16 @@
 """
-Opponent-adjusted NFL team strength for betting projections.
+Opponent-adjusted team strength for betting projections.
 
 Replaces raw PPG as the non-market component of projected scores.
 Profiles blend recent offensive and defensive efficiency, then
 adjust historical production for opponent quality so scoring 28
 against a weak defense is not treated like scoring 28 against
 an elite defense.
+
+Strength of schedule (SOS) summarizes opponent quality faced in
+the lookback window. It scales efficiency ratings (hard schedules
+trusted more; soft schedules shrunk toward average) and adds a
+small relative-SOS term in score projection.
 """
 
 from __future__ import annotations
@@ -16,6 +21,10 @@ from typing import Any
 
 from sqlalchemy import text
 
+from app.analysis.insights.betting.betting_sport import (
+    BettingSportConfig,
+    resolve_betting_sport,
+)
 from app.analysis.insights.betting.pricing import num
 from app.canonical.schema import FANTASY_SCHEMA
 from app.database import engine
@@ -27,6 +36,12 @@ POINTS_PER_MATCHUP_UNIT = 3.75
 # Pace impact on each side's expected points.
 PACE_POINTS_PER_SD = 0.85
 DEFAULT_LEAGUE_AVG_PPG = 22.5
+# Efficiency multiplier sensitivity to SOS z-score.
+SOS_EFFICIENCY_SCALE = 0.10
+SOS_EFFICIENCY_SCALE_CFB = 0.14
+# Points moved by relative SOS differential (home − away).
+SOS_POINTS_PER_UNIT = 0.85
+SOS_POINTS_PER_UNIT_CFB = 1.15
 
 # Composite weights (offense). Higher = more influence.
 OFFENSE_WEIGHTS = {
@@ -53,6 +68,7 @@ def load_team_strength_context(
     season: int,
     before_week: int | None = None,
     lookback: int = LOOKBACK_GAMES,
+    sport: str | BettingSportConfig | None = "NFL",
 ) -> dict[str, Any]:
     """
     Build opponent-adjusted team strength profiles for a season.
@@ -61,21 +77,31 @@ def load_team_strength_context(
     week itself does not leak into projections.
     """
 
+    sport_config = (
+        sport
+        if isinstance(sport, BettingSportConfig)
+        else resolve_betting_sport(sport)
+    )
+    default_ppg = float(sport_config.league_avg_ppg)
+
     offense_rows = _load_offense_games(
         season=season,
         before_week=before_week,
+        sport_config=sport_config,
     )
     defense_rows = _load_defense_games(
         season=season,
         before_week=before_week,
+        sport_config=sport_config,
     )
     if not offense_rows and not defense_rows:
         return {
             "profiles": {},
-            "league_avg_ppg": DEFAULT_LEAGUE_AVG_PPG,
+            "league_avg_ppg": default_ppg,
             "games_used": 0,
             "lookback": lookback,
             "before_week": before_week,
+            "sport": sport_config.id,
         }
 
     offense_by_team = _trim_lookback(
@@ -92,10 +118,14 @@ def load_team_strength_context(
     raw_off_baselines = _team_offense_baselines(offense_by_team)
     league_def = _league_means(list(raw_def_baselines.values()))
     league_off = _league_means(list(raw_off_baselines.values()))
-    league_avg_ppg = float(
-        league_off.get("points")
-        or league_def.get("points_allowed")
-        or DEFAULT_LEAGUE_AVG_PPG
+    # Game-weighted scoring level — equal-weight team means drag CFB
+    # down when many low-volume / FCS sides sit in the pool.
+    league_avg_ppg = _resolve_league_avg_ppg(
+        offense_by_team=offense_by_team,
+        league_off=league_off,
+        league_def=league_def,
+        default_ppg=default_ppg,
+        sport_config=sport_config,
     )
 
     # Opponent-adjust each game, then re-aggregate.
@@ -141,6 +171,23 @@ def load_team_strength_context(
         tid: _mean_metrics(games)
         for tid, games in adj_defense_by_team.items()
     }
+
+    sos_raw = _strength_of_schedule_raw(
+        offense_by_team=offense_by_team,
+        defense_by_team=defense_by_team,
+        raw_off_baselines=raw_off_baselines,
+        raw_def_baselines=raw_def_baselines,
+        league_avg_ppg=league_avg_ppg,
+    )
+    sos_z = _zscore_profiles(
+        sos_raw,
+        keys=["offense_sos", "defense_sos", "strength_of_schedule"],
+    )
+    sos_scale = (
+        SOS_EFFICIENCY_SCALE_CFB
+        if sport_config.id == "CFB"
+        else SOS_EFFICIENCY_SCALE
+    )
 
     offense_z = _zscore_profiles(
         offense_means,
@@ -217,33 +264,87 @@ def load_team_strength_context(
                 else None
             ),
         }
-        offensive_efficiency = _weighted_mean(
-            {
-                "pass_efficiency": offense_components["pass_efficiency"],
-                "rush_efficiency": offense_components["rush_efficiency"],
-                "explosive_rate": offense_components["explosive_rate"],
-                "success_rate": offense_components["success_rate"],
-                "red_zone_efficiency": offense_components[
-                    "red_zone_efficiency"
-                ],
-                "turnover_rate": offense_components["turnover_rate"],
-            },
-            OFFENSE_WEIGHTS,
-        )
-        defensive_efficiency = _weighted_mean(
-            {
-                "pass_defense": defense_components["pass_defense"],
-                "rush_defense": defense_components["rush_defense"],
-                "pressure": defense_components["pressure"],
-                "explosive_allowed": defense_components[
-                    "explosive_plays_allowed"
-                ],
-                "success_allowed": defense_components[
-                    "success_rate_allowed"
-                ],
-            },
-            DEFENSE_WEIGHTS,
-        )
+        if sport_config.has_epa_features:
+            offensive_efficiency = _weighted_mean(
+                {
+                    "pass_efficiency": offense_components[
+                        "pass_efficiency"
+                    ],
+                    "rush_efficiency": offense_components[
+                        "rush_efficiency"
+                    ],
+                    "explosive_rate": offense_components[
+                        "explosive_rate"
+                    ],
+                    "success_rate": offense_components["success_rate"],
+                    "red_zone_efficiency": offense_components[
+                        "red_zone_efficiency"
+                    ],
+                    "turnover_rate": offense_components[
+                        "turnover_rate"
+                    ],
+                },
+                OFFENSE_WEIGHTS,
+            )
+            defensive_efficiency = _weighted_mean(
+                {
+                    "pass_defense": defense_components["pass_defense"],
+                    "rush_defense": defense_components["rush_defense"],
+                    "pressure": defense_components["pressure"],
+                    "explosive_allowed": defense_components[
+                        "explosive_plays_allowed"
+                    ],
+                    "success_allowed": defense_components[
+                        "success_rate_allowed"
+                    ],
+                },
+                DEFENSE_WEIGHTS,
+            )
+        else:
+            # CFB box scores lack EPA — drive strength from
+            # opponent-adjusted scoring and yards/play.
+            points_allowed_z = def_z.get("points_allowed_adj")
+            defensive_efficiency = _weighted_mean(
+                {
+                    "points_allowed": (
+                        -float(points_allowed_z)
+                        if points_allowed_z is not None
+                        else None
+                    ),
+                    "explosive_allowed": defense_components[
+                        "explosive_plays_allowed"
+                    ],
+                },
+                {"points_allowed": 0.75, "explosive_allowed": 0.25},
+            )
+            offensive_efficiency = _weighted_mean(
+                {
+                    "points_adj": off_z.get("points_adj"),
+                    "explosive_rate": offense_components[
+                        "explosive_rate"
+                    ],
+                    "turnover_rate": offense_components[
+                        "turnover_rate"
+                    ],
+                },
+                {
+                    "points_adj": 0.7,
+                    "explosive_rate": 0.2,
+                    "turnover_rate": 0.1,
+                },
+            )
+
+        team_sos = sos_z.get(tid) or {}
+        sos_overall = float(team_sos.get("strength_of_schedule") or 0.0)
+        sos_off = float(team_sos.get("offense_sos") or 0.0)
+        sos_def = float(team_sos.get("defense_sos") or 0.0)
+        # Hard SOS → trust / slightly expand ratings; soft SOS → shrink.
+        sos_mult = max(0.85, min(1.12, 1.0 + sos_scale * sos_overall))
+        if offensive_efficiency is not None:
+            offensive_efficiency = float(offensive_efficiency) * sos_mult
+        if defensive_efficiency is not None:
+            defensive_efficiency = float(defensive_efficiency) * sos_mult
+
         profiles[tid] = {
             "team_id": tid,
             "games": max(
@@ -252,6 +353,10 @@ def load_team_strength_context(
             ),
             "offensive_efficiency": _round_or_none(offensive_efficiency),
             "defensive_efficiency": _round_or_none(defensive_efficiency),
+            "strength_of_schedule": _round_or_none(sos_overall),
+            "offense_sos": _round_or_none(sos_off),
+            "defense_sos": _round_or_none(sos_def),
+            "sos_multiplier": _round_or_none(sos_mult),
             "pace": _round_or_none(off_raw.get("pace")),
             "pace_z": _round_or_none(off_z.get("pace")),
             "explosive_play_rate": _round_or_none(
@@ -310,11 +415,13 @@ def load_team_strength_context(
     return {
         "profiles": profiles,
         "league_avg_ppg": round(league_avg_ppg, 2),
+        "sport": sport_config.id,
         "games_used": sum(
             len(games) for games in adj_offense_by_team.values()
         ),
         "lookback": lookback,
         "before_week": before_week,
+        "sos_efficiency_scale": sos_scale,
     }
 
 
@@ -352,19 +459,43 @@ def project_strength_scores(
     home_matchup = home_off - away_def
     away_matchup = away_off - home_def
 
+    home_sos = float(num(home.get("strength_of_schedule")) or 0.0)
+    away_sos = float(num(away.get("strength_of_schedule")) or 0.0)
+    sos_differential = home_sos - away_sos
+
+    sport = str(context.get("sport") or "NFL").upper()
+    points_scale = (
+        POINTS_PER_MATCHUP_UNIT * 1.35
+        if sport == "CFB"
+        else POINTS_PER_MATCHUP_UNIT
+    )
+    sos_points = (
+        SOS_POINTS_PER_UNIT_CFB
+        if sport == "CFB"
+        else SOS_POINTS_PER_UNIT
+    )
+    # Split relative SOS edge across both sides.
+    sos_home_pts = 0.5 * sos_points * sos_differential
+    sos_away_pts = -0.5 * sos_points * sos_differential
     home_points = (
         league_avg
-        + POINTS_PER_MATCHUP_UNIT * home_matchup
+        + points_scale * home_matchup
         + PACE_POINTS_PER_SD * pace_z
+        + sos_home_pts
     )
     away_points = (
         league_avg
-        + POINTS_PER_MATCHUP_UNIT * away_matchup
+        + points_scale * away_matchup
         + PACE_POINTS_PER_SD * pace_z
+        + sos_away_pts
     )
-    # Keep projections in a realistic NFL band.
-    home_points = max(10.0, min(42.0, home_points))
-    away_points = max(10.0, min(42.0, away_points))
+    if sport == "CFB":
+        home_points = max(7.0, min(56.0, home_points))
+        away_points = max(7.0, min(56.0, away_points))
+    else:
+        # Keep projections in a realistic NFL band.
+        home_points = max(10.0, min(42.0, home_points))
+        away_points = max(10.0, min(42.0, away_points))
 
     detail = {
         "available": True,
@@ -372,11 +503,19 @@ def project_strength_scores(
         "home_matchup": round(home_matchup, 3),
         "away_matchup": round(away_matchup, 3),
         "pace_z": round(pace_z, 3),
+        "home_sos": round(home_sos, 3),
+        "away_sos": round(away_sos, 3),
+        "sos_differential": round(sos_differential, 3),
+        "sos_home_points": round(sos_home_pts, 3),
+        "sos_away_points": round(sos_away_pts, 3),
         "home_games": int(home.get("games") or 0),
         "away_games": int(away.get("games") or 0),
         "home_profile": {
             "offensive_efficiency": home.get("offensive_efficiency"),
             "defensive_efficiency": home.get("defensive_efficiency"),
+            "strength_of_schedule": home.get("strength_of_schedule"),
+            "offense_sos": home.get("offense_sos"),
+            "defense_sos": home.get("defense_sos"),
             "pace": home.get("pace"),
             "offense": home.get("offense"),
             "defense": home.get("defense"),
@@ -384,6 +523,9 @@ def project_strength_scores(
         "away_profile": {
             "offensive_efficiency": away.get("offensive_efficiency"),
             "defensive_efficiency": away.get("defensive_efficiency"),
+            "strength_of_schedule": away.get("strength_of_schedule"),
+            "offense_sos": away.get("offense_sos"),
+            "defense_sos": away.get("defense_sos"),
             "pace": away.get("pace"),
             "offense": away.get("offense"),
             "defense": away.get("defense"),
@@ -437,20 +579,35 @@ def _load_offense_games(
     *,
     season: int,
     before_week: int | None,
+    sport_config: BettingSportConfig | None = None,
 ) -> list[dict[str, Any]]:
-    clauses = ["tg.season = :season", "tg.points IS NOT NULL"]
+    config = sport_config or resolve_betting_sport("NFL")
+    schema = config.schema
+    # Prefer fact week/points; fall back to dim_game when CFB
+    # box scores omit them.
+    week_expr = "COALESCE(tg.week, g.week)"
+    points_expr = """
+      COALESCE(
+        tg.points,
+        CASE
+          WHEN tg.team_id = g.home_team_id THEN g.home_score
+          WHEN tg.team_id = g.away_team_id THEN g.away_score
+          ELSE NULL
+        END
+      )
+    """
+    clauses = [
+        "COALESCE(tg.season, g.season) = :season",
+        f"({points_expr}) IS NOT NULL",
+    ]
     params: dict[str, Any] = {"season": int(season)}
     if before_week is not None:
-        clauses.append("tg.week < :before_week")
+        clauses.append(f"{week_expr} < :before_week")
         params["before_week"] = int(before_week)
     where = " AND ".join(clauses)
-    sql = f"""
-        SELECT
-          tg.team_id,
-          tg.game_id,
-          tg.season,
-          tg.week,
-          tg.points,
+
+    if config.has_epa_features:
+        metric_cols = """
           tg.offensive_plays,
           tg.pass_attempts,
           tg.rush_attempts,
@@ -462,15 +619,40 @@ def _load_offense_games(
           tg.rush_epa,
           tg.red_zone_td_rate,
           tg.turnovers,
+        """
+    else:
+        # CFB facts lack EPA/pace/RZ — null those so metrics degrade cleanly.
+        metric_cols = """
+          tg.offensive_plays,
+          tg.pass_attempts,
+          tg.rush_attempts,
+          tg.pass_rate,
+          NULL::double precision AS pace,
+          tg.yards,
+          NULL::double precision AS offensive_epa,
+          NULL::double precision AS pass_epa,
+          NULL::double precision AS rush_epa,
+          NULL::double precision AS red_zone_td_rate,
+          tg.turnovers,
+        """
+
+    sql = f"""
+        SELECT
+          tg.team_id,
+          tg.game_id,
+          COALESCE(tg.season, g.season) AS season,
+          {week_expr} AS week,
+          {points_expr} AS points,
+          {metric_cols}
           CASE
             WHEN tg.team_id = g.home_team_id THEN g.away_team_id
             ELSE g.home_team_id
           END AS opponent_id
-        FROM {FANTASY_SCHEMA}.fact_team_game tg
-        JOIN {FANTASY_SCHEMA}.dim_game g
+        FROM {schema}.fact_team_game tg
+        JOIN {schema}.dim_game g
           ON g.game_id = tg.game_id
         WHERE {where}
-        ORDER BY tg.team_id, tg.week DESC
+        ORDER BY tg.team_id, {week_expr} DESC NULLS LAST
     """
     try:
         with engine.connect() as connection:
@@ -486,25 +668,35 @@ def _load_defense_games(
     *,
     season: int,
     before_week: int | None,
+    sport_config: BettingSportConfig | None = None,
 ) -> list[dict[str, Any]]:
+    config = sport_config or resolve_betting_sport("NFL")
+    schema = config.schema
+    week_expr = "COALESCE(dg.week, g.week)"
+    points_allowed_expr = """
+      COALESCE(
+        dg.points_allowed,
+        CASE
+          WHEN dg.defensive_team_id = g.home_team_id
+            THEN g.away_score
+          WHEN dg.defensive_team_id = g.away_team_id
+            THEN g.home_score
+          ELSE NULL
+        END
+      )
+    """
     clauses = [
-        "dg.season = :season",
-        "dg.points_allowed IS NOT NULL",
+        "COALESCE(dg.season, g.season) = :season",
+        f"({points_allowed_expr}) IS NOT NULL",
     ]
     params: dict[str, Any] = {"season": int(season)}
     if before_week is not None:
-        clauses.append("dg.week < :before_week")
+        clauses.append(f"{week_expr} < :before_week")
         params["before_week"] = int(before_week)
     where = " AND ".join(clauses)
-    # Join opponent offense row for plays faced / volume denominators.
-    sql = f"""
-        SELECT
-          dg.defensive_team_id AS team_id,
-          dg.opponent_team_id AS opponent_id,
-          dg.game_id,
-          dg.season,
-          dg.week,
-          dg.points_allowed,
+
+    if config.has_epa_features:
+        metric_cols = """
           dg.yards_allowed,
           dg.pass_yards_allowed,
           dg.rush_yards_allowed,
@@ -512,15 +704,38 @@ def _load_defense_games(
           dg.rush_epa_allowed,
           dg.pressure_rate,
           dg.sack_rate,
+        """
+    else:
+        metric_cols = """
+          dg.yards_allowed,
+          dg.pass_yards_allowed,
+          dg.rush_yards_allowed,
+          NULL::double precision AS pass_epa_allowed,
+          NULL::double precision AS rush_epa_allowed,
+          NULL::double precision AS pressure_rate,
+          NULL::double precision AS sack_rate,
+        """
+
+    sql = f"""
+        SELECT
+          dg.defensive_team_id AS team_id,
+          dg.opponent_team_id AS opponent_id,
+          dg.game_id,
+          COALESCE(dg.season, g.season) AS season,
+          {week_expr} AS week,
+          {points_allowed_expr} AS points_allowed,
+          {metric_cols}
           opp.offensive_plays AS plays_faced,
           opp.pass_attempts AS pass_attempts_faced,
           opp.rush_attempts AS rush_attempts_faced
-        FROM {FANTASY_SCHEMA}.fact_defensive_game dg
-        LEFT JOIN {FANTASY_SCHEMA}.fact_team_game opp
+        FROM {schema}.fact_defensive_game dg
+        JOIN {schema}.dim_game g
+          ON g.game_id = dg.game_id
+        LEFT JOIN {schema}.fact_team_game opp
           ON opp.game_id = dg.game_id
          AND opp.team_id = dg.opponent_team_id
         WHERE {where}
-        ORDER BY dg.defensive_team_id, dg.week DESC
+        ORDER BY dg.defensive_team_id, {week_expr} DESC NULLS LAST
     """
     try:
         with engine.connect() as connection:
@@ -608,6 +823,70 @@ def _defense_game_metrics(game: dict[str, Any]) -> dict[str, float]:
             (pass_epa_allowed + rush_epa_allowed) / plays
         ),
     }
+
+
+def _strength_of_schedule_raw(
+    *,
+    offense_by_team: dict[str, list[dict[str, Any]]],
+    defense_by_team: dict[str, list[dict[str, Any]]],
+    raw_off_baselines: dict[str, dict[str, float]],
+    raw_def_baselines: dict[str, dict[str, float]],
+    league_avg_ppg: float,
+) -> dict[str, dict[str, float]]:
+    """
+    Past SOS from opponent quality in the lookback window.
+
+    Higher values = tougher schedule.
+    - offense_sos: average opponent defensive strength faced
+    - defense_sos: average opponent offensive strength faced
+    - strength_of_schedule: mean of the two
+    """
+
+    team_ids = set(offense_by_team) | set(defense_by_team)
+    out: dict[str, dict[str, float]] = {}
+    for tid in team_ids:
+        off_sos_values: list[float] = []
+        for game in offense_by_team.get(tid) or []:
+            opp = str(game.get("opponent_id") or "")
+            opp_def = raw_def_baselines.get(opp)
+            if not opp_def:
+                continue
+            # Stronger defense ⇒ fewer points allowed ⇒ higher SOS.
+            allowed = float(
+                opp_def.get("points_allowed") or league_avg_ppg
+            )
+            off_sos_values.append(league_avg_ppg - allowed)
+
+        def_sos_values: list[float] = []
+        for game in defense_by_team.get(tid) or []:
+            opp = str(game.get("opponent_id") or "")
+            opp_off = raw_off_baselines.get(opp)
+            if not opp_off:
+                continue
+            scored = float(opp_off.get("points") or league_avg_ppg)
+            def_sos_values.append(scored - league_avg_ppg)
+
+        offense_sos = mean(off_sos_values) if off_sos_values else 0.0
+        defense_sos = mean(def_sos_values) if def_sos_values else 0.0
+        if off_sos_values or def_sos_values:
+            weights = (
+                (len(off_sos_values), offense_sos),
+                (len(def_sos_values), defense_sos),
+            )
+            weight_sum = sum(w for w, _ in weights if w > 0)
+            overall = (
+                sum(w * v for w, v in weights if w > 0) / weight_sum
+                if weight_sum
+                else 0.0
+            )
+        else:
+            overall = 0.0
+        out[tid] = {
+            "offense_sos": float(offense_sos),
+            "defense_sos": float(defense_sos),
+            "strength_of_schedule": float(overall),
+        }
+    return out
 
 
 def _team_offense_baselines(
@@ -721,6 +1000,48 @@ def _opponent_adjust_defense_game(
         "explosive_allowed_raw": explos_raw,
         "success_allowed_raw": success_raw,
     }
+
+
+def _resolve_league_avg_ppg(
+    *,
+    offense_by_team: dict[str, list[dict[str, Any]]],
+    league_off: dict[str, float],
+    league_def: dict[str, float],
+    default_ppg: float,
+    sport_config: BettingSportConfig,
+) -> float:
+    """
+    Scoring baseline for absolute point projections.
+
+    Prefer game-weighted points over equal-weight team means so a
+    long tail of low-volume sides (common in CFB) cannot pull the
+    league level several points below real/market scoring.
+    """
+
+    game_points = [
+        float(points)
+        for games in offense_by_team.values()
+        for game in games
+        for points in [num(game.get("points"))]
+        if points is not None
+    ]
+    game_weighted = mean(game_points) if game_points else None
+    team_equal = num(league_off.get("points"))
+    allowed = num(league_def.get("points_allowed"))
+    resolved = float(
+        game_weighted
+        if game_weighted is not None
+        else team_equal
+        if team_equal is not None
+        else allowed
+        if allowed is not None
+        else default_ppg
+    )
+    if sport_config.id == "CFB":
+        # Keep CFB in a live-scoring band even when box coverage is thin.
+        resolved = max(resolved, float(default_ppg) * 0.9)
+        resolved = min(resolved, float(default_ppg) * 1.15)
+    return resolved
 
 
 def _mean_metrics(

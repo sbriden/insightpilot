@@ -14,6 +14,10 @@ from app.analysis.insights.betting.portfolio import (
     create_position_from_market,
     generate_betting_portfolio,
 )
+from app.analysis.insights.betting.daily_slate import (
+    generate_daily_betting_slate,
+    list_daily_sport_availability,
+)
 
 __all__ = [
     "analyze_betting_portfolio",
@@ -22,6 +26,8 @@ __all__ = [
     "create_position_from_market",
     "find_betting_event_by_matchup",
     "generate_betting_portfolio",
+    "generate_daily_betting_slate",
     "get_betting_event",
     "list_betting_weeks",
+    "list_daily_sport_availability",
 ]

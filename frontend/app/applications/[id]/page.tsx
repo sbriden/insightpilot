@@ -93,5 +93,5 @@ export default function ApplicationPage() {
     );
   }
 
-  return <ApplicationWorkspace application={app} />;
+  return <ApplicationWorkspace application={app} mode="studio" />;
 }

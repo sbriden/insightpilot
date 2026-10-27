@@ -36,12 +36,23 @@ DEFAULT_BLEND_WEIGHTS: dict[str, dict[str, float]] = {
     "High": {"market": 0.65, "model": 0.35},
 }
 
+# CFB is noisier than NFL but still needs room to express matchups.
+# Model weights are a bit higher than the first CFB prior so opposite-sign
+# matchup residuals can clear the spread deadband after shrink.
+CFB_BLEND_WEIGHTS: dict[str, dict[str, float]] = {
+    "Low": {"market": 0.75, "model": 0.25},
+    "Moderate": {"market": 0.65, "model": 0.35},
+    "High": {"market": 0.55, "model": 0.45},
+}
+
 BLEND_POLICY_SOURCE = "prior_v1"
+BLEND_POLICY_SOURCE_CFB = "prior_cfb_v1"
 
 
 def load_blend_policy(
     *,
     season: int | None = None,
+    sport: str | None = None,
 ) -> dict[str, Any]:
     """
     Return the active market/model blend policy.
@@ -52,13 +63,23 @@ def load_blend_policy(
     """
 
     del season  # reserved for learned-policy lookup
+    sport_key = str(sport or "NFL").strip().upper()
+    table = (
+        CFB_BLEND_WEIGHTS
+        if sport_key == "CFB"
+        else DEFAULT_BLEND_WEIGHTS
+    )
     return {
         "weights_by_confidence": {
-            key: dict(value)
-            for key, value in DEFAULT_BLEND_WEIGHTS.items()
+            key: dict(value) for key, value in table.items()
         },
-        "source": BLEND_POLICY_SOURCE,
+        "source": (
+            BLEND_POLICY_SOURCE_CFB
+            if sport_key == "CFB"
+            else BLEND_POLICY_SOURCE
+        ),
         "learned": False,
+        "sport": sport_key,
         "note": (
             "Provisional confidence-dependent priors. "
             "Replace with backtested weights when residual "
@@ -87,23 +108,26 @@ def estimate_projection_confidence(
     home_m = abs(float(num(detail.get("home_matchup")) or 0.0))
     away_m = abs(float(num(detail.get("away_matchup")) or 0.0))
     matchup_mag = home_m + away_m
+    # Informative SOS differential supports trusting the model more.
+    sos_mag = abs(float(num(detail.get("sos_differential")) or 0.0))
+    signal_mag = matchup_mag + 0.35 * sos_mag
     games = min(
         int(home_games or detail.get("home_games") or 0),
         int(away_games or detail.get("away_games") or 0),
     )
     if games <= 0:
         # Profiles present but game counts omitted — use matchup only.
-        if matchup_mag >= 2.5:
+        if signal_mag >= 2.5:
             return "High"
-        if matchup_mag >= 1.2:
+        if signal_mag >= 1.2:
             return "Moderate"
         return "Low"
 
-    if games >= 4 and matchup_mag >= 2.5:
+    if games >= 4 and signal_mag >= 2.5:
         return "High"
-    if games >= 3 and matchup_mag >= 1.2:
+    if games >= 3 and signal_mag >= 1.2:
         return "Moderate"
-    if games >= 2 and matchup_mag >= 0.75:
+    if games >= 2 and signal_mag >= 0.75:
         return "Moderate"
     return "Low"
 

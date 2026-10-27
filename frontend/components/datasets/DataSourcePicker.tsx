@@ -37,6 +37,13 @@ const OPTIONS: Array<{
       "Fantasy football foundation from nflverse — no CSV upload.",
     icon: Database,
   },
+  {
+    id: "sportsdataverse",
+    title: "sportsdataverse",
+    description:
+      "College football canonical data from sportsdataverse.",
+    icon: Database,
+  },
 ];
 
 
@@ -47,7 +54,7 @@ export default function DataSourcePicker({
 }: DataSourcePickerProps) {
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
 
       {OPTIONS.map((option) => {
 

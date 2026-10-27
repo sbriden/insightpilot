@@ -2,12 +2,29 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, MoreHorizontal, RefreshCw } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  MoreHorizontal,
+  RefreshCw,
+} from "lucide-react";
 
 import AnalysisRuntime from "@/components/applications/AnalysisRuntime";
 import { ApplicationContextProvider } from "@/components/applications/ApplicationContext";
-import ApplicationLogo from "@/components/applications/ApplicationLogo";
-import { appTheme } from "@/components/applications/appTheme";
+import ApplicationLogo, {
+  isLogoDataUrl,
+  normalizeLogoType,
+} from "@/components/applications/ApplicationLogo";
+import {
+  getAnalysisNavIcon,
+  shortAnalysisLabel,
+} from "@/components/applications/analysisNavIcons";
+import {
+  ApplicationThemeProvider,
+  useAppTheme,
+  useAppThemeChrome,
+} from "@/components/applications/ApplicationThemeContext";
 import {
   getRegistryAnalysis,
   LEGACY_PLAYER_OVERVIEW_KEY,
@@ -15,12 +32,17 @@ import {
   sourceProductLabels,
 } from "@/lib/analysisRegistry";
 import {
+  normalizeApplicationSettings,
   refreshNflverseData,
   type AnalyticalApplication,
 } from "@/services/api";
 
+export type ApplicationWorkspaceMode = "studio" | "published";
+
 interface Props {
   application: AnalyticalApplication;
+  /** studio = builder chrome; published = end-user web view */
+  mode?: ApplicationWorkspaceMode;
 }
 
 interface NavGroup {
@@ -64,7 +86,36 @@ function buildNavGroups(
   return groups;
 }
 
-export default function ApplicationWorkspace({ application }: Props) {
+export default function ApplicationWorkspace({
+  application,
+  mode = "studio",
+}: Props) {
+  const settings = useMemo(
+    () => normalizeApplicationSettings(application.settings),
+    [application.settings]
+  );
+
+  return (
+    <ApplicationThemeProvider themeId={settings.theme}>
+      <ApplicationWorkspaceInner
+        application={application}
+        mode={mode}
+        settings={settings}
+      />
+    </ApplicationThemeProvider>
+  );
+}
+
+function ApplicationWorkspaceInner({
+  application,
+  mode = "studio",
+  settings,
+}: Props & {
+  settings: ReturnType<typeof normalizeApplicationSettings>;
+}) {
+  const theme = useAppTheme();
+  const chrome = useAppThemeChrome();
+  const isPublished = mode === "published";
   const groups = useMemo(
     () => buildNavGroups(application.analyses),
     [application.analyses]
@@ -82,6 +133,18 @@ export default function ApplicationWorkspace({ application }: Props) {
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const products = sourceProductLabels(flatKeys);
+  const showLeftNav = settings.show_left_nav;
+  const showTopTabs = settings.show_top_tabs;
+  const showBottomTabs = settings.show_bottom_tabs;
+  const showAnalysisTitle = settings.show_analysis_title;
+  const logoType = normalizeLogoType(settings.logo_type);
+  const hasWordmark =
+    logoType === "wordmark" &&
+    Boolean(
+      isLogoDataUrl(application.icon) ||
+        (application.icon && application.icon.startsWith("http"))
+    );
+  const publishedHref = `/applications/${application.id}/published`;
 
   const activeGroup = useMemo(
     () =>
@@ -129,133 +192,178 @@ export default function ApplicationWorkspace({ application }: Props) {
     <ApplicationContextProvider>
       <div
         className="flex min-h-screen flex-col"
-        style={{ background: appTheme.obsidian }}
+        style={{ background: theme.obsidian }}
       >
         <header
-          className="flex h-14 shrink-0 items-center justify-between px-4 lg:h-16 lg:px-5"
-          style={{ background: appTheme.midnight }}
+          className="flex shrink-0 items-center justify-between px-4 lg:px-5"
+          style={{
+            background: theme.midnight,
+            height: chrome.headerHeight,
+            minHeight: chrome.touchTarget,
+          }}
         >
           <div className="flex min-w-0 items-center gap-3">
-            <Link
-              href="/applications"
-              className="shrink-0 text-sm transition-colors"
-              style={{ color: appTheme.slate }}
-            >
-              ← Portal
-            </Link>
-            <span
-              className="hidden h-4 w-px sm:block"
-              style={{ background: appTheme.border }}
-            />
-            <ApplicationLogo
-              src={application.icon}
-              name={application.name}
-              size={28}
-            />
-            <div className="min-w-0">
-              <h1
-                className="ip-heading truncate text-[20px] font-semibold tracking-tight lg:text-[22px]"
-                style={{ color: appTheme.white }}
-              >
-                {application.name}
-              </h1>
-            </div>
+            {!isPublished ? (
+              <>
+                <Link
+                  href="/applications"
+                  className="shrink-0 text-sm transition-colors"
+                  style={{ color: theme.slate }}
+                >
+                  ← Portal
+                </Link>
+                <span
+                  className="hidden h-4 w-px sm:block"
+                  style={{ background: theme.border }}
+                />
+              </>
+            ) : null}
+            {hasWordmark ? (
+              <ApplicationLogo
+                src={application.icon}
+                name={application.name}
+                variant="wordmark"
+                size={32}
+              />
+            ) : (
+              <>
+                <ApplicationLogo
+                  src={application.icon}
+                  name={application.name}
+                  variant="square"
+                  size={28}
+                />
+                <div className="min-w-0">
+                  <h1
+                    className="ip-heading truncate text-[20px] font-semibold tracking-tight lg:text-[22px]"
+                    style={{ color: theme.white }}
+                  >
+                    {application.name}
+                  </h1>
+                </div>
+              </>
+            )}
           </div>
           <div className="flex min-w-0 items-center gap-2">
-            {refreshError ? (
+            {!isPublished && refreshError ? (
               <p
                 className="hidden max-w-[220px] truncate text-xs sm:block"
-                style={{ color: appTheme.negative }}
+                style={{ color: theme.negative }}
                 title={refreshError}
               >
                 {refreshError}
               </p>
             ) : null}
-            <button
-              type="button"
-              className="rounded-lg px-3 py-1.5 text-sm lg:hidden"
-              style={{
-                color: appTheme.silver,
-                border: `1px solid ${appTheme.border}`,
-              }}
-              onClick={() => setNavOpen((v) => !v)}
-            >
-              Analyses
-            </button>
-            <button
-              type="button"
-              title={
-                refreshLoading
-                  ? "Refreshing data…"
-                  : "Refresh data"
-              }
-              disabled={refreshLoading}
-              onClick={() => void handleDataRefresh()}
-              className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors disabled:opacity-60"
-              style={{ color: appTheme.silver }}
-            >
-              <RefreshCw
-                className={[
-                  "h-4 w-4",
-                  refreshLoading ? "animate-spin" : "",
-                ].join(" ")}
-              />
-              <span className="hidden sm:inline">
-                {refreshLoading ? "Refreshing…" : "Refresh"}
-              </span>
-            </button>
-            <Link
-              href={`/applications/${application.id}/edit`}
-              className="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
-              style={{
-                color: appTheme.white,
-                background: appTheme.deepBlue,
-                border: `1px solid ${appTheme.border}`,
-              }}
-            >
-              Settings
-            </Link>
-            <button
-              type="button"
-              className="rounded-lg p-2"
-              style={{ color: appTheme.slate }}
-              aria-label="More"
-            >
-              <MoreHorizontal className="h-4 w-4" />
-            </button>
+            {showLeftNav ? (
+              <button
+                type="button"
+                className="rounded-lg px-3 py-1.5 text-sm lg:hidden"
+                style={{
+                  color: theme.silver,
+                  border: `1px solid ${theme.border}`,
+                }}
+                onClick={() => setNavOpen((v) => !v)}
+              >
+                Analyses
+              </button>
+            ) : null}
+            {!isPublished ? (
+              <>
+                <Link
+                  href={publishedHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open published view"
+                  className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+                  style={{
+                    color: theme.cyan,
+                    border: `1px solid ${theme.borderActive}`,
+                    background: "rgba(0,229,255,0.08)",
+                  }}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">View published</span>
+                  <span className="sm:hidden">Published</span>
+                </Link>
+                <button
+                  type="button"
+                  title={
+                    refreshLoading
+                      ? "Refreshing data…"
+                      : "Refresh data"
+                  }
+                  disabled={refreshLoading}
+                  onClick={() => void handleDataRefresh()}
+                  className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors disabled:opacity-60"
+                  style={{ color: theme.silver }}
+                >
+                  <RefreshCw
+                    className={[
+                      "h-4 w-4",
+                      refreshLoading ? "animate-spin" : "",
+                    ].join(" ")}
+                  />
+                  <span className="hidden sm:inline">
+                    {refreshLoading ? "Refreshing…" : "Refresh"}
+                  </span>
+                </button>
+                <Link
+                  href={`/applications/${application.id}/edit`}
+                  className="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+                  style={{
+                    color: theme.white,
+                    background: theme.deepBlue,
+                    border: `1px solid ${theme.border}`,
+                  }}
+                >
+                  Settings
+                </Link>
+                <button
+                  type="button"
+                  className="rounded-lg p-2"
+                  style={{ color: theme.slate }}
+                  aria-label="More"
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </button>
+              </>
+            ) : null}
           </div>
         </header>
         <div className="ip-app-beam shrink-0" />
 
+        <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1">
+          {showLeftNav ? (
           <aside
             className={[
-              "w-[230px] shrink-0 xl:w-[250px]",
+              "shrink-0",
               navOpen ? "block" : "hidden lg:block",
             ].join(" ")}
             style={{
-              background: appTheme.midnight,
-              borderRight: `1px solid ${appTheme.border}`,
+              width: chrome.navWidth,
+              background: theme.midnight,
+              borderRight: `1px solid ${theme.border}`,
             }}
           >
             <div
               className="px-4 py-4"
-              style={{ borderBottom: `1px solid ${appTheme.border}` }}
+              style={{ borderBottom: `1px solid ${theme.border}` }}
             >
               <p
-                className="text-[11px] font-semibold uppercase tracking-[0.16em]"
-                style={{ color: appTheme.slate }}
+                className="ip-label"
+                style={{ color: theme.slate }}
               >
                 Application
               </p>
               <p
                 className="mt-1 text-sm font-medium"
-                style={{ color: appTheme.white }}
+                style={{ color: theme.white }}
               >
                 {flatKeys.length} analyses
               </p>
               {products ? (
-                <p className="mt-0.5 text-xs" style={{ color: appTheme.slate }}>
+                <p className="mt-0.5 text-xs" style={{ color: theme.slate }}>
                   {products}
                 </p>
               ) : null}
@@ -274,8 +382,11 @@ export default function ApplicationWorkspace({ application }: Props) {
                           [group.label]: !c[group.label],
                         }))
                       }
-                      className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[11px] font-semibold uppercase tracking-[0.14em] transition-colors"
-                      style={{ color: appTheme.slate }}
+                      className="ip-label flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors"
+                      style={{
+                        color: theme.slate,
+                        transitionDuration: chrome.durationFast,
+                      }}
                       aria-expanded={!isCollapsed}
                     >
                       {isCollapsed ? (
@@ -298,23 +409,29 @@ export default function ApplicationWorkspace({ application }: Props) {
                                 setActiveKey(row.analysis_key);
                                 setNavOpen(false);
                               }}
-                              className="relative block w-full rounded-lg px-3 py-2.5 text-left text-sm transition-all duration-200"
+                              className="relative block w-full px-3 py-2.5 text-left text-sm transition-all"
                               style={
                                 selected
                                   ? {
-                                      background: "rgba(0,140,255,0.12)",
-                                      color: appTheme.white,
-                                      boxShadow: appTheme.glowSoft,
+                                      background: chrome.selectionBg,
+                                      color: theme.white,
+                                      borderRadius: chrome.radiusControl,
+                                      boxShadow: chrome.shadowCard,
+                                      transitionDuration: chrome.durationNormal,
                                     }
-                                  : { color: appTheme.silver }
+                                  : {
+                                      color: theme.silver,
+                                      borderRadius: chrome.radiusControl,
+                                      transitionDuration: chrome.durationNormal,
+                                    }
                               }
                             >
                               {selected ? (
                                 <span
                                   className="absolute inset-y-1.5 left-0 w-[3px] rounded-r"
                                   style={{
-                                    background: appTheme.cyan,
-                                    boxShadow: appTheme.glowActive,
+                                    background: theme.cyan,
+                                    boxShadow: theme.glowActive,
                                   }}
                                 />
                               ) : null}
@@ -322,8 +439,8 @@ export default function ApplicationWorkspace({ application }: Props) {
                                 <span
                                   style={{
                                     color: selected
-                                      ? appTheme.cyan
-                                      : appTheme.slate,
+                                      ? theme.cyan
+                                      : theme.slate,
                                   }}
                                 >
                                   {selected ? "◉" : "○"}
@@ -342,17 +459,19 @@ export default function ApplicationWorkspace({ application }: Props) {
               })}
             </nav>
           </aside>
+          ) : null}
 
           <main
             className="min-w-0 flex-1 overflow-auto p-4 lg:p-5 xl:p-6"
-            style={{ background: appTheme.obsidian }}
+            style={{ background: theme.obsidian }}
           >
             {activeKey && activeGroup ? (
               <div className="min-h-0 flex-1 space-y-4">
+                {showTopTabs ? (
                 <header className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
                   <p
-                    className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.18em]"
-                    style={{ color: appTheme.cyan }}
+                    className="ip-label shrink-0"
+                    style={{ color: theme.cyan }}
                   >
                     {activeGroup.label}
                   </p>
@@ -377,17 +496,21 @@ export default function ApplicationWorkspace({ application }: Props) {
                             setActiveKey(row.analysis_key);
                             setNavOpen(false);
                           }}
-                          className="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+                          className="px-3 py-1.5 text-sm font-medium transition-colors"
                           style={
                             selected
                               ? {
-                                  background:
-                                    "rgba(0, 229, 255, 0.12)",
-                                  color: appTheme.cyan,
-                                  boxShadow: appTheme.glowSoft,
+                                  background: chrome.selectionBg,
+                                  color: theme.cyan,
+                                  borderRadius: chrome.radiusControl,
+                                  boxShadow: chrome.shadowCard,
+                                  border: `1px solid ${chrome.selectionBorder}`,
+                                  transitionDuration: chrome.durationFast,
                                 }
                               : {
-                                  color: appTheme.silver,
+                                  color: theme.silver,
+                                  borderRadius: chrome.radiusControl,
+                                  transitionDuration: chrome.durationFast,
                                 }
                           }
                         >
@@ -397,48 +520,118 @@ export default function ApplicationWorkspace({ application }: Props) {
                     })}
                   </nav>
                 </header>
+                ) : null}
                 <AnalysisRuntime
                   key={`${activeKey}:${refreshKey}`}
                   analysisKey={activeKey}
+                  showTitle={showAnalysisTitle}
                 />
               </div>
             ) : activeKey ? (
               <AnalysisRuntime
                 key={`${activeKey}:${refreshKey}`}
                 analysisKey={activeKey}
+                showTitle={showAnalysisTitle}
               />
             ) : (
               <div
                 className="ip-app-panel rounded-xl px-8 py-16 text-center"
               >
-                <p
-                  className="text-[11px] font-semibold uppercase tracking-[0.2em]"
-                  style={{ color: appTheme.cyan }}
-                >
+                <p className="ip-label" style={{ color: theme.cyan }}>
                   InsightPilot
                 </p>
                 <h2
-                  className="ip-heading mt-3 text-2xl font-semibold"
-                  style={{ color: appTheme.white }}
+                  className="ip-heading mt-3 font-semibold"
+                  style={{
+                    color: theme.white,
+                    fontSize: chrome.typePageTitle,
+                  }}
                 >
-                  Your analytical workspace is empty
+                  {isPublished
+                    ? "This application is empty"
+                    : "Your analytical workspace is empty"}
                 </h2>
                 <p
                   className="mx-auto mt-2 max-w-md text-sm"
-                  style={{ color: appTheme.silver }}
+                  style={{ color: theme.silver }}
                 >
-                  Add analyses from your data products to begin building your
-                  application.
+                  {isPublished
+                    ? "No analyses are available in this published application yet."
+                    : "Add analyses from your data products to begin building your application."}
                 </p>
-                <Link
-                  href={`/applications/${application.id}/edit`}
-                  className="ip-app-cta mt-6 inline-flex rounded-lg px-4 py-2.5 text-sm"
-                >
-                  + Add Analysis
-                </Link>
+                {!isPublished ? (
+                  <Link
+                    href={`/applications/${application.id}/edit`}
+                    className="ip-app-cta mt-6 inline-flex rounded-lg px-4 py-2.5 text-sm"
+                  >
+                    + Add Analysis
+                  </Link>
+                ) : null}
               </div>
             )}
           </main>
+        </div>
+
+        {showBottomTabs && flatKeys.length > 0 ? (
+          <nav
+            className="z-20 shrink-0"
+            style={{
+              background: theme.midnight,
+              borderTop: `1px solid ${theme.border}`,
+              paddingBottom: "env(safe-area-inset-bottom, 0px)",
+            }}
+            aria-label="Bottom navigation"
+          >
+            <div className="mx-auto flex max-w-3xl items-stretch justify-around gap-1 overflow-x-auto px-2 py-2">
+              {flatKeys.map((analysisKey) => {
+                const meta = getRegistryAnalysis(analysisKey);
+                const Icon = getAnalysisNavIcon(analysisKey);
+                const selected = analysisKey === activeKey;
+                const label = shortAnalysisLabel(
+                  meta?.name || analysisKey
+                );
+                return (
+                  <button
+                    key={analysisKey}
+                    type="button"
+                    onClick={() => {
+                      setActiveKey(analysisKey);
+                      setNavOpen(false);
+                    }}
+                    className="flex min-w-[4.5rem] flex-1 flex-col items-center gap-1 px-2 py-2 transition-colors"
+                    style={
+                      selected
+                        ? {
+                            color: theme.cyan,
+                            background: chrome.selectionBg,
+                            borderRadius: chrome.radiusControl,
+                            minHeight: chrome.touchTarget,
+                            boxShadow: chrome.shadowCard,
+                            transitionDuration: chrome.durationFast,
+                          }
+                        : {
+                            color: theme.slate,
+                            borderRadius: chrome.radiusControl,
+                            minHeight: chrome.touchTarget,
+                            transitionDuration: chrome.durationFast,
+                          }
+                    }
+                    aria-current={selected ? "page" : undefined}
+                    title={meta?.name || analysisKey}
+                  >
+                    <Icon
+                      className="h-5 w-5 shrink-0"
+                      strokeWidth={selected ? 2.25 : 1.75}
+                    />
+                    <span className="max-w-full truncate text-[10px] font-semibold leading-tight tracking-wide">
+                      {label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </nav>
+        ) : null}
         </div>
       </div>
     </ApplicationContextProvider>

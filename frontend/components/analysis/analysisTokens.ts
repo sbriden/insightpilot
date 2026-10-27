@@ -1,4 +1,7 @@
-import { appTheme } from "@/components/applications/appTheme";
+import {
+  appTheme,
+  type AppThemeTokens,
+} from "@/components/applications/appTheme";
 import {
   productSnapshotTokens,
   registerAnalysisTokenGetter,
@@ -14,36 +17,59 @@ export const PRODUCT_ANALYSIS_TOKENS: AnalysisTokens = {
   ...productSnapshotTokens,
 };
 
+function withAlpha(hex: string, alpha: number): string {
+  const raw = hex.replace("#", "").trim();
+  if (raw.length !== 6) {
+    return hex;
+  }
+  const r = Number.parseInt(raw.slice(0, 2), 16);
+  const g = Number.parseInt(raw.slice(2, 4), 16);
+  const b = Number.parseInt(raw.slice(4, 6), 16);
+  if (![r, g, b].every((n) => Number.isFinite(n))) {
+    return hex;
+  }
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 /**
- * Application command-center mapping.
+ * Application theme mapping.
  * Semantic roles stay the same (navy = primary heading text, white = card surface).
  */
-export const APPLICATION_ANALYSIS_TOKENS: AnalysisTokens = {
-  navy: appTheme.white,
-  blue: appTheme.cyan,
-  blueLight: "rgba(0, 229, 255, 0.12)",
-  white: appTheme.elevated,
-  background: appTheme.midnight,
-  success: appTheme.positive,
-  successLight: "rgba(37, 214, 149, 0.14)",
-  warning: appTheme.warning,
-  warningLight: "rgba(255, 181, 71, 0.14)",
-  negative: appTheme.negative,
-  negativeLight: "rgba(255, 85, 112, 0.14)",
-  purple: "#A78BFA",
-  purpleLight: "rgba(167, 139, 250, 0.14)",
-  textPrimary: appTheme.white,
-  textSecondary: appTheme.silver,
-  textMuted: appTheme.slate,
-  border: "rgba(255, 255, 255, 0.10)",
-  divider: "rgba(255, 255, 255, 0.06)",
-};
+export function applicationTokensFromTheme(
+  theme: AppThemeTokens
+): AnalysisTokens {
+  return {
+    navy: theme.white,
+    blue: theme.cyan,
+    blueLight: withAlpha(theme.cyan, 0.12),
+    white: theme.elevated,
+    background: theme.midnight,
+    success: theme.positive,
+    successLight: withAlpha(theme.positive, 0.14),
+    warning: theme.warning,
+    warningLight: withAlpha(theme.warning, 0.14),
+    negative: theme.negative,
+    negativeLight: withAlpha(theme.negative, 0.14),
+    purple: "#A78BFA",
+    purpleLight: "rgba(167, 139, 250, 0.14)",
+    textPrimary: theme.white,
+    textSecondary: theme.silver,
+    textMuted: theme.slate,
+    border: theme.borderInput,
+    divider: theme.border,
+  };
+}
+
+/** Default application tokens (Midnight). */
+export const APPLICATION_ANALYSIS_TOKENS: AnalysisTokens =
+  applicationTokensFromTheme(appTheme);
 
 export function tokensForFormat(
-  format: AnalysisFormat
+  format: AnalysisFormat,
+  theme: AppThemeTokens = appTheme
 ): AnalysisTokens {
   return format === "application"
-    ? APPLICATION_ANALYSIS_TOKENS
+    ? applicationTokensFromTheme(theme)
     : PRODUCT_ANALYSIS_TOKENS;
 }
 

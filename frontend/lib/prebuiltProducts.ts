@@ -47,10 +47,10 @@ export const NATIVE_PRODUCTS: NativeProduct[] = [
     product_type: PRODUCT_TYPE_NATIVE,
     name: "Sports Betting",
     description:
-      "Analyze NFL markets, compare InsightPilot projections with market prices, and evaluate edges.",
+      "Analyze NFL and College Football markets, compare InsightPilot projections with market prices, and evaluate edges.",
     badge: PRODUCT_TYPE_LABELS.native,
     href: "/products/sports-betting",
-    sourceLabel: "nflverse",
+    sourceLabel: "nflverse / sportsdataverse",
     domainLabel: "Market Analysis",
   },
 ];

@@ -48,7 +48,7 @@ export default function SportsBettingPage() {
       name: native?.name ?? "Sports Betting",
       description:
         native?.description
-        ?? "Analyze NFL markets and InsightPilot model differences.",
+        ?? "Analyze NFL and CFB markets and InsightPilot model differences.",
       business_purpose:
         "Sports betting market analysis over InsightPilot projections.",
       product_type: PRODUCT_TYPE_NATIVE,
@@ -86,7 +86,7 @@ export default function SportsBettingPage() {
           <p className="mt-2 max-w-3xl text-sm text-gray-600">
             Analyze today&apos;s games, compare market prices with
             InsightPilot projections, and evaluate betting
-            opportunities across major NFL markets.
+            opportunities across NFL and College Football markets.
           </p>
         </div>
       </div>

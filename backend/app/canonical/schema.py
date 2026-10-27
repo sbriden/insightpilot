@@ -605,24 +605,8 @@ SCHEMA_STATEMENTS = [
       ADD COLUMN IF NOT EXISTS line_moved_at TIMESTAMP
     """,
 
-    # Seed opening from the earliest known current line.
-    f"""
-    UPDATE {FANTASY_SCHEMA}.fact_game_market
-    SET
-      opening_spread = COALESCE(opening_spread, spread),
-      opening_over_under = COALESCE(opening_over_under, over_under),
-      opening_home_implied_total = COALESCE(
-        opening_home_implied_total, home_implied_total
-      ),
-      opening_away_implied_total = COALESCE(
-        opening_away_implied_total, away_implied_total
-      ),
-      opening_captured_at = COALESCE(
-        opening_captured_at, created_at, CURRENT_TIMESTAMP
-      )
-    WHERE opening_spread IS NULL
-       OR opening_over_under IS NULL
-    """,
+    # Do not seed opening_* from current lines — missing opening stays
+    # NULL so tape provenance is not fabricated.
 
     f"""
     CREATE INDEX IF NOT EXISTS

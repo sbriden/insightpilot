@@ -6,11 +6,20 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+} from "recharts";
 
+import { useShowAnalysisTitle } from "@/components/analysis/AnalysisFormatContext";
 import MarketDetailDrawer from "@/components/betting/MarketDetailDrawer";
 import BettingGameCard from "@/components/betting/BettingGameCard";
 import MarketOpportunityTable from "@/components/betting/MarketOpportunityTable";
 import ModelVsMarket from "@/components/betting/ModelVsMarket";
+import DailyBetSlate from "@/components/betting/DailyBetSlate";
 import BettingPortfolio from "@/components/betting/portfolio/BettingPortfolio";
 import BettingResults from "@/components/betting/portfolio/BettingResults";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
@@ -18,11 +27,13 @@ import {
   BettingEvent,
   BettingMarket,
   BettingSlate,
+  BettingSport,
   getBettingSlate,
   listBettingWeeks,
 } from "@/services/api";
 
 type WorkspaceTab =
+  | "daily"
   | "overview"
   | "games"
   | "markets"
@@ -40,6 +51,7 @@ type EdgeFilter = "all" | "positive" | "neutral" | "negative";
 type ConfidenceFilter = "all" | "High" | "Moderate" | "Low";
 
 const TABS: Array<{ id: WorkspaceTab; label: string }> = [
+  { id: "daily", label: "Daily" },
   { id: "overview", label: "Overview" },
   { id: "games", label: "Games" },
   { id: "markets", label: "Markets" },
@@ -54,6 +66,7 @@ export default function SportsBettingAnalyzer({
   initialTab?: WorkspaceTab;
   hideTabBar?: boolean;
 } = {}) {
+  const [sport, setSport] = useState<BettingSport>("NFL");
   const [weeks, setWeeks] = useState<number[]>([]);
   const [season, setSeason] = useState<number | null>(null);
   const [week, setWeek] = useState<number | null>(null);
@@ -83,35 +96,30 @@ export default function SportsBettingAnalyzer({
     setTab(initialTab);
   }, [initialTab]);
 
-  async function loadWeeks() {
-    const result = await listBettingWeeks();
-    setSeason(result.season);
-    setWeeks(result.weeks || []);
-    setWeek((current) => {
-      if (
-        current != null
-        && (result.weeks || []).includes(current)
-      ) {
-        return current;
-      }
-      return (
-        result.current_week
-        ?? result.weeks?.[result.weeks.length - 1]
-        ?? null
-      );
-    });
-    return result;
-  }
-
   useEffect(() => {
     let cancelled = false;
+    loadedSlateKey.current = null;
+    setSlate(null);
+    setSeason(null);
+    setWeek(null);
+    setWeeks([]);
+    setLoading(true);
+    setError(null);
     (async () => {
       try {
-        const [weekResult, slateResult] = await Promise.all([
-          listBettingWeeks(),
-          getBettingSlate(),
-        ]);
+        const weekResult = await listBettingWeeks(undefined, sport);
         if (cancelled) return;
+        if (
+          String(weekResult.sport || "").toUpperCase() !== sport
+        ) {
+          setLoading(false);
+          setError(
+            `Betting API returned ${weekResult.sport || "unknown"} `
+            + `instead of ${sport}. Restart the API server to load `
+            + "the latest sport routing."
+          );
+          return;
+        }
         setSeason(weekResult.season);
         setWeeks(weekResult.weeks || []);
         const nextWeek =
@@ -119,21 +127,10 @@ export default function SportsBettingAnalyzer({
           ?? weekResult.weeks?.[weekResult.weeks.length - 1]
           ?? null;
         setWeek(nextWeek);
-        if (
-          nextWeek != null
-          && slateResult.season === weekResult.season
-          && slateResult.week === nextWeek
-        ) {
-          loadedSlateKey.current = `${weekResult.season}:${nextWeek}:0`;
-          setSlate(slateResult);
-          setLoading(false);
-        } else if (nextWeek == null) {
-          // No week coverage — stop the spinner instead of hanging.
+        if (nextWeek == null) {
           setLoading(false);
           setError("No betting weeks available for this season.");
         }
-        // When nextWeek is set but the unscoped slate doesn't match,
-        // the week-scoped effect loads it and clears loading.
       } catch (err) {
         if (!cancelled) {
           setError(
@@ -148,11 +145,11 @@ export default function SportsBettingAnalyzer({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [sport]);
 
   useEffect(() => {
     if (week == null || season == null) return;
-    const key = `${season}:${week}:${slateReloadKey}`;
+    const key = `${sport}:${season}:${week}:${slateReloadKey}`;
     if (loadedSlateKey.current === key) return;
     let cancelled = false;
     setLoading(true);
@@ -162,8 +159,18 @@ export default function SportsBettingAnalyzer({
         const result = await getBettingSlate({
           season,
           week,
+          sport,
         });
         if (cancelled) return;
+        if (String(result.sport || "").toUpperCase() !== sport) {
+          setSlate(null);
+          setError(
+            `Betting slate returned ${result.sport || "unknown"} `
+            + `instead of ${sport}. Restart the API server to load `
+            + "the latest sport routing."
+          );
+          return;
+        }
         loadedSlateKey.current = key;
         setSlate(result);
       } catch (err) {
@@ -182,7 +189,7 @@ export default function SportsBettingAnalyzer({
     return () => {
       cancelled = true;
     };
-  }, [season, week, slateReloadKey]);
+  }, [sport, season, week, slateReloadKey]);
 
   useEffect(() => {
     function onFantasyRefresh() {
@@ -249,10 +256,19 @@ export default function SportsBettingAnalyzer({
     setSelectedMarket(market ?? null);
   }
 
+  const isDailyTab = tab === "daily";
+  const showTitle = useShowAnalysisTitle();
+  const showSportControls = !isDailyTab;
+  const showHeaderChrome =
+    showTitle || showSportControls || !hideTabBar;
+
   return (
     <div className="space-y-6">
+      {showHeaderChrome ? (
       <header className="space-y-3">
+        {showTitle || showSportControls ? (
         <div className="flex flex-wrap items-end justify-between gap-4">
+          {showTitle ? (
           <div>
             <p
               className="text-xs font-semibold uppercase tracking-[0.2em]"
@@ -264,47 +280,61 @@ export default function SportsBettingAnalyzer({
               className="mt-1 text-2xl font-semibold tracking-tight"
               style={{ color: snapshotTokens.textPrimary }}
             >
-              NFL Market Analysis
+              {isDailyTab
+                ? "Daily Bet Slate"
+                : sport === "CFB"
+                  ? "CFB Market Analysis"
+                  : "NFL Market Analysis"}
             </h2>
             <p
               className="mt-1 max-w-2xl text-sm"
               style={{ color: snapshotTokens.textSecondary }}
             >
-              Compare what the market is pricing with what
-              InsightPilot expects — and where those differ.
+              {isDailyTab
+                ? "Generate a same-day multi-sport card from units and risk."
+                : "Compare what the market is pricing with what InsightPilot expects — and where those differ."}
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <select
-              className="rounded-lg border bg-white px-3 py-2 text-sm"
-              style={{ borderColor: snapshotTokens.border }}
-              value="NFL"
-              disabled
-              aria-label="Sport"
-            >
-              <option value="NFL">NFL</option>
-            </select>
-            <select
-              className="rounded-lg border bg-white px-3 py-2 text-sm"
-              style={{ borderColor: snapshotTokens.border }}
-              value={week ?? ""}
-              onChange={(event) =>
-                setWeek(
-                  event.target.value
-                    ? Number(event.target.value)
-                    : null
-                )
-              }
-              aria-label="Week"
-            >
-              {weeks.map((value) => (
-                <option key={value} value={value}>
-                  Week {value}
-                </option>
-              ))}
-            </select>
-          </div>
+          ) : (
+            <div />
+          )}
+          {showSportControls ? (
+            <div className="flex flex-wrap gap-2">
+              <select
+                className="rounded-lg border bg-white px-3 py-2 text-sm"
+                style={{ borderColor: snapshotTokens.border }}
+                value={sport}
+                onChange={(event) =>
+                  setSport(event.target.value as BettingSport)
+                }
+                aria-label="Sport"
+              >
+                <option value="NFL">NFL</option>
+                <option value="CFB">CFB</option>
+              </select>
+              <select
+                className="rounded-lg border bg-white px-3 py-2 text-sm"
+                style={{ borderColor: snapshotTokens.border }}
+                value={week ?? ""}
+                onChange={(event) =>
+                  setWeek(
+                    event.target.value
+                      ? Number(event.target.value)
+                      : null
+                  )
+                }
+                aria-label="Week"
+              >
+                {weeks.map((value) => (
+                  <option key={value} value={value}>
+                    Week {value}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
         </div>
+        ) : null}
 
         {!hideTabBar ? (
         <div
@@ -342,14 +372,17 @@ export default function SportsBettingAnalyzer({
         </div>
         ) : null}
       </header>
+      ) : null}
 
-      {error ? (
+      {isDailyTab ? <DailyBetSlate /> : null}
+
+      {!isDailyTab && error ? (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           {error}
         </div>
       ) : null}
 
-      {loading ? (
+      {!isDailyTab && loading ? (
         <div
           className="rounded-xl border bg-white px-5 py-10 text-sm"
           style={{
@@ -357,11 +390,11 @@ export default function SportsBettingAnalyzer({
             color: snapshotTokens.textMuted,
           }}
         >
-          Loading NFL betting slate…
+          {`Loading ${sport} betting slate…`}
         </div>
       ) : null}
 
-      {!loading && slate ? (
+      {!isDailyTab && !loading && slate ? (
         <>
           {(tab === "overview" || tab === "games" || tab === "markets") && (
             <SlateSummaryBar slate={slate} />
@@ -376,6 +409,7 @@ export default function SportsBettingAnalyzer({
                 />
                 <MarketOpportunityTable
                   markets={topOpportunities}
+                  sport={sport}
                   onSelect={openMarket}
                 />
               </div>
@@ -429,6 +463,7 @@ export default function SportsBettingAnalyzer({
                   <BettingGameCard
                     key={event.event_id}
                     event={event}
+                    sport={sport}
                     markets={(slate.markets ?? []).filter(
                       (market) => market.event_id === event.event_id
                     )}
@@ -485,6 +520,7 @@ export default function SportsBettingAnalyzer({
               </div>
               <MarketOpportunityTable
                 markets={filteredMarkets}
+                sport={sport}
                 onSelect={openMarket}
               />
             </div>
@@ -495,6 +531,7 @@ export default function SportsBettingAnalyzer({
               slate={slate}
               season={season}
               week={week}
+              sport={sport}
               pendingMarket={pendingPortfolioMarket}
               onPendingMarketConsumed={() =>
                 setPendingPortfolioMarket(null)
@@ -521,6 +558,7 @@ export default function SportsBettingAnalyzer({
               slate={slate}
               season={season}
               week={week}
+              sport={sport}
             />
           )}
 
@@ -558,6 +596,10 @@ export default function SportsBettingAnalyzer({
 }
 
 function SlateSummaryBar({ slate }: { slate: BettingSlate }) {
+  const pickMix = useMemo(
+    () => computePickMix(slate.markets ?? []),
+    [slate.markets]
+  );
   const items = [
     { label: "Games", value: String(slate.game_count) },
     { label: "Markets", value: String(slate.market_count) },
@@ -570,45 +612,275 @@ function SlateSummaryBar({ slate }: { slate: BettingSlate }) {
       value: String(slate.markets_with_edge),
     },
     {
-      label: "Strong Bets",
-      value: String(slate.markets_strong_bet ?? 0),
-    },
-    {
-      label: "Leans",
-      value: String(slate.markets_lean ?? 0),
-    },
-    {
-      label: "No Bet / Pass",
-      value: String(slate.markets_no_bet ?? 0),
-    },
-    {
       label: "Avg Confidence",
       value: slate.average_confidence || "—",
     },
   ];
+  const charts: PickMixChartSpec[] = [
+    {
+      title: "Moneyline",
+      subtitle: "Model winner vs market favorite",
+      slices: [
+        {
+          key: "favorite",
+          label: "Favorite",
+          value: pickMix.moneyline.left,
+          color: snapshotTokens.blue,
+        },
+        {
+          key: "underdog",
+          label: "Underdog",
+          value: pickMix.moneyline.right,
+          color: snapshotTokens.warning,
+        },
+      ],
+    },
+    {
+      title: "Total",
+      subtitle: "Over vs under",
+      slices: [
+        {
+          key: "over",
+          label: "Over",
+          value: pickMix.total.left,
+          color: snapshotTokens.success,
+        },
+        {
+          key: "under",
+          label: "Under",
+          value: pickMix.total.right,
+          color: snapshotTokens.navy,
+        },
+      ],
+    },
+    {
+      title: "Spread",
+      subtitle: "Getting vs giving points",
+      slices: [
+        {
+          key: "getting",
+          label: "Getting",
+          value: pickMix.spread.left,
+          color: snapshotTokens.blue,
+        },
+        {
+          key: "giving",
+          label: "Giving",
+          value: pickMix.spread.right,
+          color: snapshotTokens.navy,
+        },
+      ],
+    },
+  ];
+
   return (
     <div
-      className="grid gap-3 rounded-xl border bg-white p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-8"
+      className="space-y-4 rounded-xl border bg-white p-4"
       style={{ borderColor: snapshotTokens.border }}
     >
-      {items.map((item) => (
-        <div key={item.label}>
-          <p
-            className="text-[11px] font-semibold uppercase tracking-[0.14em]"
-            style={{ color: snapshotTokens.textMuted }}
-          >
-            {item.label}
-          </p>
-          <p
-            className="mt-1 text-xl font-semibold"
-            style={{ color: snapshotTokens.textPrimary }}
-          >
-            {item.value}
-          </p>
-        </div>
-      ))}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {items.map((item) => (
+          <div key={item.label}>
+            <p
+              className="text-[11px] font-semibold uppercase tracking-[0.14em]"
+              style={{ color: snapshotTokens.textMuted }}
+            >
+              {item.label}
+            </p>
+            <p
+              className="mt-1 text-xl font-semibold leading-tight"
+              style={{ color: snapshotTokens.textPrimary }}
+            >
+              {item.value}
+            </p>
+          </div>
+        ))}
+      </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        {charts.map((chart) => (
+          <PickMixDonut key={chart.title} chart={chart} />
+        ))}
+      </div>
+      <p
+        className="text-xs"
+        style={{ color: snapshotTokens.textMuted }}
+      >
+        {pickMix.materialNote}.
+      </p>
     </div>
   );
+}
+
+type PickMixSlice = {
+  key: string;
+  label: string;
+  value: number;
+  color: string;
+};
+
+type PickMixChartSpec = {
+  title: string;
+  subtitle: string;
+  slices: PickMixSlice[];
+};
+
+type PickMixSplit = { left: number; right: number };
+
+function PickMixDonut({ chart }: { chart: PickMixChartSpec }) {
+  const total = chart.slices.reduce((sum, slice) => sum + slice.value, 0);
+  const data =
+    total > 0
+      ? chart.slices.filter((slice) => slice.value > 0)
+      : [{ key: "empty", label: "None", value: 1, color: snapshotTokens.border }];
+  const primary = chart.slices[0];
+  const primaryPct =
+    total > 0 && primary
+      ? Math.round((primary.value / total) * 100)
+      : null;
+
+  return (
+    <div className="flex items-center gap-3">
+      <div className="relative h-[108px] w-[108px] shrink-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={data}
+              dataKey="value"
+              nameKey="label"
+              cx="50%"
+              cy="50%"
+              innerRadius={32}
+              outerRadius={48}
+              paddingAngle={total > 0 ? 2 : 0}
+              stroke="none"
+            >
+              {data.map((slice) => (
+                <Cell key={slice.key} fill={slice.color} />
+              ))}
+            </Pie>
+            {total > 0 ? (
+              <Tooltip
+                formatter={(value, name) => {
+                  const count = typeof value === "number" ? value : 0;
+                  const pct = Math.round((count / total) * 100);
+                  return [`${pct}% (${count})`, String(name)];
+                }}
+              />
+            ) : null}
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span
+            className="text-sm font-semibold tabular-nums"
+            style={{ color: snapshotTokens.textPrimary }}
+          >
+            {primaryPct != null ? `${primaryPct}%` : "—"}
+          </span>
+          <span
+            className="text-[10px] font-medium uppercase tracking-[0.08em]"
+            style={{ color: snapshotTokens.textMuted }}
+          >
+            {primary?.label ?? ""}
+          </span>
+        </div>
+      </div>
+      <div className="min-w-0">
+        <p
+          className="text-sm font-semibold"
+          style={{ color: snapshotTokens.textPrimary }}
+        >
+          {chart.title}
+        </p>
+        <p
+          className="text-xs"
+          style={{ color: snapshotTokens.textMuted }}
+        >
+          {chart.subtitle}
+        </p>
+        <ul className="mt-2 space-y-1">
+          {chart.slices.map((slice) => {
+            const pct =
+              total > 0
+                ? Math.round((slice.value / total) * 100)
+                : 0;
+            return (
+              <li
+                key={slice.key}
+                className="flex items-center gap-2 text-xs"
+                style={{ color: snapshotTokens.textSecondary }}
+              >
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ background: slice.color }}
+                />
+                <span className="truncate">
+                  {slice.label} {total > 0 ? `${pct}%` : "—"}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function computePickMix(markets: BettingMarket[]): {
+  moneyline: PickMixSplit;
+  total: PickMixSplit;
+  spread: PickMixSplit;
+  materialNote: string;
+} {
+  let mlFav = 0;
+  let mlDog = 0;
+  let over = 0;
+  let under = 0;
+  let getting = 0;
+  let giving = 0;
+
+  for (const market of markets) {
+    const type = String(market.market_type || "").toLowerCase();
+    if (type === "moneyline") {
+      const side = moneylineFavoriteSide(market);
+      if (side === "favorite") mlFav += 1;
+      else if (side === "underdog") mlDog += 1;
+    } else if (type === "total") {
+      const sel = String(market.selection || "").toLowerCase();
+      if (sel.startsWith("over")) over += 1;
+      else if (sel.startsWith("under")) under += 1;
+    } else if (type === "spread") {
+      const line = market.line;
+      if (line == null || line === 0) continue;
+      if (line > 0) getting += 1;
+      else giving += 1;
+    }
+  }
+
+  const sides = mlFav + mlDog + over + under + getting + giving;
+  const materialNote =
+    sides > 0
+      ? "All model-sided markets on this slate"
+      : "No priced markets";
+
+  return {
+    moneyline: { left: mlFav, right: mlDog },
+    total: { left: over, right: under },
+    spread: { left: getting, right: giving },
+    materialNote,
+  };
+}
+
+function moneylineFavoriteSide(
+  market: BettingMarket
+): "favorite" | "underdog" | null {
+  if (market.price != null && market.price !== 0) {
+    return market.price < 0 ? "favorite" : "underdog";
+  }
+  if (market.market_probability != null) {
+    if (market.market_probability > 0.5) return "favorite";
+    if (market.market_probability < 0.5) return "underdog";
+  }
+  return null;
 }
 
 function SectionTitle({

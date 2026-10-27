@@ -1,7 +1,10 @@
 """
-Build NFL Sports Betting slate from canonical game markets.
+Build Sports Betting slate from canonical game markets.
 
-Phase 1 sources:
+Supports NFL (fantasy_football / nflverse) and CFB
+(college_football / sportsdataverse).
+
+Sources:
   - dim_game / dim_team for schedule identity
   - fact_game_market for spread / total / implied scores
   - fact_team_game / fact_defensive_game opponent-adjusted
@@ -20,17 +23,23 @@ from typing import Any
 
 from sqlalchemy import text
 
+from app.analysis.insights.betting.betting_sport import (
+    BettingSportConfig,
+    resolve_betting_sport,
+    resolve_current_season,
+)
 from app.analysis.insights.betting.pricing import (
+    REFERENCE_PROBABILITY,
     american_to_implied_prob,
     confidence_explanation,
     confidence_from_edge,
     cover_probability_from_engine,
-    expected_value,
     expected_value_american,
     implied_prob_to_american,
+    market_edge_probability,
     num,
     over_probability_from_engine,
-    remove_vig_two_way,
+    reference_edge_probability,
     spread_to_cover_probability,
     total_to_over_probability,
     win_probability_from_engine,
@@ -75,6 +84,11 @@ from app.analysis.insights.betting.results import (
 )
 from app.analysis.insights.betting.team_strength import (
     load_team_strength_context,
+)
+from app.analysis.insights.betting.opponent_tendency import (
+    event_tendency_payload,
+    load_opponent_tendency_context,
+    tendency_situational_adjustments,
 )
 from app.analysis.insights.betting.residual_model import (
     add_situational_residuals,
@@ -131,8 +145,74 @@ def list_betting_weeks(
     season: int | None = None,
     sport: str = "NFL",
 ) -> dict[str, Any]:
-    del sport  # NFL-only Phase 1
-    resolved = _resolve_season(season)
+    sport_config = resolve_betting_sport(sport)
+    resolved = _resolve_season(season, sport_config=sport_config)
+    weeks = _available_betting_weeks(
+        season=resolved,
+        sport_config=sport_config,
+    )
+    current = _current_betting_week(
+        season=resolved,
+        available_weeks=weeks,
+        sport_config=sport_config,
+    )
+    return {
+        "sport": sport_config.id,
+        "league": sport_config.league,
+        "season": resolved,
+        "weeks": weeks,
+        "current_week": current,
+    }
+
+
+def _sport_team_logo_url(
+    sport: str,
+    espn_team_id: Any,
+    *,
+    abbreviation: str | None = None,
+) -> str | None:
+    """
+    ESPN CDN logo URL scoped by sport.
+
+    CFB must use ncaa/{espn_id} — abbreviation URLs collide with NFL.
+    """
+
+    espn_id = str(espn_team_id or "").strip()
+    if sport == "CFB":
+        if not espn_id or not espn_id.isdigit():
+            return None
+        return (
+            "https://a.espncdn.com/i/teamlogos/ncaa/500/"
+            f"{espn_id}.png"
+        )
+
+    abbr = str(abbreviation or "").strip().lower()
+    if abbr:
+        return (
+            f"https://a.espncdn.com/i/teamlogos/nfl/500/{abbr}.png"
+        )
+    if espn_id and espn_id.isdigit():
+        return (
+            "https://a.espncdn.com/i/teamlogos/nfl/500/"
+            f"{espn_id}.png"
+        )
+    return None
+
+
+def _available_betting_weeks(
+    *,
+    season: int,
+    sport_config: BettingSportConfig,
+) -> list[int]:
+    """
+    Weeks selectable in the UI.
+
+    Prefer schedule weeks from dim_game so the current / upcoming
+    slate is available even before lines land in fact_game_market.
+    Fall back to market weeks when the schedule table is empty.
+    """
+
+    schema = sport_config.schema
     weeks: list[int] = []
     try:
         with engine.connect() as connection:
@@ -140,28 +220,39 @@ def list_betting_weeks(
                 text(
                     f"""
                     SELECT DISTINCT week
-                    FROM {FANTASY_SCHEMA}.fact_game_market
+                    FROM {schema}.dim_game
                     WHERE season = :season
                       AND week IS NOT NULL
                     ORDER BY week
                     """
                 ),
-                {"season": resolved},
+                {"season": int(season)},
             ).fetchall()
             weeks = [int(row[0]) for row in rows if row[0] is not None]
     except Exception:
         weeks = []
-    current = _current_betting_week(
-        season=resolved,
-        available_weeks=weeks,
-    )
-    return {
-        "sport": _SPORT,
-        "league": _LEAGUE,
-        "season": resolved,
-        "weeks": weeks,
-        "current_week": current,
-    }
+
+    if weeks:
+        return weeks
+
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    f"""
+                    SELECT DISTINCT week
+                    FROM {schema}.fact_game_market
+                    WHERE season = :season
+                      AND week IS NOT NULL
+                    ORDER BY week
+                    """
+                ),
+                {"season": int(season)},
+            ).fetchall()
+            weeks = [int(row[0]) for row in rows if row[0] is not None]
+    except Exception:
+        weeks = []
+    return weeks
 
 
 def build_betting_slate(
@@ -172,40 +263,93 @@ def build_betting_slate(
     residual_model: str = "auto",
     probability_engine: str = "logistic",
 ) -> dict[str, Any]:
-    del sport
-    resolved_season = _resolve_season(season)
+    sport_config = resolve_betting_sport(sport)
+    resolved_season = _resolve_season(
+        season,
+        sport_config=sport_config,
+    )
     applied_residual = _resolve_residual_model(
         residual_model, season=resolved_season
     )
     applied_prob_engine = _resolve_probability_engine(
         probability_engine
     )
-    resolved_week = _resolve_week(week, season=resolved_season)
+    resolved_week = _resolve_week(
+        week,
+        season=resolved_season,
+        sport_config=sport_config,
+    )
     events = _load_events(
         season=resolved_season,
         week=resolved_week,
+        sport_config=sport_config,
     )
     strength_context = load_team_strength_context(
         season=resolved_season,
         before_week=resolved_week,
+        sport=sport_config,
     )
     player_context = load_week_player_context(
         season=resolved_season,
         week=resolved_week,
+        sport=sport_config.id,
     )
-    calibration = _load_calibration_feedback(resolved_season)
-    probability_calibrations = _load_probability_calibrations(
-        resolved_season
+    # Learning / calibration tables are NFL-scoped for now.
+    # Skipping them on CFB avoids multi-minute cold loads.
+    # Opponent tendency uses sport-native strength + markets and
+    # is available for both NFL and CFB champion paths.
+    use_learning = sport_config.id == "NFL"
+    try:
+        tendency_context = load_opponent_tendency_context(
+            season=resolved_season,
+            before_week=resolved_week,
+            sport=sport_config,
+        )
+    except Exception:
+        tendency_context = None
+    calibration = (
+        _load_calibration_feedback(resolved_season)
+        if use_learning
+        else None
+    )
+    probability_calibrations = (
+        _load_probability_calibrations(resolved_season)
+        if use_learning
+        else {}
     )
     probability_calibration = probability_calibrations.get("all")
-    edge_confidence = _load_edge_confidence(resolved_season)
-    challenger_model = _load_residual_challenger(resolved_season)
-    score_dist_model = _load_score_distribution(resolved_season)
-    rest_by_game = rest_days_by_game(season=resolved_season)
-    context_ablation = _load_context_ablation(resolved_season)
+    edge_confidence = (
+        _load_edge_confidence(resolved_season)
+        if use_learning
+        else None
+    )
+    challenger_model = (
+        _load_residual_challenger(resolved_season)
+        if use_learning
+        else None
+    )
+    score_dist_model = (
+        _load_score_distribution(resolved_season)
+        if use_learning
+        else None
+    )
+    rest_by_game = (
+        rest_days_by_game(season=resolved_season)
+        if use_learning
+        else {}
+    )
+    context_ablation = (
+        _load_context_ablation(resolved_season)
+        if use_learning
+        else None
+    )
     qualification_thresholds = (
-        _load_qualification_thresholds(resolved_season)
-        or prior_qualification_thresholds()
+        (
+            _load_qualification_thresholds(resolved_season)
+            or prior_qualification_thresholds()
+        )
+        if use_learning
+        else prior_qualification_thresholds()
     )
     enriched: list[dict[str, Any]] = []
     markets: list[dict[str, Any]] = []
@@ -231,6 +375,7 @@ def build_betting_slate(
         built = _enrich_event(
             event,
             strength_context=strength_context,
+            tendency_context=tendency_context,
             player_context=player_context,
             calibration=calibration,
             probability_calibration=probability_calibration,
@@ -242,6 +387,7 @@ def build_betting_slate(
             score_distribution_model=score_dist_model,
             probability_engine=applied_prob_engine,
             qualification_thresholds=qualification_thresholds,
+            sport_config=sport_config,
         )
         event_row = built["event"]
         event_markets = built["markets"]
@@ -330,12 +476,17 @@ def build_betting_slate(
     )
 
     return {
-        "sport": _SPORT,
-        "league": _LEAGUE,
+        "sport": sport_config.id,
+        "league": sport_config.league,
         "season": resolved_season,
         "week": resolved_week,
-        "slate_id": f"nfl-{resolved_season}-w{resolved_week}",
-        "label": f"NFL Week {resolved_week}",
+        "slate_id": (
+            f"{sport_config.slate_prefix}-"
+            f"{resolved_season}-w{resolved_week}"
+        ),
+        "label": (
+            f"{sport_config.label_sport} Week {resolved_week}"
+        ),
         "game_count": len(enriched_sorted),
         "market_count": len(markets_sorted),
         "model_coverage_pct": coverage,
@@ -348,17 +499,9 @@ def build_betting_slate(
         "events": enriched_sorted,
         "markets": markets_sorted,
         "signals": signals[:12],
-        "source": "nflverse_schedules",
+        "source": sport_config.source_label,
         "source_note": (
-            "Market lines are nflverse schedule snapshots "
-            "(not live multi-book sportsbook feeds). "
-            "InsightPilot projection = market baseline + "
-            "model residual (where the market is likely "
-            "wrong). Residuals come from confidence-shrunk "
-            "opponent-adjusted team-strength disagreement "
-            "plus situational injury / calibration layers. "
-            "Opening vs current lines track whether the "
-            "market has started incorporating that view. "
+            f"{sport_config.source_note} "
             "Displayed win probabilities are calibrated "
             "against historical predicted vs actual results "
             "when enough settled bets exist. "
@@ -469,44 +612,81 @@ def get_betting_event(
     event_id: str,
     *,
     season: int | None = None,
+    sport: str = "NFL",
 ) -> dict[str, Any] | None:
     eid = str(event_id or "").strip()
     if not eid:
         return None
-    resolved_season = _resolve_season(season)
+    sport_config = resolve_betting_sport(sport)
+    resolved_season = _resolve_season(
+        season,
+        sport_config=sport_config,
+    )
     events = _load_events(
         season=resolved_season,
         week=None,
         event_id=eid,
+        sport_config=sport_config,
     )
     if not events:
         return None
     week = _as_int(events[0].get("week")) or _resolve_week(
         None,
         season=resolved_season,
+        sport_config=sport_config,
     )
     strength_context = load_team_strength_context(
         season=resolved_season,
         before_week=week,
+        sport=sport_config,
     )
     player_context = load_week_player_context(
         season=resolved_season,
         week=week,
+        sport=sport_config.id,
     )
-    calibration = _load_calibration_feedback(resolved_season)
-    probability_calibrations = _load_probability_calibrations(
-        resolved_season
+    use_learning = sport_config.id == "NFL"
+    try:
+        tendency_context = load_opponent_tendency_context(
+            season=resolved_season,
+            before_week=week,
+            sport=sport_config,
+        )
+    except Exception:
+        tendency_context = None
+    calibration = (
+        _load_calibration_feedback(resolved_season)
+        if use_learning
+        else None
+    )
+    probability_calibrations = (
+        _load_probability_calibrations(resolved_season)
+        if use_learning
+        else {}
     )
     probability_calibration = probability_calibrations.get("all")
-    edge_confidence = _load_edge_confidence(resolved_season)
-    challenger_model = _load_residual_challenger(resolved_season)
-    score_dist_model = _load_score_distribution(resolved_season)
+    edge_confidence = (
+        _load_edge_confidence(resolved_season)
+        if use_learning
+        else None
+    )
+    challenger_model = (
+        _load_residual_challenger(resolved_season)
+        if use_learning
+        else None
+    )
+    score_dist_model = (
+        _load_score_distribution(resolved_season)
+        if use_learning
+        else None
+    )
     applied_residual = _resolve_residual_model(
         "auto", season=resolved_season
     )
     built = _enrich_event(
         events[0],
         strength_context=strength_context,
+        tendency_context=tendency_context,
         player_context=player_context,
         calibration=calibration,
         probability_calibration=probability_calibration,
@@ -516,6 +696,7 @@ def get_betting_event(
         residual_model=applied_residual,
         score_distribution_model=score_dist_model,
         probability_engine="logistic",
+        sport_config=sport_config,
     )
     _sync_event_results(built["event"], built["markets"])
     return built
@@ -525,31 +706,42 @@ def build_betting_results(
     *,
     season: int | None = None,
     week: int | None = None,
+    sport: str = "NFL",
 ) -> dict[str, Any]:
     """
     Auto-settle completed games for the week/season and return
     model-vs-actual performance (all markets, not portfolio-only).
     """
 
-    resolved_season = _resolve_season(season)
-    resolved_week = _resolve_week(week, season=resolved_season)
+    sport_config = resolve_betting_sport(sport)
+    resolved_season = _resolve_season(
+        season,
+        sport_config=sport_config,
+    )
+    resolved_week = _resolve_week(
+        week,
+        season=resolved_season,
+        sport_config=sport_config,
+    )
     # Pull overnight / MNF finals into dim_game before settlement.
     # Without this, Results depended on a manual dim_game refresh and
     # Monday-night scores could sit in nflverse while the page still
-    # treated the game as unsettled.
-    try:
-        from app.canonical.dim_game import sync_dim_game_scores
+    # treated the game as unsettled. CFB has no nflverse score sync.
+    if sport_config.id == "NFL":
+        try:
+            from app.canonical.dim_game import sync_dim_game_scores
 
-        sync_dim_game_scores(
-            [resolved_season],
-            week=resolved_week,
-        )
-    except Exception:
-        pass
+            sync_dim_game_scores(
+                [resolved_season],
+                week=resolved_week,
+            )
+        except Exception:
+            pass
 
     slate = build_betting_slate(
         season=resolved_season,
         week=resolved_week,
+        sport=sport_config.id,
     )
     season_value = slate.get("season")
     week_value = slate.get("week")
@@ -636,8 +828,8 @@ def build_betting_results(
     except Exception:
         pass
     return {
-        "sport": _SPORT,
-        "league": _LEAGUE,
+        "sport": sport_config.id,
+        "league": sport_config.league,
         "season": season_value,
         "week": week_value,
         "slate_id": slate.get("slate_id"),
@@ -1190,25 +1382,30 @@ def find_betting_event_by_matchup(
     return None
 
 
-def _resolve_season(season: int | None) -> int:
+def _resolve_season(
+    season: int | None,
+    *,
+    sport_config: BettingSportConfig | None = None,
+) -> int:
     if season is not None:
         return int(season)
-    try:
-        import nflreadpy as nfl
-
-        return int(nfl.get_current_season())
-    except Exception:
-        return datetime.now(timezone.utc).year
+    config = sport_config or resolve_betting_sport("NFL")
+    return resolve_current_season(config)
 
 
 def _resolve_week(
     week: int | None,
     *,
     season: int,
+    sport_config: BettingSportConfig | None = None,
 ) -> int:
     if week is not None:
         return max(1, int(week))
-    listed = list_betting_weeks(season=season)
+    config = sport_config or resolve_betting_sport("NFL")
+    listed = list_betting_weeks(
+        season=season,
+        sport=config.id,
+    )
     current = listed.get("current_week")
     if current is not None:
         return int(current)
@@ -1219,31 +1416,52 @@ def _current_betting_week(
     *,
     season: int,
     available_weeks: list[int],
+    sport_config: BettingSportConfig | None = None,
 ) -> int | None:
     """
-    Prefer nflverse's live NFL week over the latest week present
-    in fact_game_market (future schedules often land early).
+    Prefer the live / upcoming slate week, not the latest completed
+    week that happens to have markets.
     """
 
-    nfl_week: int | None = None
-    try:
-        import nflreadpy as nfl
+    config = sport_config or resolve_betting_sport("NFL")
+    live_week: int | None = None
 
-        current_season = int(nfl.get_current_season())
-        if int(season) == current_season:
-            nfl_week = max(1, int(nfl.get_current_week()))
-    except Exception:
-        nfl_week = None
+    if config.id == "NFL":
+        try:
+            import nflreadpy as nfl
+
+            current_season = int(nfl.get_current_season())
+            if int(season) == current_season:
+                live_week = max(1, int(nfl.get_current_week()))
+        except Exception:
+            live_week = None
+    else:
+        live_week = _current_week_from_schedule(
+            season=season,
+            schema=config.schema,
+        )
+        # Prefer a priced slate when the schedule week has no lines
+        # yet (common early in a CFB week before odds publish).
+        if live_week is not None and not _week_has_market_lines(
+            season=season,
+            week=live_week,
+            schema=config.schema,
+        ):
+            lined = _latest_week_with_market_lines(
+                season=season,
+                schema=config.schema,
+                at_or_before=live_week,
+            )
+            if lined is not None:
+                live_week = lined
 
     if not available_weeks:
-        return nfl_week
+        return live_week
 
-    if nfl_week is not None:
-        if nfl_week in available_weeks:
-            return nfl_week
-        # If live week is ahead of loaded markets, stay on the
-        # latest available week at or before the live week.
-        prior = [w for w in available_weeks if w <= nfl_week]
+    if live_week is not None:
+        if live_week in available_weeks:
+            return live_week
+        prior = [w for w in available_weeks if w <= live_week]
         if prior:
             return prior[-1]
         return available_weeks[0]
@@ -1251,39 +1469,213 @@ def _current_betting_week(
     return available_weeks[-1]
 
 
+def _week_has_market_lines(
+    *,
+    season: int,
+    week: int,
+    schema: str,
+) -> bool:
+    try:
+        with engine.connect() as connection:
+            count = connection.execute(
+                text(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM {schema}.fact_game_market
+                    WHERE season = :season
+                      AND week = :week
+                      AND (
+                        spread IS NOT NULL
+                        OR over_under IS NOT NULL
+                      )
+                    """
+                ),
+                {"season": int(season), "week": int(week)},
+            ).scalar()
+            return int(count or 0) > 0
+    except Exception:
+        return False
+
+
+def _latest_week_with_market_lines(
+    *,
+    season: int,
+    schema: str,
+    at_or_before: int | None = None,
+) -> int | None:
+    clauses = [
+        "season = :season",
+        "(spread IS NOT NULL OR over_under IS NOT NULL)",
+        "week IS NOT NULL",
+    ]
+    params: dict[str, Any] = {"season": int(season)}
+    if at_or_before is not None:
+        clauses.append("week <= :at_or_before")
+        params["at_or_before"] = int(at_or_before)
+    where = " AND ".join(clauses)
+    try:
+        with engine.connect() as connection:
+            week = connection.execute(
+                text(
+                    f"""
+                    SELECT MAX(week)
+                    FROM {schema}.fact_game_market
+                    WHERE {where}
+                    """
+                ),
+                params,
+            ).scalar()
+            return int(week) if week is not None else None
+    except Exception:
+        return None
+
+
+def _current_week_from_schedule(
+    *,
+    season: int,
+    schema: str,
+) -> int | None:
+    """
+    Week containing today, else the next upcoming week, else the
+    most recent completed week on the schedule.
+    """
+
+    try:
+        with engine.connect() as connection:
+            upcoming = connection.execute(
+                text(
+                    f"""
+                    SELECT week
+                    FROM {schema}.dim_game
+                    WHERE season = :season
+                      AND week IS NOT NULL
+                      AND game_date IS NOT NULL
+                      AND game_date >= CURRENT_DATE
+                    ORDER BY game_date ASC, week ASC
+                    LIMIT 1
+                    """
+                ),
+                {"season": int(season)},
+            ).scalar()
+            if upcoming is not None:
+                return int(upcoming)
+
+            containing = connection.execute(
+                text(
+                    f"""
+                    SELECT week
+                    FROM {schema}.dim_game
+                    WHERE season = :season
+                      AND week IS NOT NULL
+                      AND game_date IS NOT NULL
+                    GROUP BY week
+                    HAVING MIN(game_date) <= CURRENT_DATE
+                       AND MAX(game_date) >= CURRENT_DATE
+                    ORDER BY week
+                    LIMIT 1
+                    """
+                ),
+                {"season": int(season)},
+            ).scalar()
+            if containing is not None:
+                return int(containing)
+
+            prior = connection.execute(
+                text(
+                    f"""
+                    SELECT week
+                    FROM {schema}.dim_game
+                    WHERE season = :season
+                      AND week IS NOT NULL
+                      AND game_date IS NOT NULL
+                      AND game_date < CURRENT_DATE
+                    ORDER BY game_date DESC, week DESC
+                    LIMIT 1
+                    """
+                ),
+                {"season": int(season)},
+            ).scalar()
+            if prior is not None:
+                return int(prior)
+    except Exception:
+        return None
+    return None
+
+
 def _load_events(
     *,
     season: int,
     week: int | None,
     event_id: str | None = None,
+    sport_config: BettingSportConfig | None = None,
 ) -> list[dict[str, Any]]:
-    clauses = ["m.season = :season"]
+    config = sport_config or resolve_betting_sport("NFL")
+    schema = config.schema
     params: dict[str, Any] = {"season": int(season)}
-    if week is not None:
-        clauses.append("m.week = :week")
-        params["week"] = int(week)
-    if event_id:
-        clauses.append("m.game_id = :event_id")
-        params["event_id"] = event_id
-    where = " AND ".join(clauses)
-    sql = f"""
-        SELECT DISTINCT ON (m.game_id)
-          m.game_id AS event_id,
-          m.season,
-          m.week,
-          m.season_type,
-          m.spread,
-          m.over_under,
-          m.home_implied_total,
-          m.away_implied_total,
+
+    if config.has_opening_lines:
+        # CFB fact_game_market has opening_* but not line_moved_at.
+        line_moved_expr = (
+            "NULL::timestamp AS line_moved_at"
+            if config.id == "CFB"
+            else "m.line_moved_at"
+        )
+        opening_cols = f"""
           m.opening_spread,
           m.opening_over_under,
           m.opening_home_implied_total,
           m.opening_away_implied_total,
           m.opening_captured_at,
-          m.line_moved_at,
+          {line_moved_expr},
+        """
+    else:
+        opening_cols = """
+          NULL::double precision AS opening_spread,
+          NULL::double precision AS opening_over_under,
+          NULL::double precision AS opening_home_implied_total,
+          NULL::double precision AS opening_away_implied_total,
+          NULL::timestamp AS opening_captured_at,
+          NULL::timestamp AS line_moved_at,
+        """
+
+    # Schedule-first so upcoming weeks appear before lines land.
+    # Markets are the latest row per game when present.
+    clauses = ["g.season = :season"]
+    if week is not None:
+        clauses.append("g.week = :week")
+        params["week"] = int(week)
+    if event_id:
+        clauses.append("g.game_id = :event_id")
+        params["event_id"] = event_id
+    where = " AND ".join(clauses)
+
+    # CFB schedule includes FCS / non-FBS noise. Prefer FBS–FBS
+    # matchups, and always keep any game that already has a line.
+    sport_filter = ""
+    if config.id == "CFB":
+        sport_filter = """
+          AND (
+            m.game_id IS NOT NULL
+            OR (
+              LOWER(COALESCE(ht.subdivision, '')) = 'fbs'
+              AND LOWER(COALESCE(at.subdivision, '')) = 'fbs'
+            )
+          )
+        """
+
+    sql = f"""
+        SELECT DISTINCT ON (g.game_id)
+          g.game_id AS event_id,
+          g.season,
+          g.week,
+          COALESCE(m.season_type, g.season_type) AS season_type,
+          m.spread,
+          m.over_under,
+          m.home_implied_total,
+          m.away_implied_total,
+          {opening_cols}
           m.timestamp AS market_timestamp,
-          m.source,
+          COALESCE(m.source, :default_source) AS source,
           g.game_date AS start_time,
           g.game_status AS status,
           g.home_score,
@@ -1291,19 +1683,23 @@ def _load_events(
           ht.team_id AS home_team_id,
           ht.team_abbreviation AS home_team,
           ht.team_name AS home_team_name,
+          ht.source_ids->>'espn_team_id' AS home_espn_team_id,
           at.team_id AS away_team_id,
           at.team_abbreviation AS away_team,
-          at.team_name AS away_team_name
-        FROM {FANTASY_SCHEMA}.fact_game_market m
-        JOIN {FANTASY_SCHEMA}.dim_game g
-          ON g.game_id = m.game_id
-        LEFT JOIN {FANTASY_SCHEMA}.dim_team ht
+          at.team_name AS away_team_name,
+          at.source_ids->>'espn_team_id' AS away_espn_team_id
+        FROM {schema}.dim_game g
+        LEFT JOIN {schema}.fact_game_market m
+          ON m.game_id = g.game_id
+        LEFT JOIN {schema}.dim_team ht
           ON ht.team_id = g.home_team_id
-        LEFT JOIN {FANTASY_SCHEMA}.dim_team at
+        LEFT JOIN {schema}.dim_team at
           ON at.team_id = g.away_team_id
         WHERE {where}
-        ORDER BY m.game_id, m.timestamp DESC NULLS LAST
+        {sport_filter}
+        ORDER BY g.game_id, m.timestamp DESC NULLS LAST
     """
+    params["default_source"] = config.source_label
     try:
         with engine.connect() as connection:
             rows = connection.execute(
@@ -1369,6 +1765,7 @@ def _enrich_event(
     raw: dict[str, Any],
     *,
     strength_context: dict[str, Any] | None = None,
+    tendency_context: dict[str, Any] | None = None,
     recent_ppg: dict[str, float] | None = None,
     player_context: dict[str, Any] | None = None,
     calibration: dict[str, Any] | None = None,
@@ -1381,7 +1778,9 @@ def _enrich_event(
     probability_engine: str = "logistic",
     rest_by_game: dict[str, tuple[float, float]] | None = None,
     qualification_thresholds: dict[str, Any] | None = None,
+    sport_config: BettingSportConfig | None = None,
 ) -> dict[str, Any]:
+    active_sport = sport_config or resolve_betting_sport("NFL")
     home = str(raw.get("home_team") or "").upper()
     away = str(raw.get("away_team") or "").upper()
     event_id = str(raw.get("event_id") or "")
@@ -1432,11 +1831,11 @@ def _enrich_event(
     elif opening_spread_raw_early is not None:
         opening_spread_early = round(-float(opening_spread_raw_early), 1)
     else:
-        opening_spread_early = market_spread
+        opening_spread_early = None
     market_movement_early = build_market_movement(
         opening_spread=opening_spread_early,
         current_spread=market_spread,
-        opening_total=opening_total_early or market_total,
+        opening_total=opening_total_early,
         current_total=market_total,
     )
 
@@ -1494,6 +1893,7 @@ def _enrich_event(
             home_team_id=home_team_id,
             away_team_id=away_team_id,
             strength_context=strength_context,
+            tendency_context=tendency_context,
             recent_ppg=recent_ppg,
             home_injury_adj=home_adj,
             away_injury_adj=away_adj,
@@ -1578,6 +1978,14 @@ def _enrich_event(
             f"away {away_m:+.2f} "
             "(offense efficiency minus opponent defense)."
         )
+    tendency_sit = (strength_detail.get("opponent_tendency_sit") or {})
+    if tendency_sit.get("applied"):
+        model_drivers.append(
+            "Opponent tendency — "
+            f"home {float(tendency_sit.get('home_pts') or 0):+0.1f}, "
+            f"away {float(tendency_sit.get('away_pts') or 0):+0.1f} "
+            "(gated market residual vs opponent tier)."
+        )
     if using_locked:
         frozen = bool((locked or {}).get("frozen"))
         model_drivers.append(
@@ -1601,8 +2009,7 @@ def _enrich_event(
     opening_away = num(raw.get("opening_away_implied_total"))
     opening_spread_raw = num(raw.get("opening_spread"))
     opening_total = num(raw.get("opening_over_under"))
-    if opening_total is None:
-        opening_total = market_total
+    # Do not copy current total into opening when opening is missing.
 
     # Match event spread convention (away − home).
     if opening_home is not None and opening_away is not None:
@@ -1614,7 +2021,7 @@ def _enrich_event(
         # nflverse spread_line: positive = home favored → negate.
         opening_spread = round(-float(opening_spread_raw), 1)
     else:
-        opening_spread = market_spread
+        opening_spread = None
 
     market_movement = build_market_movement(
         opening_spread=opening_spread,
@@ -1657,6 +2064,7 @@ def _enrich_event(
                 home_team_id=home_team_id,
                 away_team_id=away_team_id,
                 strength_context=strength_context,
+                tendency_context=tendency_context,
                 home_injury=home_injury,
                 away_injury=away_injury,
                 home_injury_adj=home_adj,
@@ -1745,11 +2153,13 @@ def _enrich_event(
         score_distribution.pop("_probs", None)
 
     label = f"{away} @ {home}" if away and home else event_id
-    # Prefer schedule kickoff (gameday + gametime stored on
-    # fact_game_market.timestamp) over date-only dim_game.game_date.
-    # Date-only ISO strings shift a day in US timezones when parsed
-    # as UTC midnight in the browser.
-    kickoff = raw.get("market_timestamp") or raw.get("start_time")
+    # NFL: fact_game_market.timestamp carries gameday + gametime.
+    # CFB: that column is odds-capture time (scrape), so prefer
+    # dim_game.game_date (aliased as start_time) for the card date.
+    if active_sport.id == "CFB":
+        kickoff = raw.get("start_time") or raw.get("market_timestamp")
+    else:
+        kickoff = raw.get("market_timestamp") or raw.get("start_time")
     game_forecast = _game_forecast_for_event(
         event_id=event_id,
         raw=raw,
@@ -1766,8 +2176,8 @@ def _enrich_event(
     )
     event = {
         "event_id": event_id,
-        "sport": _SPORT,
-        "league": _LEAGUE,
+        "sport": active_sport.id,
+        "league": active_sport.league,
         "season": raw.get("season"),
         "week": raw.get("week"),
         "start_time": _iso(kickoff),
@@ -1778,6 +2188,16 @@ def _enrich_event(
         "away_team_name": raw.get("away_team_name"),
         "home_team_id": raw.get("home_team_id"),
         "away_team_id": raw.get("away_team_id"),
+        "home_logo_url": _sport_team_logo_url(
+            active_sport.id,
+            raw.get("home_espn_team_id"),
+            abbreviation=home,
+        ),
+        "away_logo_url": _sport_team_logo_url(
+            active_sport.id,
+            raw.get("away_espn_team_id"),
+            abbreviation=away,
+        ),
         "label": label,
         "market_spread": market_spread,
         "market_total": market_total,
@@ -1838,6 +2258,13 @@ def _enrich_event(
         "rest_days": {"home": rest_home, "away": rest_away},
         "injuries": injury_notes,
         "model_drivers": model_drivers,
+        "opponent_tendency": event_tendency_payload(
+            home_team_id=home_team_id,
+            away_team_id=away_team_id,
+            tendency_context=tendency_context,
+            situational_meta=tendency_sit
+            or (strength_detail.get("opponent_tendency_sit") or {}),
+        ),
         "injury_report_week": (
             player_context.get("week") if player_context else None
         ),
@@ -1956,6 +2383,7 @@ def _merge_challenger_into_scores(
     home_team_id: str | None,
     away_team_id: str | None,
     strength_context: dict[str, Any] | None,
+    tendency_context: dict[str, Any] | None = None,
     home_injury: dict[str, Any] | None,
     away_injury: dict[str, Any] | None,
     home_injury_adj: float,
@@ -1997,6 +2425,7 @@ def _merge_challenger_into_scores(
         home_injury=home_injury,
         away_injury=away_injury,
         disagreement=disagreement,
+        tendency_context=tendency_context,
     )
     chall_pred = predict_challenger_residuals(
         feature_payload=feature_payload,
@@ -2122,6 +2551,7 @@ def _model_scores(
     home_team_id: str | None = None,
     away_team_id: str | None = None,
     strength_context: dict[str, Any] | None = None,
+    tendency_context: dict[str, Any] | None = None,
     recent_ppg: dict[str, float] | None = None,
     home_injury_adj: float = 0.0,
     away_injury_adj: float = 0.0,
@@ -2132,7 +2562,7 @@ def _model_scores(
 
     1. Predict where the market is wrong (team-strength residual)
     2. Shrink residual by projection confidence
-    3. Add situational residuals (injuries, calibration)
+    3. Add situational residuals (injuries, calibration, tendency)
     4. final = market + total residual
     """
 
@@ -2147,7 +2577,8 @@ def _model_scores(
     detail = dict(residual_model.get("strength") or {"available": False})
 
     # Situational residuals: calibration expressed as deltas vs the
-    # market-anchored strength projection, plus injury adjustments.
+    # market-anchored strength projection, plus injury adjustments
+    # and gated opponent-tendency points (NFL only).
     provisional_home, provisional_away, _ = apply_score_residuals(
         residual_model
     )
@@ -2156,10 +2587,21 @@ def _model_scores(
         projected_away=provisional_away,
         feedback=calibration,
     )
+    tend_home, tend_away, tend_meta = tendency_situational_adjustments(
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        strength_context=strength_context,
+        tendency_context=tendency_context,
+        shrink=float(residual_model.get("shrink") or 0.0) or None,
+    )
     residual_model = add_situational_residuals(
         residual_model,
-        home_adjustment=float(home_injury_adj or 0.0) + cal_home,
-        away_adjustment=float(away_injury_adj or 0.0) + cal_away,
+        home_adjustment=(
+            float(home_injury_adj or 0.0) + cal_home + tend_home
+        ),
+        away_adjustment=(
+            float(away_injury_adj or 0.0) + cal_away + tend_away
+        ),
     )
     home, away, apply_meta = apply_score_residuals(residual_model)
 
@@ -2183,6 +2625,7 @@ def _model_scores(
             "projection_confidence"
         ),
         "blend": blend_meta,
+        "opponent_tendency_sit": tend_meta,
         "residuals": {
             "raw_residual_home": residual_model.get("raw_residual_home"),
             "raw_residual_away": residual_model.get("raw_residual_away"),
@@ -2243,6 +2686,11 @@ def _build_markets(
     opening_ml = event.get("opening_moneyline")
     current_ml = event.get("current_moneyline")
     move = event.get("market_movement") or {}
+    sport = str(event.get("sport") or _SPORT).upper()
+    # No chalk-forcing deadband. With market-anchored residuals,
+    # near-zero deltas are common; forcing the market favorite there
+    # made slates pile onto giving points / favorites.
+    spread_deadband = 0.0
 
     if market_spread is not None:
         # Home-team spread line (nflverse convention).
@@ -2270,14 +2718,33 @@ def _build_markets(
             ),
             "applied": applied_engine,
         }
-        # Market at -110 each side → ~52.4% implied before vig.
-        market_p_raw = american_to_implied_prob(_DEFAULT_PRICE)
-        market_p, _ = remove_vig_two_way(
-            market_p_raw,
-            market_p_raw,
+        # No two-sided ATS book quotes in Phase 1 — market_p unavailable.
+        # reference_probability=0.5 is diagnostic only (not a sportsbook).
+        reference_p = REFERENCE_PROBABILITY
+        market_p = None
+        no_vig_market_p = None
+        market_p_source = "unavailable"
+        # Favorable side: home cover >= 50%, unless disagreement is
+        # inside the deadband — then stay with the market favorite.
+        spread_delta = (
+            float(model_spread) - float(market_spread)
+            if model_spread is not None
+            else None
         )
-        # Favorable side: if model has home covering more than 50%.
-        side_is_home = cover_p is not None and cover_p >= 0.5
+        if cover_p is None:
+            side_is_home = (
+                float(market_spread) <= 0.0
+                if market_spread is not None
+                else True
+            )
+        elif (
+            spread_deadband > 0
+            and spread_delta is not None
+            and abs(spread_delta) < spread_deadband
+        ):
+            side_is_home = float(market_spread) <= 0.0
+        else:
+            side_is_home = cover_p >= 0.5
         raw_model_p = cover_p if side_is_home else (
             (1.0 - cover_p) if cover_p is not None else None
         )
@@ -2296,19 +2763,29 @@ def _build_markets(
             if model_spread is not None
             else None
         )
+        ref_edge_prob = reference_edge_probability(model_p)
+        mkt_edge_prob = market_edge_probability(model_p, market_p)
+        # Operational qualification still uses reference edge until
+        # real two-way ATS prices exist (thresholds unchanged).
         edge_prob = (
-            round((float(model_p) - float(market_p)) * 100.0, 1)
-            if model_p is not None and market_p is not None
-            else None
+            mkt_edge_prob if mkt_edge_prob is not None else ref_edge_prob
+        )
+        edge_basis = (
+            "vig_adjusted_market"
+            if mkt_edge_prob is not None
+            else "reference_coin_flip"
         )
         fair = implied_prob_to_american(model_p)
         push_p = None
         cover_block = (simulation or {}).get("cover_at_line") or {}
         if cover_block.get("push") is not None:
             push_p = float(cover_block["push"])
-        ev = expected_value_american(
+        # Assumed-juice EV at −110 is labeled; not price-based book EV.
+        assumed_ev = expected_value_american(
             model_p, _DEFAULT_PRICE, p_push=push_p or 0.0
         )
+        ev = None
+        ev_basis = "unavailable"
         spread_agreement = (
             ((event.get("model_disagreement") or {}).get("spread") or {})
             .get("model_agreement")
@@ -2316,8 +2793,8 @@ def _build_markets(
         confidence = confidence_from_edge(
             edge_points=edge_points,
             edge_probability=(
-                (model_p - market_p)
-                if model_p is not None and market_p is not None
+                (float(edge_prob) / 100.0)
+                if edge_prob is not None
                 else None
             ),
             model_coverage=model_spread is not None,
@@ -2345,11 +2822,18 @@ def _build_markets(
                 probability_calibration_method=cal.get("method"),
                 event=event,
                 market_probability=market_p,
-                no_vig_market_probability=market_p,
+                no_vig_market_probability=no_vig_market_p,
+                reference_probability=reference_p,
+                market_probability_source=market_p_source,
+                market_edge_probability=mkt_edge_prob,
+                reference_edge_probability=ref_edge_prob,
+                edge_probability_basis=edge_basis,
                 model_fair_price=fair,
                 edge=edge_points,
                 edge_probability=edge_prob,
-                expected_value=ev,
+                expected_value=assumed_ev,
+                expected_value_basis="assumed_minus_110",
+                price_expected_value=ev,
                 push_probability=push_p,
                 confidence=confidence,
                 model_agreement=spread_agreement,
@@ -2399,11 +2883,11 @@ def _build_markets(
             ),
             "applied": applied_engine,
         }
-        market_p_raw = american_to_implied_prob(_DEFAULT_PRICE)
-        market_p, _ = remove_vig_two_way(
-            market_p_raw,
-            market_p_raw,
-        )
+        reference_p = REFERENCE_PROBABILITY
+        market_p = None
+        no_vig_market_p = None
+        market_p_source = "unavailable"
+        # >= so exact market-tied totals do not become a 100% Under slate.
         side_over = over_p is not None and over_p >= 0.5
         raw_model_p = over_p if side_over else (
             (1.0 - over_p) if over_p is not None else None
@@ -2423,17 +2907,22 @@ def _build_markets(
             if model_total is not None
             else None
         )
+        ref_edge_prob = reference_edge_probability(model_p)
+        mkt_edge_prob = market_edge_probability(model_p, market_p)
         edge_prob = (
-            round((float(model_p) - float(market_p)) * 100.0, 1)
-            if model_p is not None and market_p is not None
-            else None
+            mkt_edge_prob if mkt_edge_prob is not None else ref_edge_prob
+        )
+        edge_basis = (
+            "vig_adjusted_market"
+            if mkt_edge_prob is not None
+            else "reference_coin_flip"
         )
         fair = implied_prob_to_american(model_p)
         push_p = None
         over_block = (simulation or {}).get("over_at_line") or {}
         if over_block.get("push") is not None:
             push_p = float(over_block["push"])
-        ev = expected_value_american(
+        assumed_ev = expected_value_american(
             model_p, _DEFAULT_PRICE, p_push=push_p or 0.0
         )
         total_agreement = (
@@ -2443,8 +2932,8 @@ def _build_markets(
         confidence = confidence_from_edge(
             edge_points=edge_points,
             edge_probability=(
-                (model_p - market_p)
-                if model_p is not None and market_p is not None
+                (float(edge_prob) / 100.0)
+                if edge_prob is not None
                 else None
             ),
             model_coverage=model_total is not None,
@@ -2470,11 +2959,18 @@ def _build_markets(
                 probability_calibration_method=cal.get("method"),
                 event=event,
                 market_probability=market_p,
-                no_vig_market_probability=market_p,
+                no_vig_market_probability=no_vig_market_p,
+                reference_probability=reference_p,
+                market_probability_source=market_p_source,
+                market_edge_probability=mkt_edge_prob,
+                reference_edge_probability=ref_edge_prob,
+                edge_probability_basis=edge_basis,
                 model_fair_price=fair,
                 edge=edge_points,
                 edge_probability=edge_prob,
-                expected_value=ev,
+                expected_value=assumed_ev,
+                expected_value_basis="assumed_minus_110",
+                price_expected_value=None,
                 push_probability=push_p,
                 confidence=confidence,
                 model_agreement=total_agreement,
@@ -2493,7 +2989,14 @@ def _build_markets(
         )
 
     # Moneyline from shared probability engine (logistic or sim).
-    if model_spread is not None:
+    # Require a real market anchor (spread or listed ML). Otherwise
+    # we synthesize a useless ~-105 coin-flip price for every game.
+    has_moneyline_market = (
+        market_spread is not None
+        or current_ml is not None
+        or opening_ml is not None
+    )
+    if model_spread is not None and has_moneyline_market:
         home_win_logistic = win_probability_from_spread(model_spread)
         home_win_p = win_probability_from_engine(
             engine=applied_engine,
@@ -2505,110 +3008,157 @@ def _build_markets(
             "simulation": (simulation or {}).get("home_win_prob"),
             "applied": applied_engine,
         }
-        # Market home win from market spread (logistic benchmark).
-        market_home_win = (
-            win_probability_from_spread(market_spread) or 0.5
+        # Side pick may use spread logistic as a ranking aid only —
+        # never as market_probability.
+        spread_home_win = (
+            win_probability_from_spread(market_spread)
             if market_spread is not None
-            else 0.5
+            else None
         )
+        side_anchor = float(spread_home_win) if spread_home_win is not None else 0.5
         side_home, cal = _moneyline_side_after_calibration(
             home_win_p,
+            market_home_win=side_anchor,
             cal_model=_calibration_for_market(
                 calibrations, "moneyline"
             ),
+            # Winner side (not value side) so ML stays coherent with
+            # projected scores / spread favorite when anchored to market.
+            pick_by_edge=False,
         )
         model_p = cal["model_probability"]
-        market_p = (
-            market_home_win if side_home else (1.0 - market_home_win)
-        )
         selection = home if side_home else away
         fair = implied_prob_to_american(model_p)
-        # Synthetic market American price from market_p.
-        market_price = implied_prob_to_american(market_p) or -110
-        # Re-apply light juice for display.
-        if market_price < 0:
-            market_price = min(market_price, -105)
-        else:
-            market_price = max(market_price, 100)
-        edge_prob = (
-            round((float(model_p) - float(market_p)) * 100.0, 1)
-            if model_p is not None
-            else None
-        )
-        # Moneyline has no push at full game (ties rare / voided).
-        ev = expected_value_american(model_p, market_price, p_push=0.0)
-        ml_agreement = (
-            ((event.get("model_disagreement") or {}).get("spread") or {})
-            .get("model_agreement")
-        )
-        confidence = confidence_from_edge(
-            edge_probability=(
-                (model_p - market_p) if model_p is not None else None
-            ),
-            model_coverage=True,
-            thresholds=conf_thresholds,
-            market_type="moneyline",
-            model_agreement=ml_agreement,
-        )
-        # Prefer stored/derived home ML; flip for away selection.
         open_home_ml = (
             int(opening_ml) if opening_ml is not None else None
         )
         cur_home_ml = (
             int(current_ml) if current_ml is not None else None
         )
-        if side_home:
-            open_price = open_home_ml
-            display_price = cur_home_ml or int(market_price)
-        else:
-            open_price = None
-            if opening_spread is not None:
-                away_open_p = 1.0 - (
-                    1.0
-                    / (1.0 + math_exp_safe(float(opening_spread) / 7.0))
+        # Market probability only from actual moneyline odds.
+        offered_home = cur_home_ml if cur_home_ml is not None else open_home_ml
+        market_p = None
+        no_vig_market_p = None
+        market_p_source = "unavailable"
+        market_implied = None
+        display_price = None
+        open_price = None
+        if offered_home is not None:
+            # Single-side American — store vigged implied; no-vig
+            # requires a true two-way quote.
+            home_implied = american_to_implied_prob(offered_home)
+            if home_implied is not None:
+                market_implied = (
+                    float(home_implied)
+                    if side_home
+                    else (1.0 - float(home_implied))
                 )
-                open_price = implied_prob_to_american(away_open_p)
-            display_price = int(market_price)
-
-        markets.append(
-            _market_row(
-                market_id=f"{event_id}:moneyline",
-                event_id=event_id,
-                event_label=label,
-                start_time=start,
-                market_type="moneyline",
-                selection=str(selection or ""),
-                line=None,
-                price=display_price,
-                model_projection=None,
-                market_projection=None,
-                model_probability=model_p,
-                raw_model_probability=cal.get("raw_model_probability"),
-                probability_calibrated=bool(cal.get("calibrated")),
-                probability_calibration_method=cal.get("method"),
-                event=event,
-                market_probability=market_p,
-                no_vig_market_probability=market_p,
-                model_fair_price=fair,
-                edge=edge_prob,
-                edge_probability=edge_prob,
-                expected_value=ev,
-                push_probability=0.0,
-                confidence=confidence,
-                model_agreement=ml_agreement,
-                classification_thresholds=qual_thresholds,
-                home_team=home,
-                away_team=away,
-                opening_price=open_price,
-                line_move=move.get("moneyline_move"),
-                opportunity=_moneyline_opportunity(
-                    selection=str(selection or ""),
-                    model_probability=model_p,
-                    market_probability=market_p,
-                    edge_probability=edge_prob,
-                ),
-            )
+                market_p = market_implied
+                no_vig_market_p = None
+                market_p_source = "single_side_american"
+            if side_home:
+                display_price = int(offered_home)
+                open_price = open_home_ml
+            else:
+                away_close = implied_prob_to_american(
+                    1.0 - float(american_to_implied_prob(offered_home) or 0.5)
+                )
+                display_price = (
+                    int(away_close) if away_close is not None else None
+                )
+                if open_home_ml is not None:
+                    away_open = implied_prob_to_american(
+                        1.0
+                        - float(
+                            american_to_implied_prob(open_home_ml) or 0.5
+                        )
+                    )
+                    open_price = (
+                        int(away_open) if away_open is not None else None
+                    )
+        ref_edge_prob = reference_edge_probability(model_p)
+        if market_p_source == "two_way_american":
+            mkt_edge_prob = market_edge_probability(model_p, market_p)
+            edge_prob = mkt_edge_prob
+            edge_basis = "vig_adjusted_market"
+        elif market_p is not None:
+            mkt_edge_prob = None
+            edge_prob = market_edge_probability(model_p, market_p)
+            edge_basis = "single_side_american"
+        else:
+            mkt_edge_prob = None
+            edge_prob = ref_edge_prob
+            edge_basis = "reference_coin_flip"
+        price_ev = (
+            expected_value_american(model_p, display_price, p_push=0.0)
+            if display_price is not None
+            else None
         )
+        ev_basis = (
+            "offered_price" if price_ev is not None else "unavailable"
+        )
+        ml_agreement = (
+            ((event.get("model_disagreement") or {}).get("spread") or {})
+            .get("model_agreement")
+        )
+        confidence = confidence_from_edge(
+            edge_probability=(
+                (float(edge_prob) / 100.0)
+                if edge_prob is not None
+                else None
+            ),
+            model_coverage=True,
+            thresholds=conf_thresholds,
+            market_type="moneyline",
+            model_agreement=ml_agreement,
+        )
+        if model_p is not None:
+            markets.append(
+                _market_row(
+                    market_id=f"{event_id}:moneyline",
+                    event_id=event_id,
+                    event_label=label,
+                    start_time=start,
+                    market_type="moneyline",
+                    selection=str(selection or ""),
+                    line=None,
+                    price=display_price,
+                    model_projection=None,
+                    market_projection=None,
+                    model_probability=model_p,
+                    raw_model_probability=cal.get("raw_model_probability"),
+                    probability_calibrated=bool(cal.get("calibrated")),
+                    probability_calibration_method=cal.get("method"),
+                    event=event,
+                    market_probability=market_p,
+                    no_vig_market_probability=no_vig_market_p,
+                    reference_probability=REFERENCE_PROBABILITY,
+                    market_probability_source=market_p_source,
+                    market_edge_probability=mkt_edge_prob,
+                    reference_edge_probability=ref_edge_prob,
+                    edge_probability_basis=edge_basis,
+                    model_fair_price=fair,
+                    edge=edge_prob,
+                    edge_probability=edge_prob,
+                    expected_value=price_ev,
+                    expected_value_basis=ev_basis,
+                    price_expected_value=price_ev,
+                    push_probability=0.0,
+                    confidence=confidence,
+                    model_agreement=ml_agreement,
+                    classification_thresholds=qual_thresholds,
+                    home_team=home,
+                    away_team=away,
+                    opening_price=open_price,
+                    line_move=move.get("moneyline_move"),
+                    opportunity=_moneyline_opportunity(
+                        selection=str(selection or ""),
+                        model_probability=model_p,
+                        market_probability=market_p,
+                        edge_probability=edge_prob,
+                    ),
+                )
+            )
 
     return markets
 
@@ -2653,6 +3203,13 @@ def _market_row(
     event: dict[str, Any] | None = None,
     push_probability: float | None = None,
     no_vig_market_probability: float | None = None,
+    reference_probability: float | None = None,
+    market_probability_source: str | None = None,
+    market_edge_probability: float | None = None,
+    reference_edge_probability: float | None = None,
+    edge_probability_basis: str | None = None,
+    expected_value_basis: str | None = None,
+    price_expected_value: float | None = None,
     model_agreement: float | None = None,
     classification_thresholds: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -2682,6 +3239,11 @@ def _market_row(
         if expected_value is not None
         else None
     )
+    price_ev_pct = (
+        round(float(price_expected_value) * 100.0, 1)
+        if price_expected_value is not None
+        else None
+    )
     ensemble_block = disagreement_for_market(
         (event or {}).get("model_disagreement"),
         market_type,
@@ -2689,6 +3251,14 @@ def _market_row(
     agreement = model_agreement
     if agreement is None and isinstance(ensemble_block, dict):
         agreement = num(ensemble_block.get("model_agreement"))
+    ev_basis = expected_value_basis or (
+        "offered_price" if ev_pct is not None else "unavailable"
+    )
+    edge_basis = edge_probability_basis
+    # Assumed −110 ATS/OU juice is never a qualifying offered price.
+    offered_for_qualification = (
+        price if ev_basis == "offered_price" else None
+    )
     decision = evaluate_market_decision(
         market_type=market_type,
         selection=selection,
@@ -2708,10 +3278,13 @@ def _market_row(
             "probability_calibrated": probability_calibrated,
         },
         probability_calibrated=probability_calibrated,
-        offered_odds=price,
+        offered_odds=offered_for_qualification,
         push_probability=push_probability,
         model_agreement=agreement,
         classification_thresholds=classification_thresholds,
+        expected_value_basis=ev_basis,
+        edge_probability_basis=edge_basis,
+        market_probability_source=market_probability_source,
     )
     bet = decision.get("bet") or {}
     prediction = decision.get("prediction") or {}
@@ -2722,10 +3295,12 @@ def _market_row(
         "event_id": event_id,
         "event_label": event_label,
         "start_time": start_time,
-        "sport": _SPORT,
-        "league": _LEAGUE,
+        "sport": (event or {}).get("sport") or _SPORT,
+        "league": (event or {}).get("league") or _LEAGUE,
         "home_team": home_team,
         "away_team": away_team,
+        "home_logo_url": (event or {}).get("home_logo_url"),
+        "away_logo_url": (event or {}).get("away_logo_url"),
         "market_type": market_type,
         "market_subtype": None,
         "selection": selection,
@@ -2733,15 +3308,16 @@ def _market_row(
         "offered_line": line,
         "price": price,
         "offered_odds": price,
-        "opening_line": opening_line if opening_line is not None else line,
-        "opening_price": (
-            opening_price if opening_price is not None else price
-        ),
+        "opening_line": opening_line,
+        "opening_price": opening_price,
         "current_line": line,
         "current_price": price,
         "line_move": line_move,
         "sportsbook": "consensus",
-        "market_timestamp": None,
+        "market_timestamp": (
+            (event or {}).get("market_timestamp")
+            or (event or {}).get("start_time")
+        ),
         "model_probability": (
             round(float(model_probability), 4)
             if model_probability is not None
@@ -2773,18 +3349,27 @@ def _market_row(
         "no_vig_market_probability": (
             round(float(no_vig_market_probability), 4)
             if no_vig_market_probability is not None
-            else (
-                round(float(market_probability), 4)
-                if market_probability is not None
-                else None
-            )
+            else None
         ),
+        "reference_probability": (
+            round(float(reference_probability), 4)
+            if reference_probability is not None
+            else None
+        ),
+        "market_probability_source": (
+            market_probability_source or "unavailable"
+        ),
+        "market_edge_probability": market_edge_probability,
+        "reference_edge_probability": reference_edge_probability,
+        "edge_probability_basis": edge_probability_basis,
         "model_fair_price": model_fair_price,
         "model_projection": model_projection,
         "market_implied_projection": market_projection,
         "edge": edge,
         "edge_probability": edge_probability,
         "expected_value": ev_pct,
+        "expected_value_basis": ev_basis,
+        "price_expected_value": price_ev_pct,
         "confidence": confidence,
         "confidence_explanation": confidence_explanation(
             confidence
@@ -2921,25 +3506,36 @@ def _total_opportunity(
 def _moneyline_side_after_calibration(
     home_win_p: float,
     *,
+    market_home_win: float = 0.5,
     cal_model: dict[str, Any] | None,
+    pick_by_edge: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
-    """Choose the moneyline side that matches the shown win probability.
+    """Choose the moneyline side to price and display.
 
-    The raw favorite can fall under 50% once probability calibration
-    is applied. Selecting that side would say a team with a losing
-    chance is the pick, so the opponent is used instead and the
-    displayed probability is the complement.
+    Default: the side the model gives >= 50% to win. With
+    ``pick_by_edge``, choose the side with the better model-vs-market
+    edge so a favorite-win / dog-cover view does not force chalk on
+    the moneyline when the model is softer than the market.
     """
 
     home_raw = float(home_win_p)
-    side_home = home_raw >= 0.5
+    market_home = float(market_home_win)
+    if pick_by_edge:
+        home_edge = home_raw - market_home
+        if abs(home_edge) < 1e-9:
+            side_home = home_raw >= 0.5
+        else:
+            side_home = home_edge > 0.0
+    else:
+        side_home = home_raw >= 0.5
     raw_model_p = home_raw if side_home else (1.0 - home_raw)
     cal = calibrate_market_probability(
         raw_model_p,
         model=cal_model,
     )
     model_p = cal.get("model_probability")
-    if model_p is None or float(model_p) >= 0.5:
+    # Value picks may sit under 50% win probability — keep them.
+    if pick_by_edge or model_p is None or float(model_p) >= 0.5:
         return side_home, cal
 
     flipped_p = round(1.0 - float(model_p), 4)

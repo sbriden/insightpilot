@@ -18,6 +18,9 @@ from app.analysis.insights.betting.player_context import (
     team_injury_context,
 )
 from app.analysis.insights.betting.pricing import num
+from app.analysis.insights.betting.opponent_tendency import (
+    load_opponent_tendency_context,
+)
 from app.analysis.insights.betting.residual_features import (
     build_residual_features,
 )
@@ -48,9 +51,10 @@ def build_challenger_training_rows(
     if not games:
         return []
 
-    # Cache strength + injury context by week.
+    # Cache strength + injury + tendency context by week.
     context_by_week: dict[int, dict[str, Any]] = {}
     injury_by_week: dict[int, dict[str, Any]] = {}
+    tendency_by_week: dict[int, dict[str, Any]] = {}
     rest_by_team = rest_days_by_game(season=season)
     rows: list[dict[str, Any]] = []
 
@@ -63,6 +67,15 @@ def build_challenger_training_rows(
                 season=season,
                 before_week=week,
             )
+        if week not in tendency_by_week:
+            try:
+                tendency_by_week[week] = load_opponent_tendency_context(
+                    season=season,
+                    before_week=week,
+                    sport="NFL",
+                )
+            except Exception:
+                tendency_by_week[week] = {"profiles": {}}
         if week not in injury_by_week:
             try:
                 injury_by_week[week] = load_week_player_context(
@@ -72,6 +85,7 @@ def build_challenger_training_rows(
             except Exception:
                 injury_by_week[week] = {"by_team": {}}
         context = context_by_week[week]
+        tendency_context = tendency_by_week[week]
         player_context = injury_by_week[week]
         home_id = str(game.get("home_team_id") or "")
         away_id = str(game.get("away_team_id") or "")
@@ -150,6 +164,7 @@ def build_challenger_training_rows(
             away_injury_adj=away_adj,
             home_injury=home_injury,
             away_injury=away_injury,
+            tendency_context=tendency_context,
         )
         rows.append(
             {
@@ -188,7 +203,9 @@ def _load_completed_market_games(
     *,
     season: int,
     through_week: int | None = None,
+    schema: str | None = None,
 ) -> list[dict[str, Any]]:
+    db_schema = schema or FANTASY_SCHEMA
     clauses = [
         "g.season = :season",
         "g.home_score IS NOT NULL",
@@ -219,8 +236,8 @@ def _load_completed_market_games(
           m.opening_over_under,
           m.opening_home_implied_total,
           m.opening_away_implied_total
-        FROM {FANTASY_SCHEMA}.dim_game g
-        JOIN {FANTASY_SCHEMA}.fact_game_market m
+        FROM {db_schema}.dim_game g
+        JOIN {db_schema}.fact_game_market m
           ON m.game_id = g.game_id
         WHERE {' AND '.join(clauses)}
         ORDER BY g.game_id, m.timestamp DESC NULLS LAST

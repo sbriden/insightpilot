@@ -49,6 +49,7 @@ import {
 import UploadCard from "@/components/upload/UploadCard";
 import DataSourcePicker from "@/components/datasets/DataSourcePicker";
 import NflverseSourcePanel from "@/components/datasets/NflverseSourcePanel";
+import SportsdataverseSourcePanel from "@/components/datasets/SportsdataverseSourcePanel";
 
 import CreateProductFlowProgress from "@/components/products/CreateProductFlowProgress";
 
@@ -81,8 +82,24 @@ export default function CreateDataProductPage() {
     );
 
   const [
+    sportsdataverseSelection,
+    setSportsdataverseSelection,
+  ] =
+    useState<NflverseSelection | null>(
+      null
+    );
+
+  const [
     nflverseSampleRows,
     setNflverseSampleRows,
+  ] =
+    useState<Record<string, unknown>[]>(
+      []
+    );
+
+  const [
+    sportsdataverseSampleRows,
+    setSportsdataverseSampleRows,
   ] =
     useState<Record<string, unknown>[]>(
       []
@@ -274,21 +291,33 @@ export default function CreateDataProductPage() {
   const hasActiveSource =
     Boolean(
       file ||
-      nflverseSelection
+      nflverseSelection ||
+      sportsdataverseSelection
     );
 
   const activeSourceLabel =
     file?.name ??
     nflverseSelection?.label ??
+    sportsdataverseSelection?.label ??
     null;
 
   const skipMappingStep =
-    sourceKind === "nflverse" &&
-    Boolean(
-      nflverseSelection?.preMapped ??
-      true
-    ) &&
-    Boolean(nflverseSelection);
+    (
+      sourceKind === "nflverse" &&
+      Boolean(
+        nflverseSelection?.preMapped ??
+        true
+      ) &&
+      Boolean(nflverseSelection)
+    ) ||
+    (
+      sourceKind === "sportsdataverse" &&
+      Boolean(
+        sportsdataverseSelection?.preMapped ??
+        true
+      ) &&
+      Boolean(sportsdataverseSelection)
+    );
 
   const flowSteps =
     getCreateFlowSteps({
@@ -708,11 +737,14 @@ export default function CreateDataProductPage() {
   ) {
 
     /*
-     * Curated connectors (nflverse) ship with canonical
-     * column names and prebuilt identity mappings.
+     * Curated connectors (nflverse / sportsdataverse) ship
+     * with canonical column names and prebuilt identity mappings.
      */
     if (
-      nflverseSelection?.preMapped &&
+      (
+        nflverseSelection?.preMapped
+        || sportsdataverseSelection?.preMapped
+      ) &&
       prebuiltMappings.length > 0
     ) {
 
@@ -1540,6 +1572,7 @@ export default function CreateDataProductPage() {
 
     setFile(nextFile);
     setNflverseSelection(null);
+    setSportsdataverseSelection(null);
 
 
     if (!nextFile) {
@@ -1588,6 +1621,7 @@ export default function CreateDataProductPage() {
   ) {
 
     setFile(null);
+    setSportsdataverseSelection(null);
     setNflverseSelection({
       ...selection,
       preMapped:
@@ -1668,6 +1702,88 @@ export default function CreateDataProductPage() {
   }
 
 
+  async function handleSportsdataverseLoaded(
+    selection: NflverseSelection,
+    fields: DatasetField[],
+    nextPrebuiltMappings: FieldMapping[] = [],
+    nextSampleRows: Record<string, unknown>[] = [],
+    _preview?: NflversePreviewResult
+  ) {
+
+    setFile(null);
+    setNflverseSelection(null);
+    setSportsdataverseSelection({
+      ...selection,
+      preMapped:
+        selection.preMapped ?? true,
+    });
+    setPrebuiltMappings(
+      nextPrebuiltMappings
+    );
+    setSportsdataverseSampleRows(
+      nextSampleRows
+    );
+
+    setTypeRecommendation({
+      datasetTypeId: "college_football",
+      confidence: 0.9,
+      label: "College Football",
+      explanation:
+        "Curated sportsdataverse college football source.",
+      confidenceByTypeId: {
+        college_football: 0.9,
+      },
+    });
+
+    try {
+
+      await applySourceFields(
+        fields,
+        {
+          advanceToDatasetType: false,
+        }
+      );
+
+      setFieldMappings(
+        nextPrebuiltMappings
+      );
+      setMappingComplete(
+        nextPrebuiltMappings.length > 0
+      );
+
+    } catch (error) {
+
+      setSportsdataverseSelection(null);
+      setPrebuiltMappings([]);
+      setSportsdataverseSampleRows([]);
+      setMappingComplete(false);
+
+    }
+
+  }
+
+
+  function handleSportsdataverseClear() {
+
+    setSportsdataverseSelection(null);
+    setSportsdataverseSampleRows([]);
+    setPrebuiltMappings([]);
+    setUploadedFields([]);
+    setFieldMappings([]);
+    setMappingResult(null);
+    setMappingComplete(false);
+    setShowFieldMapper(false);
+    setProductCoverage({});
+    setSelectedProductIds([]);
+    setMappingsReused(false);
+    setIdentifiedConcepts(null);
+    setTypeRecommendation(null);
+    setGrainResult(null);
+    setSelectedDatasetType(null);
+
+  }
+
+
   function handleSourceKindChange(
     kind: DataSourceKind
   ) {
@@ -1676,6 +1792,8 @@ export default function CreateDataProductPage() {
     setFile(null);
     setNflverseSelection(null);
     setNflverseSampleRows([]);
+    setSportsdataverseSelection(null);
+    setSportsdataverseSampleRows([]);
     setPrebuiltMappings([]);
     setUploadedFields([]);
     setFieldMappings([]);
@@ -1838,7 +1956,7 @@ export default function CreateDataProductPage() {
     upload: {
       title: "Choose a data source",
       description:
-        "Upload a CSV or connect to nflverse. Curated sources include a data preview and arrive with fields already mapped.",
+        "Upload a CSV or connect to nflverse / sportsdataverse. Curated sources include a data preview and arrive with fields already mapped.",
     },
     "dataset-type": {
       title: "Confirm dataset type",
@@ -1949,6 +2067,28 @@ export default function CreateDataProductPage() {
                   }
                   onFileChange={
                     handleFileChange
+                  }
+                />
+
+              ) : sourceKind === "sportsdataverse" ? (
+
+                <SportsdataverseSourcePanel
+                  loading={
+                    mappingLoading ||
+                    classificationLoading ||
+                    analysisLoading
+                  }
+                  selection={
+                    sportsdataverseSelection
+                  }
+                  sampleRows={
+                    sportsdataverseSampleRows
+                  }
+                  onLoaded={
+                    handleSportsdataverseLoaded
+                  }
+                  onClear={
+                    handleSportsdataverseClear
                   }
                 />
 

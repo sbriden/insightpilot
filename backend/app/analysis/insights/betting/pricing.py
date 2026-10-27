@@ -2,12 +2,33 @@
 Betting probability / edge helpers.
 
 American odds conventions for Phase 1 game markets.
+
+Probability field semantics (do not conflate):
+  model_probability
+      Model P(selected outcome).
+  market_implied_probability
+      Raw sportsbook implied from offered American odds (with vig).
+  no_vig_market_probability / market_probability
+      Vig-adjusted market P from comparable two-sided quotes.
+      Never a synthetic −110 coin-flip.
+  reference_probability
+      Diagnostic coin-flip baseline (0.5). Not a sportsbook market.
+  market_edge_probability
+      model_probability − no_vig_market_probability (pp when *100).
+  reference_edge_probability
+      model_probability − reference_probability (diagnostic only).
+  expected_value
+      Price-based EV from actual offered American odds only.
 """
 
 from __future__ import annotations
 
 import math
 from typing import Any
+
+# Diagnostic ATS/OU baseline when no two-sided book quote exists.
+# Never write this into market_probability.
+REFERENCE_PROBABILITY = 0.5
 
 
 def american_to_implied_prob(
@@ -21,7 +42,8 @@ def american_to_implied_prob(
         value = float(odds)
     except (TypeError, ValueError):
         return None
-    if value == 0:
+    # Valid American odds are <= -100 or >= +100.
+    if -100.0 < value < 100.0:
         return None
     if value > 0:
         return 100.0 / (value + 100.0)
@@ -50,12 +72,95 @@ def remove_vig_two_way(
     prob_a: float | None,
     prob_b: float | None,
 ) -> tuple[float | None, float | None]:
+    """
+    Normalize two complementary implied probabilities to sum to 1.
+
+    Returns (None, None) when either side is missing or invalid.
+    """
+
     if prob_a is None or prob_b is None:
-        return prob_a, prob_b
-    total = float(prob_a) + float(prob_b)
-    if total <= 0:
-        return prob_a, prob_b
-    return float(prob_a) / total, float(prob_b) / total
+        return None, None
+    try:
+        a = float(prob_a)
+        b = float(prob_b)
+    except (TypeError, ValueError):
+        return None, None
+    if a <= 0.0 or b <= 0.0 or a >= 1.0 or b >= 1.0:
+        return None, None
+    total = a + b
+    if total <= 1.0:
+        # Already fair or underround — still normalize if > 0.
+        if total <= 0:
+            return None, None
+    return a / total, b / total
+
+
+def market_probs_from_two_way_american(
+    odds_a: float | int | None,
+    odds_b: float | int | None,
+) -> dict[str, Any]:
+    """
+    Build vigged + no-vig market probabilities from two-sided American odds.
+
+    When either side is missing/invalid, market probabilities are
+    unavailable (not synthesized).
+    """
+
+    raw_a = american_to_implied_prob(odds_a)
+    raw_b = american_to_implied_prob(odds_b)
+    if raw_a is None or raw_b is None:
+        return {
+            "market_implied_probability": None,
+            "no_vig_market_probability": None,
+            "market_probability": None,
+            "market_probability_source": "unavailable",
+            "counterpart_implied_probability": None,
+        }
+    fair_a, fair_b = remove_vig_two_way(raw_a, raw_b)
+    return {
+        "market_implied_probability": round(float(raw_a), 6),
+        "counterpart_implied_probability": round(float(raw_b), 6),
+        "no_vig_market_probability": (
+            round(float(fair_a), 6) if fair_a is not None else None
+        ),
+        "market_probability": (
+            round(float(fair_a), 6) if fair_a is not None else None
+        ),
+        "market_probability_source": (
+            "two_way_american" if fair_a is not None else "unavailable"
+        ),
+    }
+
+
+def reference_edge_probability(
+    model_probability: float | None,
+) -> float | None:
+    """Diagnostic edge vs coin-flip reference (percentage points)."""
+
+    if model_probability is None:
+        return None
+    try:
+        p = float(model_probability)
+    except (TypeError, ValueError):
+        return None
+    return round((p - REFERENCE_PROBABILITY) * 100.0, 1)
+
+
+def market_edge_probability(
+    model_probability: float | None,
+    market_probability: float | None,
+) -> float | None:
+    """Model − vig-adjusted market edge in percentage points."""
+
+    if model_probability is None or market_probability is None:
+        return None
+    try:
+        return round(
+            (float(model_probability) - float(market_probability)) * 100.0,
+            1,
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def spread_to_cover_probability(

@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import unittest
 
+from app.analysis.insights.betting.betting_sport import (
+    resolve_betting_sport,
+)
 from app.analysis.insights.betting.team_strength import (
     blend_market_and_strength,
     project_strength_scores,
+    _resolve_league_avg_ppg,
+    _strength_of_schedule_raw,
 )
 
 
@@ -15,10 +20,14 @@ def _profile(
     offense: float,
     defense: float,
     pace_z: float = 0.0,
+    sos: float = 0.0,
 ) -> dict:
     return {
         "offensive_efficiency": offense,
         "defensive_efficiency": defense,
+        "strength_of_schedule": sos,
+        "offense_sos": sos,
+        "defense_sos": sos,
         "pace": 28.0,
         "pace_z": pace_z,
         "offense": {
@@ -109,6 +118,72 @@ class TeamStrengthProjectionTests(unittest.TestCase):
         self.assertIsNone(home)
         self.assertIsNone(away)
         self.assertFalse(detail["available"])
+
+    def test_harder_sos_earns_projection_edge(self):
+        context = {
+            "league_avg_ppg": 22.5,
+            "sport": "NFL",
+            "profiles": {
+                "home": _profile(offense=0.5, defense=0.5, sos=1.5),
+                "away": _profile(offense=0.5, defense=0.5, sos=-1.5),
+            },
+        }
+        home, away, detail = project_strength_scores(
+            home_team_id="home",
+            away_team_id="away",
+            context=context,
+        )
+        assert home is not None and away is not None
+        self.assertGreater(home, away)
+        self.assertGreater(detail["sos_differential"], 0)
+        self.assertGreater(detail["sos_home_points"], 0)
+
+    def test_strength_of_schedule_raw_ranks_tough_slate(self):
+        offense_by_team = {
+            "soft": [{"opponent_id": "weak_d", "points": 30}],
+            "hard": [{"opponent_id": "elite_d", "points": 20}],
+        }
+        defense_by_team = {
+            "soft": [{"opponent_id": "weak_o"}],
+            "hard": [{"opponent_id": "elite_o"}],
+        }
+        raw_off = {
+            "weak_o": {"points": 14.0},
+            "elite_o": {"points": 30.0},
+        }
+        raw_def = {
+            "weak_d": {"points_allowed": 30.0},
+            "elite_d": {"points_allowed": 14.0},
+        }
+        sos = _strength_of_schedule_raw(
+            offense_by_team=offense_by_team,
+            defense_by_team=defense_by_team,
+            raw_off_baselines=raw_off,
+            raw_def_baselines=raw_def,
+            league_avg_ppg=22.5,
+        )
+        self.assertGreater(
+            sos["hard"]["strength_of_schedule"],
+            sos["soft"]["strength_of_schedule"],
+        )
+
+    def test_cfb_league_avg_uses_game_weighted_points(self):
+        # Many low-scoring teams would drag an equal-weight mean down.
+        offense_by_team = {
+            f"low{i}": [{"points": 6.0}] for i in range(20)
+        }
+        offense_by_team["power"] = [{"points": 35.0}] * 10
+        resolved = _resolve_league_avg_ppg(
+            offense_by_team=offense_by_team,
+            league_off={"points": 8.0},  # equal-weight trap
+            league_def={"points_allowed": 8.0},
+            default_ppg=28.0,
+            sport_config=resolve_betting_sport("CFB"),
+        )
+        # Game-weighted ≈ (20*6 + 10*35) / 30 = 15.7, floored by
+        # CFB band to 0.9 * 28 = 25.2.
+        self.assertGreaterEqual(resolved, 25.0)
+        self.assertLess(resolved, 28.0 * 1.15)
 
 
 if __name__ == "__main__":

@@ -277,6 +277,63 @@ export async function previewNflverseDataset(
 }
 
 
+export async function getSportsdataverseCatalog(): Promise<NflverseCatalog> {
+
+  const response =
+    await fetch(
+      `${API_BASE_URL}/api/sources/sportsdataverse/datasets`
+    );
+
+  return handleResponse<NflverseCatalog>(
+    response
+  );
+
+}
+
+
+export async function previewSportsdataverseDataset(
+  datasetId: string,
+  seasons: number[] = []
+): Promise<NflversePreviewResult> {
+
+  const response =
+    await fetch(
+      `${API_BASE_URL}/api/sources/sportsdataverse/preview`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          dataset_id: datasetId,
+          seasons,
+        }),
+      }
+    );
+
+  return handleResponse<NflversePreviewResult>(
+    response
+  );
+
+}
+
+
+export async function getSportsdataverseDataQuality(
+  live: boolean = true
+): Promise<Record<string, unknown>> {
+
+  const response =
+    await fetch(
+      `${API_BASE_URL}/api/sources/sportsdataverse/quality?live=${live ? "true" : "false"}`
+    );
+
+  return handleResponse<Record<string, unknown>>(
+    response
+  );
+
+}
+
+
 export type FantasyScoringFormat = "ppr" | "half_ppr" | "standard";
 
 
@@ -1992,6 +2049,118 @@ export async function refreshNflverseData(
 }
 
 
+export async function refreshSportsdataverseData(
+  modeOrScope:
+    | NflverseIngestMode
+    | "historical"
+    | "current"
+    | "incremental"
+    | "reprocess"
+    | "seasons" = "incremental",
+  seasons: number[] = [],
+  datasetIds: string[] = [],
+  persist: boolean = true,
+  layers: string[] = []
+): Promise<NflverseRefreshResult> {
+
+  const mode =
+    modeOrScope === "current"
+      ? "incremental"
+      : modeOrScope === "seasons"
+        ? undefined
+        : modeOrScope;
+
+  const response = await fetchWithRetry(
+    `${API_BASE_URL}/api/sources/sportsdataverse/refresh`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        mode,
+        scope: modeOrScope === "seasons" ? "seasons" : modeOrScope,
+        seasons,
+        dataset_ids: datasetIds,
+        layers,
+        persist,
+      }),
+    },
+    { attempts: 3, baseDelayMs: 750 }
+  );
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  return response.json();
+
+}
+
+export type ScoresandoddsLeague =
+  | "ncaaf"
+  | "nfl"
+  | "nba"
+  | "nhl"
+  | "mlb"
+  | "ncaab";
+
+export interface ScoresandoddsRefreshResult {
+  source_id?: string;
+  source?: string;
+  league?: ScoresandoddsLeague | string;
+  homepage?: string;
+  season?: number | null;
+  weeks?: number[];
+  dates?: Array<string | { date?: string }>;
+  fetched?: number;
+  matched?: number;
+  unmatched?: number;
+  skipped?: number;
+  persisted?: boolean;
+  note?: string | null;
+  sample_unmatched?: Array<{
+    week?: number | null;
+    away?: string | null;
+    home?: string | null;
+    spread?: number | null;
+    total?: number | null;
+  }>;
+}
+
+export async function refreshScoresandoddsData(options?: {
+  league?: ScoresandoddsLeague;
+  season?: number | null;
+  weeks?: number[];
+  dates?: string[];
+  persist?: boolean;
+}): Promise<ScoresandoddsRefreshResult> {
+  const response = await fetchWithRetry(
+    `${API_BASE_URL}/api/sources/scoresandodds/refresh`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        league: options?.league ?? "ncaaf",
+        season: options?.season ?? null,
+        weeks: options?.weeks ?? [],
+        dates: options?.dates ?? [],
+        persist: options?.persist ?? true,
+      }),
+    },
+    { attempts: 3, baseDelayMs: 750 }
+  );
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  return response.json();
+}
+
+
 export async function getNflverseDataQuality(
   live: boolean = true
 ): Promise<NflverseDataQualityResult> {
@@ -2837,6 +3006,8 @@ export interface BettingMarket {
   league?: string;
   home_team?: string | null;
   away_team?: string | null;
+  home_logo_url?: string | null;
+  away_logo_url?: string | null;
   market_type: BettingMarketType;
   selection: string;
   line?: number | null;
@@ -2979,6 +3150,46 @@ export interface BettingGameScript {
   underdog?: string | null;
 }
 
+export interface BettingOpponentTendencyProfile {
+  available?: boolean;
+  games?: number | null;
+  elite_n?: number | null;
+  soft_n?: number | null;
+  elite_margin_resid_mkt?: number | null;
+  soft_margin_resid_mkt?: number | null;
+  elite_margin_resid_model?: number | null;
+  soft_margin_resid_model?: number | null;
+  pass_d_tier_resid_mkt?: number | null;
+  resid_vol_mkt?: number | null;
+  consistency_mkt?: number | null;
+  market_edge_elite?: number | null;
+  market_edge_soft?: number | null;
+  by_tier?: Record<
+    string,
+    {
+      n?: number;
+      mean_margin_resid_mkt?: number | null;
+      mean_margin_resid_model?: number | null;
+    }
+  > | null;
+}
+
+export interface BettingOpponentTendency {
+  available?: boolean;
+  home?: BettingOpponentTendencyProfile | null;
+  away?: BettingOpponentTendencyProfile | null;
+  situational?: {
+    applied?: boolean;
+    home_pts?: number | null;
+    away_pts?: number | null;
+    home_faces_tier?: string | null;
+    away_faces_tier?: string | null;
+    reason?: string | null;
+  } | null;
+  games_used?: number | null;
+  before_week?: number | null;
+}
+
 export interface BettingEvent {
   event_id: string;
   sport?: string;
@@ -2991,6 +3202,8 @@ export interface BettingEvent {
   away_team?: string | null;
   home_team_name?: string | null;
   away_team_name?: string | null;
+  home_logo_url?: string | null;
+  away_logo_url?: string | null;
   label: string;
   market_spread?: number | null;
   market_total?: number | null;
@@ -3060,6 +3273,7 @@ export interface BettingEvent {
   injury_adjustment_away?: number | null;
   injuries?: BettingInjuryNote[];
   model_drivers?: string[];
+  opponent_tendency?: BettingOpponentTendency | null;
   injury_report_week?: number | null;
   primary_signal?: BettingSignal | null;
   market_ids?: string[];
@@ -3092,8 +3306,11 @@ export interface BettingSlate {
   injury_report_week?: number | null;
 }
 
+export type BettingSport = "NFL" | "CFB";
+
 export async function listBettingWeeks(
-  season?: number | null
+  season?: number | null,
+  sport: BettingSport = "NFL"
 ): Promise<{
   sport: string;
   league: string;
@@ -3105,7 +3322,7 @@ export async function listBettingWeeks(
   if (season != null) {
     params.set("season", String(season));
   }
-  params.set("sport", "NFL");
+  params.set("sport", sport);
   const query = `?${params.toString()}`;
   const response = await fetch(
     `${API_BASE_URL}/api/sources/nflverse/betting/weeks${query}`,
@@ -3117,9 +3334,10 @@ export async function listBettingWeeks(
 export async function getBettingSlate(options?: {
   season?: number | null;
   week?: number | null;
+  sport?: BettingSport;
 }): Promise<BettingSlate> {
   const params = new URLSearchParams();
-  params.set("sport", "NFL");
+  params.set("sport", options?.sport ?? "NFL");
   if (options?.season != null) {
     params.set("season", String(options.season));
   }
@@ -3403,9 +3621,10 @@ export interface BettingResultsPayload {
 export async function getBettingResults(options?: {
   season?: number | null;
   week?: number | null;
+  sport?: BettingSport;
 }): Promise<BettingResultsPayload> {
   const params = new URLSearchParams();
-  params.set("sport", "NFL");
+  params.set("sport", options?.sport ?? "NFL");
   if (options?.season != null) {
     params.set("season", String(options.season));
   }
@@ -3639,6 +3858,7 @@ export async function analyzeBettingPortfolio(payload: {
   positions: BettingPortfolioPosition[];
   season?: number | null;
   week?: number | null;
+  sport?: BettingSport;
   status_filter?: string;
 }): Promise<BettingPortfolioAnalyzeResult> {
   const response = await fetch(
@@ -3710,6 +3930,7 @@ export async function generateBettingPortfolio(payload: {
   risk_exposure: number;
   season?: number | null;
   week?: number | null;
+  sport?: BettingSport;
   risk?: "conservative" | "balanced" | "aggressive" | string;
   market_types?: string[];
 }): Promise<BettingPortfolioGenerateResult> {
@@ -3719,6 +3940,172 @@ export async function generateBettingPortfolio(payload: {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      cache: "no-store",
+    }
+  );
+  return handleResponse(response);
+}
+
+export type DailyBettingRisk =
+  | "conservative"
+  | "balanced"
+  | "aggressive";
+
+export interface DailyBettingPickLeg {
+  sport?: string | null;
+  event_id?: string | null;
+  event_label?: string | null;
+  market_type?: string | null;
+  selection?: string | null;
+  line?: number | null;
+  price?: number | null;
+  home_team?: string | null;
+  away_team?: string | null;
+  home_logo_url?: string | null;
+  away_logo_url?: string | null;
+  win_probability?: number | null;
+}
+
+export interface DailyBettingPick {
+  kind: "single" | "parlay" | string;
+  sport?: string | null;
+  sports?: string[];
+  event_id?: string | null;
+  event_label?: string | null;
+  market_key?: string | null;
+  market_type?: string | null;
+  selection?: string | null;
+  line?: number | null;
+  price?: number | null;
+  offered_odds?: number | null;
+  units: number;
+  win_probability?: number | null;
+  raw_implied_probability?: number | null;
+  fair_probability?: number | null;
+  selection_probability?: number | null;
+  selection_method?: string | null;
+  probability_source?: string | null;
+  risk_label?: string | null;
+  allocation_exponent?: number | null;
+  potential_profit?: number | null;
+  potential_payout?: number | null;
+  quote_timestamp?: string | null;
+  generated_at?: string | null;
+  reason_codes?: string[];
+  slate_mode?: string | null;
+  slate_mode_label?: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
+  home_logo_url?: string | null;
+  away_logo_url?: string | null;
+  start_time?: string | null;
+  source?: string | null;
+  legs?: DailyBettingPickLeg[];
+}
+
+export type DailyBettingSport =
+  | "NFL"
+  | "NCAAF"
+  | "NBA"
+  | "NHL"
+  | "MLB"
+  | "NCAAB";
+
+export interface DailySportAvailabilityRow {
+  sport: DailyBettingSport | string;
+  available: boolean;
+  candidates: number;
+  games: number;
+  error?: string | null;
+}
+
+export interface DailySportAvailabilityResult {
+  date: string;
+  timezone?: string;
+  sports: DailySportAvailabilityRow[];
+  available_sports: Array<DailyBettingSport | string>;
+  unavailable_sports: Array<DailyBettingSport | string>;
+}
+
+export async function listDailyBettingSports(options?: {
+  date?: string | null;
+}): Promise<DailySportAvailabilityResult> {
+  const params = new URLSearchParams();
+  if (options?.date) {
+    params.set("date", options.date);
+  }
+  const query = params.toString();
+  const response = await fetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/daily-slate/sports${
+      query ? `?${query}` : ""
+    }`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+export interface DailyBettingSlateResult {
+  date: string;
+  risk: DailyBettingRisk | string;
+  risk_label?: string;
+  slate_mode?: string;
+  slate_mode_label?: string;
+  total_units: number;
+  max_picks?: number | null;
+  allocated_units: number;
+  unallocated_units?: number;
+  unallocated_reason?: string | null;
+  sports: string[];
+  sports_requested?: string[];
+  picks: DailyBettingPick[];
+  meta?: {
+    candidate_count?: number;
+    eligible_markets?: number;
+    rejected_markets?: number;
+    selected_bets?: number;
+    sampled_count?: number;
+    singles?: number;
+    parlays?: number;
+    max_picks?: number | null;
+    timezone?: string;
+    selection?: string;
+    selection_method?: string;
+    allocation?: string;
+    allocation_exponent?: number;
+    risk_label?: string;
+    min_stake?: number;
+    max_stake?: number;
+    unit_sizing?: string;
+    slate_mode?: string;
+    slate_mode_label?: string;
+    probability_note?: string;
+    parlay_probability_note?: string;
+    seed?: number | null;
+    generated_at?: string;
+  };
+}
+
+export async function generateDailyBettingSlate(payload: {
+  total_units: number;
+  max_picks?: number | null;
+  risk?: DailyBettingRisk | string;
+  date?: string | null;
+  sports?: DailyBettingSport[] | string[];
+  seed?: number | null;
+}): Promise<DailyBettingSlateResult> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/daily-slate/generate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        total_units: payload.total_units,
+        max_picks: payload.max_picks ?? null,
+        risk: payload.risk ?? "balanced",
+        date: payload.date ?? null,
+        sports: payload.sports ?? null,
+        seed: payload.seed ?? null,
+      }),
       cache: "no-store",
     }
   );
@@ -3753,6 +4140,64 @@ export interface AnalyticalApplicationAnalysis {
   navigation_group?: string | null;
 }
 
+export type ApplicationLogoTypeSetting = "square" | "wordmark";
+
+export interface AnalyticalApplicationSettings {
+  show_left_nav: boolean;
+  show_top_tabs: boolean;
+  show_bottom_tabs: boolean;
+  show_analysis_title: boolean;
+  theme: string;
+  logo_type: ApplicationLogoTypeSetting;
+}
+
+export const DEFAULT_APPLICATION_SETTINGS: AnalyticalApplicationSettings =
+  {
+    show_left_nav: true,
+    show_top_tabs: true,
+    show_bottom_tabs: false,
+    show_analysis_title: true,
+    theme: "midnight",
+    logo_type: "square",
+  };
+
+export function normalizeApplicationSettings(
+  value?: Partial<AnalyticalApplicationSettings> | null
+): AnalyticalApplicationSettings {
+  const allowedThemes = new Set([
+    "midnight",
+    "daylight",
+    "carbon",
+    "stadium",
+    "harbor",
+    "slate",
+  ]);
+  const themeCandidate =
+    typeof value?.theme === "string" && value.theme.trim()
+      ? value.theme.trim()
+      : DEFAULT_APPLICATION_SETTINGS.theme;
+  const logoType =
+    value?.logo_type === "wordmark" ? "wordmark" : "square";
+  return {
+    show_left_nav:
+      value?.show_left_nav ??
+      DEFAULT_APPLICATION_SETTINGS.show_left_nav,
+    show_top_tabs:
+      value?.show_top_tabs ??
+      DEFAULT_APPLICATION_SETTINGS.show_top_tabs,
+    show_bottom_tabs:
+      value?.show_bottom_tabs ??
+      DEFAULT_APPLICATION_SETTINGS.show_bottom_tabs,
+    show_analysis_title:
+      value?.show_analysis_title ??
+      DEFAULT_APPLICATION_SETTINGS.show_analysis_title,
+    theme: allowedThemes.has(themeCandidate)
+      ? themeCandidate
+      : DEFAULT_APPLICATION_SETTINGS.theme,
+    logo_type: logoType,
+  };
+}
+
 export interface AnalyticalApplication {
   id: string;
   name: string;
@@ -3760,6 +4205,7 @@ export interface AnalyticalApplication {
   icon?: string | null;
   status: string;
   analyses: AnalyticalApplicationAnalysis[];
+  settings?: AnalyticalApplicationSettings;
   created_at?: string;
   updated_at?: string;
 }
@@ -3789,6 +4235,7 @@ export async function createAnalyticalApplication(payload: {
   description?: string;
   icon?: string | null;
   analyses: AnalyticalApplicationAnalysis[];
+  settings?: AnalyticalApplicationSettings;
 }): Promise<AnalyticalApplication> {
   const response = await fetch(
     `${API_BASE_URL}/api/applications`,
@@ -3809,6 +4256,7 @@ export async function updateAnalyticalApplication(
     description?: string;
     icon?: string | null;
     analyses?: AnalyticalApplicationAnalysis[];
+    settings?: AnalyticalApplicationSettings;
   }
 ): Promise<AnalyticalApplication> {
   const response = await fetch(

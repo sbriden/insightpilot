@@ -36,6 +36,50 @@ class NflverseRefreshRequest(BaseModel):
     persist: bool = True
 
 
+class SportsdataversePreviewRequest(BaseModel):
+    dataset_id: str
+    seasons: list[int] = Field(default_factory=list)
+
+
+class SportsdataverseRefreshRequest(BaseModel):
+    """
+    Ingest / refresh college_football tables from sportsdataverse.
+
+    mode:
+      - historical: multi-season bootstrap (dims + facts)
+      - incremental: current-season update
+      - reprocess: rebuild facts
+    """
+
+    mode: str | None = None
+    scope: str = "current"
+    seasons: list[int] = Field(default_factory=list)
+    layers: list[str] = Field(default_factory=list)
+    dataset_ids: list[str] = Field(default_factory=list)
+    persist: bool = True
+
+
+class ScoresandoddsRefreshRequest(BaseModel):
+    """
+    Refresh odds from ScoresAndOdds / Action Network.
+
+    ``league``:
+      - ``ncaaf`` → college_football.fact_game_market
+      - ``nfl`` → fantasy_football.fact_game_market
+      - ``nba`` / ``nhl`` / ``mlb`` / ``ncaab`` → sports_odds.fact_game_market
+
+    Week-based leagues (ncaaf/nfl): empty ``weeks`` pulls the current
+    week. Slate leagues ignore ``weeks`` and use the current board
+    (optional ``dates`` as YYYYMMDD / YYYY-MM-DD).
+    """
+
+    league: str = "ncaaf"
+    season: int | None = None
+    weeks: list[int] = Field(default_factory=list)
+    dates: list[str] = Field(default_factory=list)
+    persist: bool = True
+
+
 class DfsSalaryUploadResponse(BaseModel):
     site: str
     contest_type: str

@@ -37,6 +37,10 @@ class BetQualificationTests(unittest.TestCase):
                 "residuals": {"residual_home": 1.2, "confidence": "High"},
             },
             probability_calibrated=True,
+            offered_odds=-110,
+            expected_value_basis="offered_price",
+            edge_probability_basis="vig_adjusted_market",
+            market_probability_source="two_way_american",
         )
         self.assertTrue(decision["prediction"]["has_prediction"])
         self.assertTrue(decision["bet"]["no_bet"])
@@ -74,6 +78,10 @@ class BetQualificationTests(unittest.TestCase):
                 },
             },
             probability_calibrated=True,
+            offered_odds=-110,
+            expected_value_basis="offered_price",
+            edge_probability_basis="vig_adjusted_market",
+            market_probability_source="two_way_american",
         )
         self.assertTrue(decision["bet"]["qualified"])
         self.assertFalse(decision["bet"]["no_bet"])
@@ -109,6 +117,10 @@ class BetQualificationTests(unittest.TestCase):
                 "injury_report_week": 4,
             },
             probability_calibrated=False,
+            offered_odds=-110,
+            expected_value_basis="offered_price",
+            edge_probability_basis="vig_adjusted_market",
+            market_probability_source="two_way_american",
         )
         self.assertEqual(decision["bet"]["status"], "lean")
         self.assertEqual(decision["bet"]["label"], "Lean")
@@ -127,6 +139,10 @@ class BetQualificationTests(unittest.TestCase):
             edge_probability=3.6,
             model_confidence="High",
             data_quality={"label": "Low", "score": 0.3, "factors": []},
+            offered_odds=-110,
+            expected_value_basis="offered_price",
+            edge_probability_basis="vig_adjusted_market",
+            market_probability_source="two_way_american",
         )
         self.assertTrue(bet["no_bet"])
         self.assertEqual(bet["status"], "pass")
@@ -160,6 +176,10 @@ class BetQualificationTests(unittest.TestCase):
             data_quality={"label": "High", "score": 0.9, "factors": []},
             event=event,
             market_type="spread",
+            offered_odds=-110,
+            expected_value_basis="offered_price",
+            edge_probability_basis="vig_adjusted_market",
+            market_probability_source="two_way_american",
         )
         self.assertTrue(bet["no_bet"])
         self.assertEqual(bet["status"], "pass")
@@ -215,14 +235,97 @@ class BetQualificationTests(unittest.TestCase):
         market = built["markets"][0]
         self.assertIn("prediction", market)
         self.assertIn("bet_qualification", market)
-        self.assertIn(
-            market["bet_status"], {"strong_bet", "lean", "pass"}
+        # Without a real offered price, ATS must Pass — forecast remains.
+        self.assertEqual(market["bet_status"], "pass")
+        self.assertEqual(market["bet_label"], "Pass")
+        self.assertTrue(market["no_bet"])
+        self.assertTrue(market["prediction"]["has_prediction"])
+        self.assertEqual(
+            market.get("expected_value_basis"), "assumed_minus_110"
         )
-        self.assertIn(
-            market["bet_label"], {"Strong Bet", "Lean", "Pass"}
+        audit = (market.get("bet_qualification") or {}).get(
+            "pricing_audit"
+        ) or {}
+        self.assertFalse(
+            audit.get("pricing_available_for_qualification")
         )
-        self.assertIsInstance(market["no_bet"], bool)
         self.assertIn("No Bet", market["prediction"]["note"])
+
+    def test_assumed_minus_110_cannot_qualify_strong_or_lean(self):
+        decision = evaluate_market_decision(
+            market_type="spread",
+            selection="BUF -3.5",
+            model_projection=-7.0,
+            market_projection=-3.5,
+            raw_probability=0.62,
+            calibrated_probability=0.60,
+            market_probability=None,
+            expected_value=5.0,
+            edge_probability=7.6,
+            model_confidence="High",
+            direction="above_market",
+            event={
+                "team_strength": {
+                    "available": True,
+                    "home_games": 4,
+                    "away_games": 4,
+                    "projection_confidence": "High",
+                },
+                "residuals": {"residual_home": 1.4, "confidence": "High"},
+                "injury_report_week": 4,
+            },
+            probability_calibrated=True,
+            offered_odds=-110,
+            expected_value_basis="assumed_minus_110",
+            edge_probability_basis="reference_coin_flip",
+            market_probability_source="unavailable",
+        )
+        self.assertEqual(decision["bet"]["status"], "pass")
+        self.assertFalse(decision["bet"]["qualified"])
+        self.assertFalse(
+            decision["bet"]["gates"]["has_valid_offered_price"]
+        )
+        self.assertIn(
+            "PRICING_DATA_UNAVAILABLE",
+            decision["bet"]["reason_codes"],
+        )
+        # Forecast side still present.
+        self.assertTrue(decision["prediction"]["has_prediction"])
+
+    def test_real_offered_price_can_qualify(self):
+        decision = evaluate_market_decision(
+            market_type="moneyline",
+            selection="BUF",
+            model_projection=None,
+            market_projection=None,
+            raw_probability=0.62,
+            calibrated_probability=0.60,
+            market_probability=0.52,
+            expected_value=5.0,
+            edge_probability=8.0,
+            model_confidence="High",
+            direction="above_market",
+            event={
+                "team_strength": {
+                    "available": True,
+                    "home_games": 4,
+                    "away_games": 4,
+                    "projection_confidence": "High",
+                },
+                "residuals": {"residual_home": 1.4, "confidence": "High"},
+                "injury_report_week": 4,
+                "market_movement": {"moved": False},
+            },
+            probability_calibrated=True,
+            offered_odds=-120,
+            expected_value_basis="offered_price",
+            edge_probability_basis="single_side_american",
+            market_probability_source="single_side_american",
+        )
+        self.assertEqual(decision["bet"]["status"], "strong_bet")
+        self.assertTrue(
+            decision["bet"]["gates"]["has_valid_offered_price"]
+        )
 
 
 if __name__ == "__main__":

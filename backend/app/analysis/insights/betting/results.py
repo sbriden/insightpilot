@@ -25,7 +25,15 @@ from app.analysis.insights.betting.market_performance import (
     build_market_performance,
     merge_edge_confidence_with_markets,
 )
+from app.analysis.insights.betting.dataset_eligibility import (
+    ACTIONABLE as ACTIONABLE_BET_STATUSES,
+    filter_rows as filter_eligible_rows,
+    qualification_status,
+)
 from app.analysis.insights.betting.pricing import num
+from app.analysis.insights.betting.tape_provenance import (
+    resolve_bet_market_lines,
+)
 
 
 def is_game_final(event: dict[str, Any]) -> bool:
@@ -49,7 +57,7 @@ def is_game_final(event: dict[str, Any]) -> bool:
 
 
 # Learning / calibration only on actionable recommendations.
-ACTIONABLE_BET_STATUSES = frozenset({"strong_bet", "lean"})
+# ACTIONABLE_BET_STATUSES imported from dataset_eligibility.
 MIN_ACTIONABLE_LEARNING_ROWS = 15
 
 
@@ -120,35 +128,42 @@ def filter_learning_rows(
     min_actionable: int = MIN_ACTIONABLE_LEARNING_ROWS,
 ) -> tuple[list[dict[str, Any]], str]:
     """
-    Prefer Strong Bet / Lean rows for calibration learners.
+    Selection-learning cohort: Strong Bet / Lean only.
 
-    Falls back to the full corpus when actionable sample is thin or
-    legacy rows lack ``bet_status``.
+    Pass rows are never included. Legacy rows without ``bet_status``
+    are ``unknown`` — returned separately as ``unknown_legacy`` when
+    no actionable labels exist (caller must not treat them as Pass or
+    as placed bets).
     """
 
     all_rows = list(rows or [])
     if not all_rows:
         return [], "empty"
 
-    actionable = [
-        row
-        for row in all_rows
-        if str(row.get("bet_status") or "").lower()
-        in ACTIONABLE_BET_STATUSES
-    ]
+    actionable = filter_eligible_rows(all_rows, "selection_learning")
+    # selection_learning requires settlement; for pre-settle learning
+    # fall back to status-only actionable filter.
+    if not actionable:
+        actionable = [
+            row
+            for row in all_rows
+            if qualification_status(row) in ACTIONABLE_BET_STATUSES
+        ]
     if len(actionable) >= min_actionable:
         return actionable, "strong_lean"
-
-    tagged = [
-        row for row in all_rows if row.get("bet_status") is not None
-    ]
-    if not tagged:
-        # Pre-bet_status history — keep prior behavior.
-        return all_rows, "all_legacy"
-
     if actionable:
         return actionable, "strong_lean_thin"
-    return all_rows, "all_fallback"
+
+    unknown_only = [
+        row
+        for row in all_rows
+        if qualification_status(row) == "unknown"
+    ]
+    if unknown_only and len(unknown_only) == len(all_rows):
+        return unknown_only, "unknown_legacy"
+
+    # Explicit Pass / mixed corpus with no actionable rows.
+    return [], "no_actionable"
 
 
 def settle_event_markets(
@@ -190,41 +205,20 @@ def settle_event_markets(
         if event.get("current_total") is not None
         else event.get("market_total")
     )
-    # Bet-time lines: frozen tape first, then opening — never silently
-    # equate bet to close when opening exists.
+    # Bet-time lines: frozen tape first, then opening. Never close.
     opening_spread = num(event.get("opening_spread"))
     opening_total = num(event.get("opening_total"))
     snap_spread = num(snap.get("market_spread"))
     snap_total = num(snap.get("market_total"))
-    tape_source = str(snap.get("tape_source") or "")
-    if tape_source == "opening_fallback":
-        bet_market_spread = (
-            snap_spread
-            if snap_spread is not None
-            else opening_spread
-        )
-        bet_market_total = (
-            snap_total if snap_total is not None else opening_total
-        )
-    else:
-        bet_market_spread = (
-            snap_spread
-            if snap_spread is not None
-            else (
-                opening_spread
-                if opening_spread is not None
-                else closing_market_spread
-            )
-        )
-        bet_market_total = (
-            snap_total
-            if snap_total is not None
-            else (
-                opening_total
-                if opening_total is not None
-                else closing_market_total
-            )
-        )
+    tape = resolve_bet_market_lines(
+        snap_spread=snap_spread,
+        snap_total=snap_total,
+        opening_spread=opening_spread,
+        opening_total=opening_total,
+        tape_source=snap.get("tape_source"),
+    )
+    bet_market_spread = tape["bet_market_spread"]
+    bet_market_total = tape["bet_market_total"]
 
     settled: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc).isoformat()
@@ -244,6 +238,9 @@ def settle_event_markets(
                 event.get("current_moneyline")
             ),
             bet_home_moneyline=num(event.get("opening_moneyline")),
+            bet_spread_source=tape["bet_spread_source"],
+            bet_total_source=tape["bet_total_source"],
+            tape_source=tape["tape_source"],
         )
         if row is None:
             continue
@@ -276,8 +273,12 @@ def settle_event_markets(
                     else None
                 ),
                 "projection_captured_at": snap.get("captured_at"),
+                "decision_at": snap.get("decision_at") or snap.get(
+                    "captured_at"
+                ),
                 "settled_at": now,
                 "source": "auto_dim_game",
+                "tape_source": tape["tape_source"],
             }
         )
         settled.append(attach_clv_fields(row))
@@ -631,7 +632,7 @@ def calibration_feedback_from_results(
     settled: list[dict[str, Any]],
     *,
     min_games: int = 5,
-    dampen: float = 0.35,
+    dampen: float = 0.20,
 ) -> dict[str, Any]:
     """
     Convert settled residuals into a dampened bias correction
@@ -701,15 +702,16 @@ def apply_calibration_to_scores(
         return home, away
     if not feedback.get("active"):
         return home, away
-    total_bias = float(feedback.get("total_bias") or 0.0)
-    spread_bias = float(feedback.get("spread_bias") or 0.0)
-    # total_bias is model−actual; remove half from each side.
-    adj_home = float(home) - total_bias / 2.0
-    adj_away = float(away) - total_bias / 2.0
-    # spread is away−home; remove spread_bias accordingly.
-    adj_away -= spread_bias / 2.0
-    adj_home += spread_bias / 2.0
-    return round(adj_home, 1), round(adj_away, 1)
+    from app.analysis.insights.betting.residual_model import (
+        calibration_score_deltas,
+    )
+
+    home_d, away_d = calibration_score_deltas(
+        projected_home=float(home),
+        projected_away=float(away),
+        feedback=feedback,
+    )
+    return round(float(home) + home_d, 1), round(float(away) + away_d, 1)
 
 
 def _settle_one_market(
@@ -725,6 +727,9 @@ def _settle_one_market(
     closing_market_total: float | None = None,
     closing_home_moneyline: float | None = None,
     bet_home_moneyline: float | None = None,
+    bet_spread_source: str = "unavailable",
+    bet_total_source: str = "unavailable",
+    tape_source: str = "unavailable",
 ) -> dict[str, Any] | None:
     market_type = str(market.get("market_type") or "").lower()
     selection = str(market.get("selection") or "")
@@ -741,26 +746,38 @@ def _settle_one_market(
 
     result = None
     actual_value = None
-    bet_line = line
+    bet_line = None
     closing_line = None
-    bet_price = price
+    bet_price = None
     closing_price = None
+    bet_line_source = "unavailable"
+    closing_line_source = "unavailable"
+    bet_price_source = "unavailable"
+    closing_price_source = "unavailable"
+    # Grade line may use the published market row when bet tape is
+    # missing — grading ≠ manufacturing a decision-time CLV quote.
+    grade_line = None
 
     if market_type == "total":
-        # Resolve bet tape first — grade on bet_line, not close.
         if bet_market_total is not None:
             bet_line = float(bet_market_total)
+            bet_line_source = bet_total_source or "snapshot"
+            grade_line = bet_line
         elif line is not None:
-            bet_line = float(line)
+            # Grade on published selection line; bet tape unavailable
+            # for CLV when no snap/opening quote exists.
+            grade_line = float(line)
+            bet_line = None
+            bet_line_source = "unavailable"
         else:
             return None
         actual_value = float(actual_total)
-        closing_line = (
-            closing_market_total
-            if closing_market_total is not None
-            else bet_line
-        )
-        grade_line = float(bet_line)
+        if closing_market_total is not None:
+            closing_line = float(closing_market_total)
+            closing_line_source = "closing"
+        else:
+            closing_line = None
+            closing_line_source = "unavailable"
         sel_u = selection.upper()
         if "OVER" in sel_u:
             if actual_total > grade_line:
@@ -778,6 +795,8 @@ def _settle_one_market(
                 result = "push"
         else:
             return None
+        bet_price = price
+        bet_price_source = "offered" if price is not None else "unavailable"
 
     elif market_type == "spread":
         side_home = side == "home"
@@ -789,55 +808,64 @@ def _settle_one_market(
         )
         if snap_bet is not None:
             bet_line = float(snap_bet)
+            bet_line_source = bet_spread_source or "snapshot"
+            grade_line = bet_line
         elif line is not None:
-            bet_line = float(line)
+            grade_line = float(line)
+            bet_line = None
+            bet_line_source = "unavailable"
         else:
             return None
-        grade_line = float(bet_line)
         if side_home:
-            margin = home_score + grade_line - away_score
+            margin = home_score + float(grade_line) - away_score
             actual_value = float(home_score - away_score)
         else:
-            margin = away_score + grade_line - home_score
+            margin = away_score + float(grade_line) - home_score
             actual_value = float(away_score - home_score)
-        # Closing = last known market spread on this selection.
         closing_line = event_spread_as_selection_line(
             closing_market_spread, side=side
         )
-        if closing_line is None:
-            closing_line = line if line is not None else grade_line
+        if closing_line is not None:
+            closing_line_source = "closing"
+        else:
+            closing_line_source = "unavailable"
         if margin > 0:
             result = "won"
         elif margin < 0:
             result = "lost"
         else:
             result = "push"
+        bet_price = price
+        bet_price_source = "offered" if price is not None else "unavailable"
 
     elif market_type == "moneyline":
+        from app.analysis.insights.betting.pricing import (
+            american_to_implied_prob,
+            implied_prob_to_american,
+        )
+
         if side == "home":
             result = "won" if home_score > away_score else (
                 "push" if home_score == away_score else "lost"
             )
             actual_value = float(home_score - away_score)
-            closing_price = closing_home_moneyline
-            bet_price = (
-                bet_home_moneyline
-                if bet_home_moneyline is not None
-                else price
-            )
+            if closing_home_moneyline is not None:
+                closing_price = float(closing_home_moneyline)
+                closing_price_source = "closing"
+            if bet_home_moneyline is not None:
+                bet_price = float(bet_home_moneyline)
+                bet_price_source = "opening"
+            else:
+                open_px = num(market.get("opening_price"))
+                if open_px is not None:
+                    bet_price = float(open_px)
+                    bet_price_source = "opening"
         elif side == "away":
             result = "won" if away_score > home_score else (
                 "push" if home_score == away_score else "lost"
             )
             actual_value = float(away_score - home_score)
-            # Away ML ≈ inverse of home implied when only home stored.
             if closing_home_moneyline is not None:
-                home_imp = None
-                from app.analysis.insights.betting.pricing import (
-                    american_to_implied_prob,
-                    implied_prob_to_american,
-                )
-
                 home_imp = american_to_implied_prob(
                     closing_home_moneyline
                 )
@@ -845,30 +873,22 @@ def _settle_one_market(
                     closing_price = implied_prob_to_american(
                         1.0 - float(home_imp)
                     )
+                    closing_price_source = "closing"
             if bet_home_moneyline is not None:
-                from app.analysis.insights.betting.pricing import (
-                    american_to_implied_prob,
-                    implied_prob_to_american,
-                )
-
                 home_imp = american_to_implied_prob(bet_home_moneyline)
                 if home_imp is not None:
                     bet_price = implied_prob_to_american(
                         1.0 - float(home_imp)
                     )
-            if bet_price is None:
-                bet_price = price
+                    bet_price_source = "opening"
+            else:
+                open_px = num(market.get("opening_price"))
+                if open_px is not None:
+                    bet_price = float(open_px)
+                    bet_price_source = "opening"
         else:
             return None
-        # Moneyline quotes are American prices, not point lines.
-        # Fall back to the market's own price when the event only
-        # stored a spread-derived home number for the other side.
-        if closing_price is None:
-            closing_price = price
-        if bet_price is None:
-            bet_price = num(market.get("opening_price"))
-            if bet_price is None:
-                bet_price = price
+        # Never copy settle-time display price into bet/close tape.
         closing_line = None
         bet_line = None
 
@@ -882,11 +902,18 @@ def _settle_one_market(
         if market.get("edge_probability") is not None
         else None
     )
+    status_raw = market.get("bet_status")
+    if status_raw is None or str(status_raw).strip() == "":
+        bet_status = "unknown"
+        bet_label = market.get("bet_label") or "Unknown"
+    else:
+        bet_status = str(status_raw).strip().lower()
+        bet_label = market.get("bet_label")
     return {
         "market_id": market.get("market_id"),
         "market_type": market_type,
         "selection": selection,
-        "line": bet_line if bet_line is not None else line,
+        "line": grade_line if grade_line is not None else line,
         "bet_line": bet_line,
         "price": price,
         "bet_price": bet_price,
@@ -898,6 +925,10 @@ def _settle_one_market(
             else market.get("model_probability")
         ),
         "market_probability": num(market.get("market_probability")),
+        "reference_probability": num(market.get("reference_probability")),
+        "market_probability_source": market.get(
+            "market_probability_source"
+        ),
         "edge_points": edge_points,
         "edge": (
             edge_probability
@@ -906,15 +937,18 @@ def _settle_one_market(
         ),
         "edge_probability": edge_probability,
         "confidence": market.get("confidence") or "Low",
-        "bet_status": (
-            str(market.get("bet_status") or "").lower() or "pass"
-        ),
-        "bet_label": market.get("bet_label"),
+        "bet_status": bet_status,
+        "bet_label": bet_label,
         "result": result,
         "model_correct": model_correct if result != "push" else None,
         "actual_value": actual_value,
         "closing_line": closing_line,
         "bet_side": side,
+        "bet_line_source": bet_line_source,
+        "closing_line_source": closing_line_source,
+        "bet_price_source": bet_price_source,
+        "closing_price_source": closing_price_source,
+        "tape_source": tape_source,
     }
 
 

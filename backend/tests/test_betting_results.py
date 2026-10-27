@@ -90,8 +90,10 @@ class BettingModelResultsTests(unittest.TestCase):
         self.assertEqual(by_id["g1:spread"]["result"], "won")
         self.assertEqual(by_id["g1:total"]["result"], "won")
         self.assertEqual(by_id["g1:moneyline"]["result"], "won")
-        self.assertEqual(by_id["g1:moneyline"]["bet_price"], -220)
-        self.assertEqual(by_id["g1:moneyline"]["closing_price"], -220)
+        # Without opening/current ML quotes, bet/close prices stay missing.
+        self.assertIsNone(by_id["g1:moneyline"]["bet_price"])
+        self.assertIsNone(by_id["g1:moneyline"]["closing_price"])
+        self.assertFalse(by_id["g1:moneyline"]["clv_available"])
         self.assertEqual(by_id["g1:total"]["actual_total"], 41)
         self.assertEqual(by_id["g1:spread"]["total_error"], 0.0)
 
@@ -142,8 +144,10 @@ class BettingModelResultsTests(unittest.TestCase):
         )
         self.assertIsNotNone(home)
         self.assertIsNotNone(away)
-        # Positive total bias (model high) should lower both scores.
-        self.assertLess(home + away, 44.0)
+        # Total bias is currently held at 0 in residual calibration
+        # (avoids re-inflating overs); spread bias still shifts margin.
+        self.assertAlmostEqual(home + away, 44.0, places=1)
+        self.assertNotEqual(home - away, 4.0)
 
     def test_performance_trend_by_week(self):
         rows = []

@@ -35,6 +35,17 @@ class AnalyticalApplicationsTests(unittest.TestCase):
         )
         self.assertEqual(created["id"], app_id)
         self.assertEqual(len(created["analyses"]), 2)
+        self.assertEqual(
+            created["settings"],
+            {
+                "show_left_nav": True,
+                "show_top_tabs": True,
+                "show_bottom_tabs": False,
+                "show_analysis_title": True,
+                "theme": "midnight",
+                "logo_type": "square",
+            },
+        )
 
         loaded = get_application(app_id)
         self.assertIsNotNone(loaded)
@@ -51,12 +62,31 @@ class AnalyticalApplicationsTests(unittest.TestCase):
                         "display_order": 0,
                     }
                 ],
+                "settings": {
+                    "show_left_nav": False,
+                    "show_top_tabs": False,
+                    "show_bottom_tabs": True,
+                    "show_analysis_title": False,
+                    "theme": "stadium",
+                    "logo_type": "wordmark",
+                },
             },
         )
         self.assertIsNotNone(updated)
         assert updated is not None
         self.assertEqual(updated["name"], "Sunday Decision Center")
         self.assertEqual(len(updated["analyses"]), 1)
+        self.assertEqual(
+            updated["settings"],
+            {
+                "show_left_nav": False,
+                "show_top_tabs": False,
+                "show_bottom_tabs": True,
+                "show_analysis_title": False,
+                "theme": "stadium",
+                "logo_type": "wordmark",
+            },
+        )
 
         self.assertTrue(delete_application(app_id))
         self.assertIsNone(get_application(app_id))

@@ -7,8 +7,13 @@ import { NATIVE_PRODUCTS } from "@/lib/prebuiltProducts";
 import {
   getNflverseCatalog,
   getNflverseDataQuality,
+  getSportsdataverseCatalog,
+  getSportsdataverseDataQuality,
   refreshNflverseData,
+  refreshScoresandoddsData,
+  refreshSportsdataverseData,
 } from "@/services/api";
+import type { ScoresandoddsLeague } from "@/services/api";
 import type {
   NflverseCatalog,
   NflverseDataQualityResult,
@@ -141,13 +146,24 @@ export default function DataRefreshPage() {
   const [catalog, setCatalog] = useState<NflverseCatalog | null>(
     null
   );
+  const [cfbCatalog, setCfbCatalog] =
+    useState<NflverseCatalog | null>(null);
   const [quality, setQuality] =
     useState<NflverseDataQualityResult | null>(null);
+  const [cfbQuality, setCfbQuality] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshLoading, setRefreshLoading] = useState<
     NflverseIngestMode | null
   >(null);
+  const [cfbRefreshLoading, setCfbRefreshLoading] = useState<
+    NflverseIngestMode | null
+  >(null);
+  const [oddsRefreshLoading, setOddsRefreshLoading] =
+    useState<ScoresandoddsLeague | null>(null);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(
     null
   );
@@ -158,12 +174,21 @@ export default function DataRefreshPage() {
     setLoading(true);
     setError(null);
     try {
-      const [catalogResult, qualityResult] = await Promise.all([
+      const [
+        catalogResult,
+        qualityResult,
+        cfbCatalogResult,
+        cfbQualityResult,
+      ] = await Promise.all([
         getNflverseCatalog(),
         getNflverseDataQuality(true),
+        getSportsdataverseCatalog().catch(() => null),
+        getSportsdataverseDataQuality(true).catch(() => null),
       ]);
       setCatalog(catalogResult);
       setQuality(qualityResult);
+      setCfbCatalog(cfbCatalogResult);
+      setCfbQuality(cfbQualityResult);
     } catch (loadError) {
       setError(
         loadError instanceof Error
@@ -275,6 +300,106 @@ export default function DataRefreshPage() {
     }
   }
 
+  async function handleCfbRefresh(mode: NflverseIngestMode) {
+    try {
+      setCfbRefreshLoading(mode);
+      setRefreshMessage(null);
+      setError(null);
+      const result = await refreshSportsdataverseData(mode);
+      setLastResult(result);
+      const message =
+        result.message
+        ?? `${result.mode_label || mode} completed.`;
+      setRefreshMessage(message);
+      const qualityResult =
+        await getSportsdataverseDataQuality(true);
+      setCfbQuality(qualityResult);
+      const catalogResult = await getSportsdataverseCatalog();
+      setCfbCatalog(catalogResult);
+    } catch (runError) {
+      setError(
+        runError instanceof Error
+          ? runError.message
+          : "College football refresh failed."
+      );
+    } finally {
+      setCfbRefreshLoading(null);
+    }
+  }
+
+  async function handleOddsRefresh(league: ScoresandoddsLeague) {
+    try {
+      setOddsRefreshLoading(league);
+      setRefreshMessage(null);
+      setError(null);
+      const result = await refreshScoresandoddsData({ league });
+      const label = league.toUpperCase();
+      setRefreshMessage(
+        `ScoresAndOdds ${label} odds refresh: matched `
+        + `${result.matched ?? 0} of ${result.fetched ?? 0} `
+        + `games`
+        + (
+          result.weeks?.length
+            ? ` (week ${result.weeks.join(", ")})`
+            : ""
+        )
+        + "."
+      );
+      window.dispatchEvent(
+        new CustomEvent("insightpilot:fantasy-data-refreshed", {
+          detail: { mode: "scoresandodds", league, result },
+        })
+      );
+    } catch (runError) {
+      setError(
+        runError instanceof Error
+          ? runError.message
+          : "ScoresAndOdds odds refresh failed."
+      );
+    } finally {
+      setOddsRefreshLoading(null);
+    }
+  }
+
+  const cfbModes = useMemo(() => {
+    const fromCatalog = cfbCatalog?.ingest_modes;
+    if (fromCatalog && fromCatalog.length > 0) {
+      return fromCatalog.map((mode) => ({
+        id: mode.id as NflverseIngestMode,
+        label: mode.label,
+        description: mode.description,
+        layers: mode.layers,
+        season_scope: mode.season_scope,
+      }));
+    }
+    return [
+      {
+        id: "incremental" as NflverseIngestMode,
+        label: "Incremental update",
+        description:
+          "Refresh the live CFB season into college_football.",
+        layers: ["dims", "facts"],
+        season_scope: "current",
+      },
+      {
+        id: "historical" as NflverseIngestMode,
+        label: "Historical load",
+        description:
+          "Bootstrap several CFB seasons (dims + facts).",
+        layers: ["dims", "facts"],
+        season_scope: "historical",
+      },
+      {
+        id: "reprocess" as NflverseIngestMode,
+        label: "Reprocess facts",
+        description:
+          "Rebuild fact tables from sportsdataverse loaders.",
+        layers: ["facts"],
+        season_scope: "historical",
+      },
+    ];
+  }, [cfbCatalog]);
+
   const latest = quality?.latest_ingest;
 
   return (
@@ -355,6 +480,129 @@ export default function DataRefreshPage() {
                   />
                 );
               })}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-gray-200 bg-white p-5">
+            <h2 className="text-lg font-semibold text-gray-900">
+              College football (sportsdataverse)
+            </h2>
+            <p className="mt-1 text-sm text-gray-600">
+              Parallel ingest into the college_football schema —
+              teams, schedule, box scores, and historical lines.
+              {cfbCatalog?.current_season
+                ? ` Current season: ${cfbCatalog.current_season}.`
+                : ""}
+              {cfbQuality && typeof cfbQuality.message === "string"
+                ? ` ${cfbQuality.message}`
+                : ""}
+            </p>
+            <div className="mt-4 space-y-3">
+              {cfbModes.map((mode) => (
+                <article
+                  key={`cfb-${mode.id}`}
+                  className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-gray-100 bg-gray-50 p-4"
+                >
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-sm font-semibold text-gray-900">
+                      {mode.label}
+                    </h3>
+                    <p className="mt-1 text-sm text-gray-600">
+                      {mode.description}
+                    </p>
+                    <p className="mt-2 text-xs text-gray-500">
+                      Layers: {mode.layers.join(" → ")}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={cfbRefreshLoading != null}
+                    onClick={() => void handleCfbRefresh(mode.id)}
+                    className="rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+                  >
+                    {cfbRefreshLoading === mode.id
+                      ? "Running…"
+                      : `Run ${mode.label.toLowerCase()}`}
+                  </button>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-gray-200 bg-white p-5">
+            <h2 className="text-lg font-semibold text-gray-900">
+              Odds (ScoresAndOdds)
+            </h2>
+            <p className="mt-1 text-sm text-gray-600">
+              Consensus lines plus ScoresAndOdds Open-column openings
+              into fact_game_market. Football uses the current week;
+              NBA / NHL / MLB / NCAAB use the current dated slate.
+            </p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {(
+                [
+                  {
+                    league: "ncaaf" as const,
+                    label: "NCAAF",
+                    target: "college_football.fact_game_market",
+                  },
+                  {
+                    league: "nfl" as const,
+                    label: "NFL",
+                    target: "fantasy_football.fact_game_market",
+                  },
+                  {
+                    league: "nba" as const,
+                    label: "NBA",
+                    target: "sports_odds.fact_game_market",
+                  },
+                  {
+                    league: "nhl" as const,
+                    label: "NHL",
+                    target: "sports_odds.fact_game_market",
+                  },
+                  {
+                    league: "mlb" as const,
+                    label: "MLB",
+                    target: "sports_odds.fact_game_market",
+                  },
+                  {
+                    league: "ncaab" as const,
+                    label: "NCAAB",
+                    target: "sports_odds.fact_game_market",
+                  },
+                ] as const
+              ).map((item) => (
+                <article
+                  key={item.league}
+                  className="rounded-lg border border-gray-100 bg-gray-50 p-4"
+                >
+                  <h3 className="text-sm font-semibold text-gray-900">
+                    {item.label}
+                  </h3>
+                  <p className="mt-1 text-sm text-gray-600">
+                    <a
+                      href={`https://www.scoresandodds.com/${item.league}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline underline-offset-2"
+                    >
+                      scoresandodds.com/{item.league}
+                    </a>
+                    {" "}→ {item.target}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={oddsRefreshLoading != null}
+                    onClick={() => void handleOddsRefresh(item.league)}
+                    className="mt-3 rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+                  >
+                    {oddsRefreshLoading === item.league
+                      ? "Refreshing odds…"
+                      : `Refresh ${item.label} odds`}
+                  </button>
+                </article>
+              ))}
             </div>
           </section>
 

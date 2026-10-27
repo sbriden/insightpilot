@@ -5,8 +5,9 @@ import { Component, type ReactNode } from "react";
 import { AnalysisFormatProvider } from "@/components/analysis/AnalysisFormatContext";
 import DailyFantasyAnalyzer from "@/components/fantasy/dfs/DailyFantasyAnalyzer";
 import PlayerAnalysisRuntime from "@/components/applications/PlayerAnalysisRuntime";
+import { useAppTheme } from "@/components/applications/ApplicationThemeContext";
 import SportsBettingAnalyzer from "@/components/betting/SportsBettingAnalyzer";
-import { appTheme } from "@/components/applications/appTheme";
+import { appTheme as defaultAppTheme } from "@/components/applications/appTheme";
 import {
   getRegistryAnalysis,
   type RegistryAnalysis,
@@ -16,6 +17,7 @@ import type { SnapshotTabId } from "@/components/fantasy/snapshot/PlayerTabs";
 
 interface Props {
   analysisKey: string;
+  showTitle?: boolean;
 }
 
 class AnalysisErrorBoundary extends Component<
@@ -40,11 +42,14 @@ class AnalysisErrorBoundary extends Component<
         >
           <h3
             className="text-lg font-semibold"
-            style={{ color: appTheme.negative }}
+            style={{ color: defaultAppTheme.negative }}
           >
             Unable to load this analysis
           </h3>
-          <p className="mt-2 max-w-xl text-sm" style={{ color: appTheme.silver }}>
+          <p
+            className="mt-2 max-w-xl text-sm"
+            style={{ color: defaultAppTheme.silver }}
+          >
             {this.props.name} is temporarily unavailable. Other analyses in this
             application are still available.
           </p>
@@ -52,9 +57,9 @@ class AnalysisErrorBoundary extends Component<
             type="button"
             className="mt-4 rounded-lg px-3 py-1.5 text-sm font-medium"
             style={{
-              background: appTheme.elevated,
-              color: appTheme.white,
-              border: `1px solid ${appTheme.border}`,
+              background: defaultAppTheme.elevated,
+              color: defaultAppTheme.white,
+              border: `1px solid ${defaultAppTheme.border}`,
             }}
             onClick={() => this.setState({ error: null })}
           >
@@ -68,6 +73,7 @@ class AnalysisErrorBoundary extends Component<
 }
 
 function RuntimeBody({ analysis }: { analysis: RegistryAnalysis }) {
+  const theme = useAppTheme();
   if (analysis.runtime === "player_overview") {
     const view = analysis.view || "table";
     const overview =
@@ -94,6 +100,7 @@ function RuntimeBody({ analysis }: { analysis: RegistryAnalysis }) {
   if (analysis.runtime === "sports_betting") {
     const view = analysis.view || "games";
     const tab =
+      view === "daily" ||
       view === "games" ||
       view === "markets" ||
       view === "portfolio" ||
@@ -107,9 +114,9 @@ function RuntimeBody({ analysis }: { analysis: RegistryAnalysis }) {
     <div
       className="rounded-xl p-8 text-sm"
       style={{
-        background: appTheme.midnight,
-        border: `1px solid ${appTheme.border}`,
-        color: appTheme.silver,
+        background: theme.midnight,
+        border: `1px solid ${theme.border}`,
+        color: theme.silver,
       }}
     >
       This analysis is not available in the runtime yet.
@@ -117,14 +124,18 @@ function RuntimeBody({ analysis }: { analysis: RegistryAnalysis }) {
   );
 }
 
-export default function AnalysisRuntime({ analysisKey }: Props) {
+export default function AnalysisRuntime({
+  analysisKey,
+  showTitle = true,
+}: Props) {
+  const theme = useAppTheme();
   const analysis = getRegistryAnalysis(analysisKey);
 
   if (!analysis) {
     return (
       <div
         className="rounded-xl p-8 text-sm"
-        style={{ color: appTheme.silver }}
+        style={{ color: theme.silver }}
       >
         Unknown analysis: {analysisKey}
       </div>
@@ -135,7 +146,7 @@ export default function AnalysisRuntime({ analysisKey }: Props) {
     return (
       <div
         className="rounded-xl p-8 text-sm"
-        style={{ color: appTheme.silver }}
+        style={{ color: theme.silver }}
       >
         {analysis.name} is coming soon.
       </div>
@@ -147,14 +158,17 @@ export default function AnalysisRuntime({ analysisKey }: Props) {
       <div
         className="ip-analysis-panel overflow-hidden rounded-xl"
         style={{
-          background: appTheme.midnight,
-          color: appTheme.white,
-          border: `1px solid ${appTheme.border}`,
-          boxShadow: appTheme.glowSoft,
+          background: theme.midnight,
+          color: theme.white,
+          border: `1px solid ${theme.border}`,
+          boxShadow: theme.glowSoft,
         }}
       >
         <div className="p-4 sm:p-5">
-          <AnalysisFormatProvider format="application">
+          <AnalysisFormatProvider
+            format="application"
+            showTitle={showTitle}
+          >
             <RuntimeBody analysis={analysis} />
           </AnalysisFormatProvider>
         </div>

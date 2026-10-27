@@ -143,6 +143,27 @@ ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
 ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
   ADD COLUMN IF NOT EXISTS bet_label TEXT;
 
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS tape_source TEXT;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS bet_line_source TEXT;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS closing_line_source TEXT;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS clv_available BOOLEAN;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS market_probability_source TEXT;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_market_result
+  ADD COLUMN IF NOT EXISTS reference_probability DOUBLE PRECISION;
+
+ALTER TABLE {FANTASY_SCHEMA}.fact_betting_projection_snapshot
+  ADD COLUMN IF NOT EXISTS tape_source TEXT;
+
 CREATE TABLE IF NOT EXISTS {FANTASY_SCHEMA}.fact_betting_residual_challenger (
     season INTEGER NOT NULL PRIMARY KEY,
     method TEXT NOT NULL,
@@ -281,7 +302,7 @@ def upsert_projection_snapshot(
             model_spread, market_spread, market_total,
             market_home_score, market_away_score,
             captured_at, frozen, payload, model_version, decision_at,
-            updated_at
+            tape_source, updated_at
         ) VALUES (
             :game_id, :season, :week, :home_team, :away_team,
             :projected_home_score, :projected_away_score, :projected_total,
@@ -289,7 +310,8 @@ def upsert_projection_snapshot(
             :market_home_score, :market_away_score,
             CAST(:captured_at AS TIMESTAMP), :frozen,
             CAST(:payload AS JSONB), :model_version,
-            CAST(:decision_at AS TIMESTAMP), CURRENT_TIMESTAMP
+            CAST(:decision_at AS TIMESTAMP), :tape_source,
+            CURRENT_TIMESTAMP
         )
         ON CONFLICT (game_id) DO UPDATE SET
             season = EXCLUDED.season,
@@ -356,6 +378,14 @@ def upsert_projection_snapshot(
                 THEN {FANTASY_SCHEMA}.fact_betting_projection_snapshot.decision_at
                 ELSE EXCLUDED.decision_at
             END,
+            tape_source = CASE
+                WHEN {FANTASY_SCHEMA}.fact_betting_projection_snapshot.frozen
+                THEN COALESCE(
+                    {FANTASY_SCHEMA}.fact_betting_projection_snapshot.tape_source,
+                    EXCLUDED.tape_source
+                )
+                ELSE EXCLUDED.tape_source
+            END,
             frozen = EXCLUDED.frozen OR
                 {FANTASY_SCHEMA}.fact_betting_projection_snapshot.frozen,
             updated_at = CURRENT_TIMESTAMP
@@ -366,6 +396,10 @@ def upsert_projection_snapshot(
         or snapshot.get("captured_at")
         or datetime.now(timezone.utc).isoformat()
     )
+    # Preserve unverified when missing — do not invent provenance.
+    tape_source = snapshot.get("tape_source")
+    if tape_source is None and isinstance(payload, dict):
+        tape_source = payload.get("tape_source")
     params = {
         "game_id": snapshot.get("game_id"),
         "season": snapshot.get("season"),
@@ -386,6 +420,7 @@ def upsert_projection_snapshot(
         "payload": json.dumps(payload, sort_keys=True, default=str),
         "model_version": snapshot.get("model_version"),
         "decision_at": decision_at,
+        "tape_source": tape_source,
     }
     try:
         with engine.begin() as connection:
@@ -464,7 +499,10 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
             actual_total, actual_spread, model_home_score, model_away_score,
             model_total, model_spread, market_spread, market_total,
             total_error, spread_error, closing_line, bet_line, bet_price,
-            closing_price, clv, clv_unit, beat_close, event_label,
+            closing_price, clv, clv_unit, beat_close, clv_available,
+            tape_source, bet_line_source, closing_line_source,
+            market_probability_source, reference_probability,
+            event_label,
             home_team, away_team, projection_captured_at, settled_at, source
         ) VALUES (
             :market_id, :game_id, :season, :week, :market_type, :selection,
@@ -475,7 +513,10 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
             :actual_total, :actual_spread, :model_home_score, :model_away_score,
             :model_total, :model_spread, :market_spread, :market_total,
             :total_error, :spread_error, :closing_line, :bet_line, :bet_price,
-            :closing_price, :clv, :clv_unit, :beat_close, :event_label,
+            :closing_price, :clv, :clv_unit, :beat_close, :clv_available,
+            :tape_source, :bet_line_source, :closing_line_source,
+            :market_probability_source, :reference_probability,
+            :event_label,
             :home_team, :away_team,
             CAST(:projection_captured_at AS TIMESTAMP),
             CAST(:settled_at AS TIMESTAMP), :source
@@ -518,6 +559,12 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
             clv = EXCLUDED.clv,
             clv_unit = EXCLUDED.clv_unit,
             beat_close = EXCLUDED.beat_close,
+            clv_available = EXCLUDED.clv_available,
+            tape_source = EXCLUDED.tape_source,
+            bet_line_source = EXCLUDED.bet_line_source,
+            closing_line_source = EXCLUDED.closing_line_source,
+            market_probability_source = EXCLUDED.market_probability_source,
+            reference_probability = EXCLUDED.reference_probability,
             settled_at = EXCLUDED.settled_at,
             source = EXCLUDED.source
     """
@@ -564,6 +611,16 @@ def upsert_market_results(rows: list[dict[str, Any]]) -> int:
                     "clv": row.get("clv"),
                     "clv_unit": row.get("clv_unit"),
                     "beat_close": row.get("beat_close"),
+                    "clv_available": row.get("clv_available"),
+                    "tape_source": row.get("tape_source"),
+                    "bet_line_source": row.get("bet_line_source"),
+                    "closing_line_source": row.get("closing_line_source"),
+                    "market_probability_source": row.get(
+                        "market_probability_source"
+                    ),
+                    "reference_probability": row.get(
+                        "reference_probability"
+                    ),
                     "event_label": row.get("event_label"),
                     "home_team": row.get("home_team"),
                     "away_team": row.get("away_team"),

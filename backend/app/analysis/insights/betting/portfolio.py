@@ -132,6 +132,7 @@ def generate_betting_portfolio(
     market_types: list[str] | None = None,
     bankroll: float | None = None,
     sizing_mode: str = "budget",
+    sport: str = "NFL",
 ) -> dict[str, Any]:
     """
     Build a diversified open-position portfolio from the current slate.
@@ -183,7 +184,11 @@ def generate_betting_portfolio(
     elif concentration >= 0.55:
         profile["max_per_game"] = max(int(profile["max_per_game"]), 4)
 
-    slate = build_betting_slate(season=season, week=week)
+    slate = build_betting_slate(
+        season=season,
+        week=week,
+        sport=sport,
+    )
     markets = list(slate.get("markets") or [])
     closed_ids, started_labels = _started_events(slate.get("events") or [])
     if closed_ids:
@@ -1744,7 +1749,9 @@ def create_parlay_position(
         ),
         "event_id": legs[0].get("event_id") if legs else "",
         "event_label": " · ".join(event_labels[:3]) or "Parlay",
-        "sport": "NFL",
+        "sport": (
+            legs[0].get("sport") if legs else None
+        ) or "NFL",
         "home_team": None,
         "away_team": None,
         "market_type": "parlay",
@@ -1810,13 +1817,18 @@ def analyze_betting_portfolio(
     season: int | None = None,
     week: int | None = None,
     status_filter: str = "open",
+    sport: str = "NFL",
 ) -> dict[str, Any]:
     """
     Refresh positions against the current slate and return
     portfolio analytics.
     """
 
-    slate = build_betting_slate(season=season, week=week)
+    slate = build_betting_slate(
+        season=season,
+        week=week,
+        sport=sport,
+    )
     markets_by_id = {
         str(market.get("market_id")): market
         for market in (slate.get("markets") or [])
@@ -2808,7 +2820,7 @@ def _portfolio_health(
             "id": "sport_diversification",
             "label": "Sport Diversification",
             "value": "Low" if n else "—",
-            "detail": "NFL-only MVP portfolio.",
+            "detail": "Single-sport portfolio (NFL or CFB).",
         },
         {
             "id": "correlation",

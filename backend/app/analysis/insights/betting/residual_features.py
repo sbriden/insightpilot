@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.analysis.insights.betting.opponent_tendency import (
+    tendency_feature_values,
+)
 from app.analysis.insights.betting.pricing import num
 from app.analysis.insights.betting.team_strength import (
     POINTS_PER_MATCHUP_UNIT,
@@ -67,6 +70,19 @@ FEATURE_NAMES: tuple[str, ...] = (
     "missing_strength",
     "disagreement_spread_sd",
     "disagreement_total_sd",
+    # Opponent-strength performance tendencies
+    "home_elite_margin_resid_mkt",
+    "away_elite_margin_resid_mkt",
+    "home_soft_margin_resid_mkt",
+    "away_soft_margin_resid_mkt",
+    "home_elite_margin_resid_model",
+    "away_elite_margin_resid_model",
+    "home_soft_margin_resid_model",
+    "away_soft_margin_resid_model",
+    "home_resid_vol_mkt",
+    "away_resid_vol_mkt",
+    "home_pass_d_tier_resid_mkt",
+    "away_pass_d_tier_resid_mkt",
 )
 
 # Cold-start prior coefficients (home residual). Away uses sign-flipped
@@ -86,6 +102,10 @@ PRIOR_HOME_COEF: dict[str, float] = {
     "total_move": 0.05,
     "disagreement_spread_sd": 0.0,
     "early_season": -0.2,
+    "home_elite_margin_resid_mkt": 0.35,
+    "away_elite_margin_resid_mkt": -0.15,
+    "home_soft_margin_resid_mkt": 0.25,
+    "away_soft_margin_resid_mkt": -0.10,
 }
 
 
@@ -108,6 +128,7 @@ def build_residual_features(
     disagreement: dict[str, Any] | None = None,
     home_rest_days: float | None = None,
     away_rest_days: float | None = None,
+    tendency_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Build feature dict + dense vector for one game.
@@ -125,6 +146,14 @@ def build_residual_features(
             away_team_id=away_team_id,
             context=strength_context,
         )
+
+    tendency_profiles = (tendency_context or {}).get("profiles") or {}
+    home_tendency = tendency_feature_values(
+        tendency_profiles.get(str(home_team_id or ""))
+    )
+    away_tendency = tendency_feature_values(
+        tendency_profiles.get(str(away_team_id or ""))
+    )
 
     home_prof = (detail.get("home_profile") or {}) if detail else {}
     away_prof = (detail.get("away_profile") or {}) if detail else {}
@@ -210,6 +239,38 @@ def build_residual_features(
         "missing_strength": missing,
         "disagreement_spread_sd": float(spread_sd or 0.0),
         "disagreement_total_sd": float(total_sd or 0.0),
+        "home_elite_margin_resid_mkt": home_tendency[
+            "elite_margin_resid_mkt"
+        ],
+        "away_elite_margin_resid_mkt": away_tendency[
+            "elite_margin_resid_mkt"
+        ],
+        "home_soft_margin_resid_mkt": home_tendency[
+            "soft_margin_resid_mkt"
+        ],
+        "away_soft_margin_resid_mkt": away_tendency[
+            "soft_margin_resid_mkt"
+        ],
+        "home_elite_margin_resid_model": home_tendency[
+            "elite_margin_resid_model"
+        ],
+        "away_elite_margin_resid_model": away_tendency[
+            "elite_margin_resid_model"
+        ],
+        "home_soft_margin_resid_model": home_tendency[
+            "soft_margin_resid_model"
+        ],
+        "away_soft_margin_resid_model": away_tendency[
+            "soft_margin_resid_model"
+        ],
+        "home_resid_vol_mkt": home_tendency["resid_vol_mkt"],
+        "away_resid_vol_mkt": away_tendency["resid_vol_mkt"],
+        "home_pass_d_tier_resid_mkt": home_tendency[
+            "pass_d_tier_resid_mkt"
+        ],
+        "away_pass_d_tier_resid_mkt": away_tendency[
+            "pass_d_tier_resid_mkt"
+        ],
     }
 
     vector = [float(features[name]) for name in FEATURE_NAMES]
@@ -273,6 +334,20 @@ def build_residual_features(
                 "missing_strength",
                 "disagreement_spread_sd",
                 "disagreement_total_sd",
+            ],
+            "opponent_tendency": [
+                "home_elite_margin_resid_mkt",
+                "away_elite_margin_resid_mkt",
+                "home_soft_margin_resid_mkt",
+                "away_soft_margin_resid_mkt",
+                "home_elite_margin_resid_model",
+                "away_elite_margin_resid_model",
+                "home_soft_margin_resid_model",
+                "away_soft_margin_resid_model",
+                "home_resid_vol_mkt",
+                "away_resid_vol_mkt",
+                "home_pass_d_tier_resid_mkt",
+                "away_pass_d_tier_resid_mkt",
             ],
         },
     }

@@ -47,6 +47,7 @@ def load_week_player_context(
     week: int,
     spread_move: float | None = None,
     total_move: float | None = None,
+    sport: str | None = "NFL",
 ) -> dict[str, Any]:
     """
     Build a team_id → injury/depth context map for one slate week.
@@ -59,6 +60,20 @@ def load_week_player_context(
       impact_sigma — pooled uncertainty
       injuries / drivers
     """
+
+    from app.analysis.insights.betting.betting_sport import (
+        resolve_betting_sport,
+    )
+
+    sport_config = resolve_betting_sport(sport)
+    if not sport_config.has_injury_context:
+        return {
+            "season": int(season),
+            "week": int(week),
+            "teams": {},
+            "sport": sport_config.id,
+            "available": False,
+        }
 
     injuries = _load_injuries(season=season, week=week)
     if not injuries:

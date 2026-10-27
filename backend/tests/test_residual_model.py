@@ -80,19 +80,179 @@ class ResidualModelTests(unittest.TestCase):
         self.assertEqual(away, 20.0)
         self.assertEqual(meta["mode"], "market_only")
 
-    def test_calibration_deltas_match_bias_transform(self):
-        # total_bias +2 → each side -1; spread_bias +2 → home +1, away -1
+    def test_calibration_deltas_spread_only(self):
+        # Total bias is ignored until season feedback is re-fit;
+        # spread_bias +0.6 → home +0.3, away -0.3.
         home_d, away_d = calibration_score_deltas(
             projected_home=25.0,
             projected_away=20.0,
             feedback={
                 "active": True,
-                "total_bias": 2.0,
-                "spread_bias": 2.0,
+                "total_bias": -2.325,
+                "spread_bias": 0.6,
             },
         )
-        self.assertEqual(home_d, 0.0)  # -1 + 1
-        self.assertEqual(away_d, -2.0)  # -1 - 1
+        self.assertAlmostEqual(home_d, 0.3, places=3)
+        self.assertAlmostEqual(away_d, -0.3, places=3)
+
+    def test_cfb_additive_matchup_preserves_market_when_even(self):
+        # Even matchup vs market home -11: keep the market margin.
+        residual = predict_score_residuals(
+            market_home=31.0,
+            market_away=20.0,
+            home_team_id="h",
+            away_team_id="a",
+            strength_context={
+                "sport": "CFB",
+                "league_avg_ppg": 26.0,
+                "profiles": {
+                    "h": {
+                        "offensive_efficiency": 0.0,
+                        "defensive_efficiency": 0.0,
+                        "pace_z": 0.0,
+                        "games": 6,
+                    },
+                    "a": {
+                        "offensive_efficiency": 0.0,
+                        "defensive_efficiency": 0.0,
+                        "pace_z": 0.0,
+                        "games": 6,
+                    },
+                },
+            },
+            policy={
+                "weights_by_confidence": {
+                    "Low": {"market": 0.0, "model": 1.0},
+                    "Moderate": {"market": 0.0, "model": 1.0},
+                    "High": {"market": 0.0, "model": 1.0},
+                },
+                "source": "test",
+                "learned": False,
+            },
+        )
+        home, away, _ = apply_score_residuals(residual)
+        assert home is not None and away is not None
+        self.assertGreater(home, away)
+        self.assertAlmostEqual(home - away, 11.0, places=1)
+        self.assertAlmostEqual(home + away, 51.0, places=1)
+
+    def test_cfb_additive_matchup_can_fade_favorite(self):
+        # Opposite-sign away matchup should shrink home chalk.
+        residual = predict_score_residuals(
+            market_home=31.0,
+            market_away=20.0,
+            home_team_id="h",
+            away_team_id="a",
+            strength_context={
+                "sport": "CFB",
+                "league_avg_ppg": 26.0,
+                "profiles": {
+                    "h": {
+                        "offensive_efficiency": -0.4,
+                        "defensive_efficiency": 0.4,
+                        "pace_z": 0.0,
+                        "games": 6,
+                    },
+                    "a": {
+                        "offensive_efficiency": 0.5,
+                        "defensive_efficiency": -0.3,
+                        "pace_z": 0.0,
+                        "games": 6,
+                    },
+                },
+            },
+            policy={
+                "weights_by_confidence": {
+                    "Low": {"market": 0.0, "model": 1.0},
+                    "Moderate": {"market": 0.0, "model": 1.0},
+                    "High": {"market": 0.0, "model": 1.0},
+                },
+                "source": "test",
+                "learned": False,
+            },
+        )
+        home, away, _ = apply_score_residuals(residual)
+        assert home is not None and away is not None
+        self.assertGreater(home, away)
+        self.assertLess(home - away, 11.0)
+
+    def test_cfb_same_sign_matchup_does_not_pile_on(self):
+        # Same-sign home matchup must not widen market chalk.
+        residual = predict_score_residuals(
+            market_home=31.0,
+            market_away=20.0,
+            home_team_id="h",
+            away_team_id="a",
+            strength_context={
+                "sport": "CFB",
+                "league_avg_ppg": 26.0,
+                "profiles": {
+                    "h": {
+                        "offensive_efficiency": 0.5,
+                        "defensive_efficiency": -0.3,
+                        "pace_z": 0.0,
+                        "games": 6,
+                    },
+                    "a": {
+                        "offensive_efficiency": -0.4,
+                        "defensive_efficiency": 0.4,
+                        "pace_z": 0.0,
+                        "games": 6,
+                    },
+                },
+            },
+            policy={
+                "weights_by_confidence": {
+                    "Low": {"market": 0.0, "model": 1.0},
+                    "Moderate": {"market": 0.0, "model": 1.0},
+                    "High": {"market": 0.0, "model": 1.0},
+                },
+                "source": "test",
+                "learned": False,
+            },
+        )
+        home, away, _ = apply_score_residuals(residual)
+        assert home is not None and away is not None
+        self.assertAlmostEqual(home - away, 11.0, places=1)
+
+    def test_nfl_matchup_anchor_preserves_market_when_even(self):
+        residual = predict_score_residuals(
+            market_home=27.0,
+            market_away=20.0,
+            home_team_id="h",
+            away_team_id="a",
+            strength_context={
+                "sport": "NFL",
+                "league_avg_ppg": 23.0,
+                "profiles": {
+                    "h": {
+                        "offensive_efficiency": 0.0,
+                        "defensive_efficiency": 0.0,
+                        "pace_z": 0.0,
+                        "games": 6,
+                    },
+                    "a": {
+                        "offensive_efficiency": 0.0,
+                        "defensive_efficiency": 0.0,
+                        "pace_z": 0.0,
+                        "games": 6,
+                    },
+                },
+            },
+            policy={
+                "weights_by_confidence": {
+                    "Low": {"market": 0.0, "model": 1.0},
+                    "Moderate": {"market": 0.0, "model": 1.0},
+                    "High": {"market": 0.0, "model": 1.0},
+                },
+                "source": "test",
+                "learned": False,
+            },
+        )
+        home, away, _ = apply_score_residuals(residual)
+        assert home is not None and away is not None
+        self.assertAlmostEqual(home - away, 7.0, places=1)
+        self.assertAlmostEqual(home + away, 47.0, places=1)
 
 
 if __name__ == "__main__":

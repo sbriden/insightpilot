@@ -12,12 +12,14 @@ import {
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
 import TeamLogo, {
   TeamMatchupLabel,
+  TeamSport,
 } from "@/components/teams/TeamLogo";
 import { BettingEvent, BettingMarket } from "@/services/api";
 
 interface Props {
   event: BettingEvent;
   markets: BettingMarket[];
+  sport?: TeamSport;
   onOpen: () => void;
   onSelectMarket?: (market: BettingMarket) => void;
 }
@@ -25,11 +27,13 @@ interface Props {
 export default function BettingGameCard({
   event,
   markets,
+  sport = "NFL",
   onOpen,
   onSelectMarket,
 }: Props) {
   const signal = event.primary_signal;
   const lines = orderMarkets(markets);
+  const eventSport = (event.sport || sport) as TeamSport;
 
   return (
     <div
@@ -51,6 +55,9 @@ export default function BettingGameCard({
                 label={event.label}
                 away={event.away_team}
                 home={event.home_team}
+                awayLogoUrl={event.away_logo_url}
+                homeLogoUrl={event.home_logo_url}
+                sport={eventSport}
                 size={22}
               />
             </p>
@@ -77,10 +84,14 @@ export default function BettingGameCard({
         <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
           <ScoreBlock
             team={event.away_team || "Away"}
+            logoUrl={event.away_logo_url}
+            sport={eventSport}
             projected={event.projected_away_score}
           />
           <ScoreBlock
             team={event.home_team || "Home"}
+            logoUrl={event.home_logo_url}
+            sport={eventSport}
             projected={event.projected_home_score}
           />
         </div>
@@ -233,9 +244,13 @@ function MarketLineRow({
 
 function ScoreBlock({
   team,
+  logoUrl,
+  sport = "NFL",
   projected,
 }: {
   team: string;
+  logoUrl?: string | null;
+  sport?: TeamSport;
   projected?: number | null;
 }) {
   return (
@@ -244,7 +259,12 @@ function ScoreBlock({
         className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em]"
         style={{ color: snapshotTokens.textMuted }}
       >
-        <TeamLogo abbreviation={team} size={22} />
+        <TeamLogo
+          abbreviation={team}
+          logoUrl={logoUrl}
+          sport={sport}
+          size={22}
+        />
         <span>{team}</span>
       </p>
       <p

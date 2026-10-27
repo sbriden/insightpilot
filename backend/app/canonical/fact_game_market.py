@@ -423,29 +423,28 @@ def upsert_fact_game_market(
             over_under = EXCLUDED.over_under,
             home_implied_total = EXCLUDED.home_implied_total,
             away_implied_total = EXCLUDED.away_implied_total,
+            -- Prefer newly supplied opening values so ScoresAndOdds
+            -- Open-column refreshes can correct prior placeholders.
+            -- Never invent opening from the current line.
             opening_spread = COALESCE(
-                {FANTASY_SCHEMA}.fact_game_market.opening_spread,
                 EXCLUDED.opening_spread,
-                EXCLUDED.spread
+                {FANTASY_SCHEMA}.fact_game_market.opening_spread
             ),
             opening_over_under = COALESCE(
-                {FANTASY_SCHEMA}.fact_game_market.opening_over_under,
                 EXCLUDED.opening_over_under,
-                EXCLUDED.over_under
+                {FANTASY_SCHEMA}.fact_game_market.opening_over_under
             ),
             opening_home_implied_total = COALESCE(
-                {FANTASY_SCHEMA}.fact_game_market.opening_home_implied_total,
                 EXCLUDED.opening_home_implied_total,
-                EXCLUDED.home_implied_total
+                {FANTASY_SCHEMA}.fact_game_market.opening_home_implied_total
             ),
             opening_away_implied_total = COALESCE(
-                {FANTASY_SCHEMA}.fact_game_market.opening_away_implied_total,
                 EXCLUDED.opening_away_implied_total,
-                EXCLUDED.away_implied_total
+                {FANTASY_SCHEMA}.fact_game_market.opening_away_implied_total
             ),
             opening_captured_at = COALESCE(
-                {FANTASY_SCHEMA}.fact_game_market.opening_captured_at,
                 EXCLUDED.opening_captured_at,
+                {FANTASY_SCHEMA}.fact_game_market.opening_captured_at,
                 CURRENT_TIMESTAMP
             ),
             line_moved_at = CASE

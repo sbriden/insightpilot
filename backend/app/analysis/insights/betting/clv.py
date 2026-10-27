@@ -24,6 +24,9 @@ from app.analysis.insights.betting.pricing import (
     american_to_implied_prob,
     num,
 )
+from app.analysis.insights.betting.tape_provenance import (
+    independent_quotes_for_clv,
+)
 
 
 # Kept for callers; diagnostics now use point-edge buckets.
@@ -98,12 +101,18 @@ def compute_clv(
     closing_line: float | None = None,
     bet_price: float | None = None,
     closing_price: float | None = None,
+    bet_source: str | None = None,
+    closing_source: str | None = None,
+    require_independent: bool = True,
 ) -> dict[str, Any]:
     """
     Compute signed CLV for one bet.
 
     Spreads/totals: points (positive = beat closing line).
     Moneyline: implied-probability points (positive = beat close).
+
+    When decision-time or closing quotes are missing / not independently
+    observed, CLV is unavailable (None) — never treated as zero.
     """
 
     mtype = str(market_type or "").lower()
@@ -121,6 +130,30 @@ def compute_clv(
     clv = None
     unit = None
     beat_close = None
+    comparable = independent_quotes_for_clv(
+        bet_line=bet_l,
+        closing_line=close_l,
+        bet_price=bet_p,
+        closing_price=close_p,
+        bet_source=bet_source,
+        closing_source=closing_source,
+        # Pure compute_clv callers may omit sources; settled-tape
+        # attach_clv_fields always supplies them (or unverified).
+        require_provenance=bool(bet_source is not None or closing_source is not None)
+        and require_independent,
+    )
+    if require_independent and not comparable:
+        return {
+            "bet_line": bet_l,
+            "closing_line": close_l,
+            "bet_price": bet_p,
+            "closing_price": close_p,
+            "clv": None,
+            "clv_unit": None,
+            "beat_close": None,
+            "clv_available": False,
+            "side": side,
+        }
 
     if mtype in {"spread", "total"} and bet_l is not None and close_l is not None:
         if mtype == "spread":
@@ -154,6 +187,7 @@ def compute_clv(
         "clv": clv,
         "clv_unit": unit,
         "beat_close": beat_close,
+        "clv_available": clv is not None,
         "side": side,
     }
 
@@ -169,31 +203,54 @@ def attach_clv_fields(
     """Mutate/return a settled row with CLV fields filled."""
 
     payload = dict(row)
+    # Do not silently substitute market.line / price for missing bet tape.
+    resolved_bet_line = (
+        bet_line if bet_line is not None else payload.get("bet_line")
+    )
+    resolved_close_line = (
+        closing_line
+        if closing_line is not None
+        else payload.get("closing_line")
+    )
+    resolved_bet_price = (
+        bet_price if bet_price is not None else payload.get("bet_price")
+    )
+    resolved_close_price = (
+        closing_price
+        if closing_price is not None
+        else payload.get("closing_price")
+    )
+    bet_source = (
+        payload.get("bet_line_source")
+        or payload.get("bet_price_source")
+    )
+    closing_source = (
+        payload.get("closing_line_source")
+        or payload.get("closing_price_source")
+    )
+    # Settled / persisted rows without provenance are unverified —
+    # do not invent CLV from bare line pairs.
+    settled_like = bool(
+        payload.get("settled_at")
+        or payload.get("market_id")
+        or payload.get("result")
+    )
+    if settled_like and bet_source is None:
+        bet_source = "unverified_legacy"
+    if settled_like and closing_source is None:
+        closing_source = "unverified_legacy"
     computed = compute_clv(
         market_type=str(payload.get("market_type") or ""),
         selection=str(payload.get("selection") or ""),
         home_team=payload.get("home_team"),
         away_team=payload.get("away_team"),
-        bet_line=(
-            bet_line
-            if bet_line is not None
-            else payload.get("bet_line", payload.get("line"))
-        ),
-        closing_line=(
-            closing_line
-            if closing_line is not None
-            else payload.get("closing_line")
-        ),
-        bet_price=(
-            bet_price
-            if bet_price is not None
-            else payload.get("bet_price", payload.get("price"))
-        ),
-        closing_price=(
-            closing_price
-            if closing_price is not None
-            else payload.get("closing_price")
-        ),
+        bet_line=resolved_bet_line,
+        closing_line=resolved_close_line,
+        bet_price=resolved_bet_price,
+        closing_price=resolved_close_price,
+        bet_source=bet_source,
+        closing_source=closing_source,
+        require_independent=True,
     )
     payload["bet_line"] = computed["bet_line"]
     payload["closing_line"] = computed["closing_line"]
@@ -202,6 +259,7 @@ def attach_clv_fields(
     payload["clv"] = computed["clv"]
     payload["clv_unit"] = computed["clv_unit"]
     payload["beat_close"] = computed["beat_close"]
+    payload["clv_available"] = computed.get("clv_available")
     payload["bet_side"] = computed["side"]
     return payload
 

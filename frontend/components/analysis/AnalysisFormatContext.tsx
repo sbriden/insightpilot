@@ -17,28 +17,34 @@ import {
   type AnalysisFormat,
   type AnalysisTokens,
 } from "@/components/analysis/analysisTokens";
+import { useAppTheme } from "@/components/applications/ApplicationThemeContext";
 
 interface AnalysisFormatContextValue {
   format: AnalysisFormat;
   tokens: AnalysisTokens;
+  showTitle: boolean;
 }
 
 const AnalysisFormatContext =
   createContext<AnalysisFormatContextValue>({
     format: "product",
     tokens: PRODUCT_ANALYSIS_TOKENS,
+    showTitle: true,
   });
 
 export function AnalysisFormatProvider({
   format,
+  showTitle = true,
   children,
 }: {
   format: AnalysisFormat;
+  showTitle?: boolean;
   children: ReactNode;
 }) {
+  const appThemeTokens = useAppTheme();
   const tokens = useMemo(
-    () => tokensForFormat(format),
-    [format]
+    () => tokensForFormat(format, appThemeTokens),
+    [format, appThemeTokens]
   );
 
   // Synchronous so children reading snapshotTokens in the same render see app tokens.
@@ -57,8 +63,8 @@ export function AnalysisFormatProvider({
   );
 
   const value = useMemo(
-    () => ({ format, tokens }),
-    [format, tokens]
+    () => ({ format, tokens, showTitle }),
+    [format, tokens, showTitle]
   );
 
   return (
@@ -80,4 +86,8 @@ export function useAnalysisFormat(): AnalysisFormat {
 
 export function useAnalysisTokens(): AnalysisTokens {
   return useContext(AnalysisFormatContext).tokens;
+}
+
+export function useShowAnalysisTitle(): boolean {
+  return useContext(AnalysisFormatContext).showTitle;
 }

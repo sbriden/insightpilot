@@ -49,7 +49,8 @@ def predict_score_residuals(
     after adding situational residual layers.
     """
 
-    active = policy or load_blend_policy()
+    sport = str((strength_context or {}).get("sport") or "NFL").upper()
+    active = policy or load_blend_policy(sport=sport)
     strength_home = None
     strength_away = None
     detail: dict[str, Any] = {"available": False}
@@ -95,6 +96,45 @@ def predict_score_residuals(
         # Core residual: disagreement between strength view and market.
         raw_home = float(strength_home) - float(market_home)
         raw_away = float(strength_away) - float(market_away)
+        # Absolute (strength - market) invents chalk fades / total bias
+        # when PPG regresses to league average. Prefer market baseline +
+        # matchup deviation. Keep PPG-fallback on the simple path so
+        # unit tests / thin contexts still exercise raw residuals.
+        use_matchup_anchor = (
+            sport in {"NFL", "CFB"}
+            and not detail.get("fallback")
+            and bool(detail.get("available"))
+        )
+        if use_matchup_anchor:
+            market_total = float(market_home) + float(market_away)
+            market_margin = float(market_home) - float(market_away)
+            strength_total = float(strength_home) + float(strength_away)
+            strength_margin = float(strength_home) - float(strength_away)
+            league_avg = float(
+                num(detail.get("league_avg_ppg"))
+                or (0.5 * strength_total)
+            )
+            matchup_total = strength_total - (2.0 * league_avg)
+            matchup_margin = strength_margin
+            # Totals: additive pace/matchup vs league average.
+            total_trust = 0.75 if sport == "CFB" else 0.55
+            # Same-sign matchups restate the market favorite — ignore.
+            # Opposite-sign: target a post-shrink margin move so
+            # confidence shrink cannot erase the disagreement.
+            if matchup_margin * market_margin < 0:
+                target_margin_delta = 0.90 * matchup_margin
+                raw_margin_delta = target_margin_delta / max(
+                    shrink, 0.08
+                )
+                adj_margin = market_margin + raw_margin_delta
+            else:
+                adj_margin = market_margin
+            # Totals stay pre-shrink (shrink still damps the raw residual).
+            adj_total = market_total + total_trust * matchup_total
+            adj_home = 0.5 * adj_total + 0.5 * adj_margin
+            adj_away = 0.5 * adj_total - 0.5 * adj_margin
+            raw_home = adj_home - float(market_home)
+            raw_away = adj_away - float(market_away)
     elif strength_home is not None and strength_away is not None:
         # No market — residual is undefined; absolute strength only.
         raw_home = 0.0
@@ -231,6 +271,10 @@ def apply_score_residuals(
     return round(home, 1), round(away, 1), meta
 
 
+# Cap spread feedback so one noisy season cannot dominate margins.
+_CALIBRATION_SPREAD_CAP = 0.75
+
+
 def calibration_score_deltas(
     *,
     projected_home: float | None,
@@ -251,8 +295,15 @@ def calibration_score_deltas(
         or not feedback.get("active")
     ):
         return 0.0, 0.0
-    total_bias = num(feedback.get("total_bias")) or 0.0
+    # Total bias learned under the prior absolute-strength residual
+    # systematically re-inflates every NFL total (86% Overs). Keep
+    # spread calibration; ignore total until feedback is re-fit.
+    total_bias = 0.0
     spread_bias = num(feedback.get("spread_bias")) or 0.0
+    spread_bias = max(
+        -_CALIBRATION_SPREAD_CAP,
+        min(_CALIBRATION_SPREAD_CAP, float(spread_bias)),
+    )
     # Same transform as apply_calibration_to_scores:
     # home' = home - total/2 + spread/2
     # away' = away - total/2 - spread/2

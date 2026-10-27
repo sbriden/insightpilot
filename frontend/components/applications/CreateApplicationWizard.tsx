@@ -4,10 +4,19 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { appTheme } from "@/components/applications/appTheme";
+import {
+  APP_THEMES,
+  appTheme,
+  normalizeAppThemeId,
+  type AppThemeId,
+} from "@/components/applications/appTheme";
 import ApplicationLogo, {
   fileToLogoDataUrl,
+  isLogoDataUrl,
+  normalizeLogoType,
+  type ApplicationLogoType,
 } from "@/components/applications/ApplicationLogo";
+import ThemePreviewScreenshot from "@/components/applications/ThemePreviewScreenshot";
 import {
   ANALYSIS_REGISTRY,
   expandLegacyOverviewKeys,
@@ -18,9 +27,12 @@ import {
 } from "@/lib/analysisRegistry";
 import {
   createAnalyticalApplication,
+  DEFAULT_APPLICATION_SETTINGS,
+  normalizeApplicationSettings,
   updateAnalyticalApplication,
   type AnalyticalApplication,
   type AnalyticalApplicationAnalysis,
+  type AnalyticalApplicationSettings,
 } from "@/services/api";
 
 type Step = "name" | "select" | "organize";
@@ -77,6 +89,10 @@ export default function CreateApplicationWizard({
       return map;
     }
   );
+  const [settings, setSettings] =
+    useState<AnalyticalApplicationSettings>(() =>
+      normalizeApplicationSettings(existing?.settings)
+    );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -126,6 +142,13 @@ export default function CreateApplicationWizard({
     setGroupByKey((current) => ({ ...current, [key]: group }));
   }
 
+  function setSetting<K extends keyof AnalyticalApplicationSettings>(
+    key: K,
+    value: AnalyticalApplicationSettings[K]
+  ) {
+    setSettings((current) => ({ ...current, [key]: value }));
+  }
+
   async function submit() {
     setSaving(true);
     setError(null);
@@ -145,6 +168,7 @@ export default function CreateApplicationWizard({
           description: description.trim(),
           icon: logo,
           analyses,
+          settings,
         });
         router.push(`/applications/${updated.id}`);
         return;
@@ -154,6 +178,7 @@ export default function CreateApplicationWizard({
         description: description.trim(),
         icon: logo,
         analyses,
+        settings,
       });
       router.push(`/applications/${created.id}`);
     } catch (err) {
@@ -185,11 +210,16 @@ export default function CreateApplicationWizard({
             eyebrow: "03 — Organize",
             title: "Arrange your workspace",
             support:
-              "Set navigation order and groups. Groups default to the source data product.",
+              "Set navigation order, groups, and UI chrome. Groups default to the source data product.",
           };
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8 px-6 py-8 lg:px-8 lg:py-10">
+    <div
+      className={[
+        "mx-auto space-y-8 px-6 py-8 lg:px-8 lg:py-10",
+        step === "organize" ? "max-w-5xl" : "max-w-3xl",
+      ].join(" ")}
+    >
       <div className="flex items-center justify-between">
         <Link
           href="/applications"
@@ -284,8 +314,95 @@ export default function CreateApplicationWizard({
               Logo{" "}
               <span style={{ color: appTheme.slate }}>(optional)</span>
             </span>
-            <div className="mt-2 flex flex-wrap items-center gap-4">
-              <ApplicationLogo src={logo} name={name || "Application"} size={48} />
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {(
+                [
+                  {
+                    id: "square" as const,
+                    label: "Small square",
+                    support:
+                      "Icon mark shown next to the application title.",
+                  },
+                  {
+                    id: "wordmark" as const,
+                    label: "Long rectangle",
+                    support:
+                      "Wide wordmark that replaces the title text in the header.",
+                  },
+                ] as const
+              ).map((option) => {
+                const selected =
+                  normalizeLogoType(settings.logo_type) === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() =>
+                      setSetting("logo_type", option.id as ApplicationLogoType)
+                    }
+                    className="rounded-xl p-3 text-left transition-colors"
+                    style={{
+                      background: selected
+                        ? "rgba(0,140,255,0.10)"
+                        : appTheme.elevated,
+                      border: `1px solid ${
+                        selected
+                          ? appTheme.borderActive
+                          : appTheme.border
+                      }`,
+                    }}
+                  >
+                    <span
+                      className="block text-sm font-semibold"
+                      style={{ color: appTheme.white }}
+                    >
+                      {option.label}
+                    </span>
+                    <span
+                      className="mt-0.5 block text-xs leading-relaxed"
+                      style={{ color: appTheme.silver }}
+                    >
+                      {option.support}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-4">
+              {normalizeLogoType(settings.logo_type) === "wordmark" ? (
+                <div
+                  className="flex min-h-[48px] min-w-[160px] max-w-full items-center"
+                  style={{
+                    border: `1px dashed ${appTheme.border}`,
+                    borderRadius: 8,
+                    padding: "8px 12px",
+                  }}
+                >
+                  {isLogoDataUrl(logo) ? (
+                    <ApplicationLogo
+                      src={logo}
+                      name={name || "Application"}
+                      variant="wordmark"
+                      size={36}
+                    />
+                  ) : (
+                    <span
+                      className="text-xs"
+                      style={{ color: appTheme.slate }}
+                    >
+                      Wordmark preview
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <ApplicationLogo
+                  src={logo}
+                  name={name || "Application"}
+                  variant="square"
+                  size={48}
+                />
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <label
                   className="cursor-pointer rounded-lg px-3 py-1.5 text-sm font-medium"
@@ -307,7 +424,10 @@ export default function CreateApplicationWizard({
                       void (async () => {
                         try {
                           setLogoError(null);
-                          const dataUrl = await fileToLogoDataUrl(file);
+                          const dataUrl = await fileToLogoDataUrl(
+                            file,
+                            normalizeLogoType(settings.logo_type)
+                          );
                           setLogo(dataUrl);
                         } catch (err) {
                           setLogoError(
@@ -336,7 +456,9 @@ export default function CreateApplicationWizard({
               </div>
             </div>
             <p className="mt-2 text-xs" style={{ color: appTheme.slate }}>
-              Shown in the application header. PNG, JPG, WebP, or SVG.
+              {normalizeLogoType(settings.logo_type) === "wordmark"
+                ? "Upload a wide logo that includes the app name. It replaces the title in the header. PNG, JPG, WebP, or SVG."
+                : "Shown beside the application title. PNG, JPG, WebP, or SVG."}
             </p>
             {logoError ? (
               <p className="mt-1 text-xs" style={{ color: appTheme.negative }}>
@@ -554,6 +676,236 @@ export default function CreateApplicationWizard({
                 );
               })}
             </ul>
+          </section>
+
+          <section className="ip-app-panel rounded-2xl p-6">
+            <h2
+              className="text-lg font-semibold"
+              style={{ color: appTheme.white }}
+            >
+              UI
+            </h2>
+            <p className="mt-1 text-sm" style={{ color: appTheme.silver }}>
+              Enable any combination of navigation patterns for this
+              application.
+            </p>
+            <ul className="mt-4 space-y-3">
+              {(
+                [
+                  {
+                    key: "show_top_tabs",
+                    label: "Top tabs",
+                    support:
+                      "Horizontal tabs for analyses in the active navigation group.",
+                  },
+                  {
+                    key: "show_left_nav",
+                    label: "Left-hand nav",
+                    support:
+                      "Sidebar with grouped analyses, similar to a desktop app.",
+                  },
+                  {
+                    key: "show_bottom_tabs",
+                    label: "Bottom tabs",
+                    support:
+                      "Icon bar along the bottom, like a mobile app. Works alone or with the other nav styles.",
+                  },
+                ] as const
+              ).map((option) => {
+                const checked = settings[option.key];
+                return (
+                  <li key={option.key}>
+                    <label
+                      className="flex cursor-pointer gap-3 rounded-xl p-3 transition-colors"
+                      style={{
+                        background: checked
+                          ? "rgba(0,140,255,0.10)"
+                          : appTheme.elevated,
+                        border: `1px solid ${
+                          checked
+                            ? appTheme.borderActive
+                            : appTheme.border
+                        }`,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) =>
+                          setSetting(option.key, event.target.checked)
+                        }
+                        className="mt-1 accent-[#00E5FF]"
+                      />
+                      <span>
+                        <span
+                          className="block text-sm font-semibold"
+                          style={{ color: appTheme.white }}
+                        >
+                          {option.label}
+                        </span>
+                        <span
+                          className="mt-0.5 block text-sm"
+                          style={{ color: appTheme.silver }}
+                        >
+                          {option.support}
+                        </span>
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <div
+              className="mt-6 border-t pt-5"
+              style={{ borderColor: appTheme.border }}
+            >
+              <h3
+                className="text-sm font-semibold"
+                style={{ color: appTheme.white }}
+              >
+                Theme
+              </h3>
+              <p className="mt-1 text-sm" style={{ color: appTheme.silver }}>
+                Choose the visual theme for this application&apos;s studio and
+                published views.
+              </p>
+              <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(240px,0.95fr)] lg:items-start">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {APP_THEMES.map((option) => {
+                    const selectedTheme =
+                      normalizeAppThemeId(settings.theme) === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() =>
+                          setSetting("theme", option.id as AppThemeId)
+                        }
+                        className="rounded-xl p-3 text-left transition-colors"
+                        style={{
+                          background: selectedTheme
+                            ? "rgba(0,140,255,0.10)"
+                            : appTheme.elevated,
+                          border: `1px solid ${
+                            selectedTheme
+                              ? appTheme.borderActive
+                              : appTheme.border
+                          }`,
+                        }}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className="flex gap-1">
+                            {option.swatches.map((swatch) => (
+                              <span
+                                key={swatch}
+                                className="h-3.5 w-3.5 rounded-full"
+                                style={{
+                                  background: swatch,
+                                  border: `1px solid ${appTheme.borderInput}`,
+                                }}
+                              />
+                            ))}
+                          </span>
+                          <span
+                            className="text-sm font-semibold"
+                            style={{ color: appTheme.white }}
+                          >
+                            {option.name}
+                          </span>
+                        </span>
+                        <span
+                          className="mt-1.5 block text-xs leading-relaxed"
+                          style={{ color: appTheme.silver }}
+                        >
+                          {option.description}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <ThemePreviewScreenshot
+                  themeId={settings.theme}
+                  appName={name.trim() || "Your application"}
+                  showLeftNav={settings.show_left_nav}
+                  showTopTabs={settings.show_top_tabs}
+                  showBottomTabs={settings.show_bottom_tabs}
+                />
+              </div>
+            </div>
+
+            <div
+              className="mt-6 border-t pt-5"
+              style={{ borderColor: appTheme.border }}
+            >
+              <h3
+                className="text-sm font-semibold"
+                style={{ color: appTheme.white }}
+              >
+                Content
+              </h3>
+              <label
+                className="mt-3 flex cursor-pointer gap-3 rounded-xl p-3 transition-colors"
+                style={{
+                  background: settings.show_analysis_title
+                    ? "rgba(0,140,255,0.10)"
+                    : appTheme.elevated,
+                  border: `1px solid ${
+                    settings.show_analysis_title
+                      ? appTheme.borderActive
+                      : appTheme.border
+                  }`,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={settings.show_analysis_title}
+                  onChange={(event) =>
+                    setSetting("show_analysis_title", event.target.checked)
+                  }
+                  className="mt-1 accent-[#00E5FF]"
+                />
+                <span>
+                  <span
+                    className="block text-sm font-semibold"
+                    style={{ color: appTheme.white }}
+                  >
+                    Analysis title
+                  </span>
+                  <span
+                    className="mt-0.5 block text-sm"
+                    style={{ color: appTheme.silver }}
+                  >
+                    Product label, analysis name, and description (for
+                    example: Sports Betting — Daily Bet Slate).
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            {settings.show_left_nav ===
+              DEFAULT_APPLICATION_SETTINGS.show_left_nav &&
+            settings.show_top_tabs ===
+              DEFAULT_APPLICATION_SETTINGS.show_top_tabs &&
+            settings.show_bottom_tabs ===
+              DEFAULT_APPLICATION_SETTINGS.show_bottom_tabs &&
+            settings.show_analysis_title ===
+              DEFAULT_APPLICATION_SETTINGS.show_analysis_title &&
+            settings.theme ===
+              DEFAULT_APPLICATION_SETTINGS.theme &&
+            settings.logo_type ===
+              DEFAULT_APPLICATION_SETTINGS.logo_type ? null : (
+              <button
+                type="button"
+                className="mt-3 text-xs"
+                style={{ color: appTheme.slate }}
+                onClick={() =>
+                  setSettings({ ...DEFAULT_APPLICATION_SETTINGS })
+                }
+              >
+                Reset to defaults
+              </button>
+            )}
           </section>
 
           {error ? (

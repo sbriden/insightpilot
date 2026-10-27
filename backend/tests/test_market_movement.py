@@ -27,9 +27,12 @@ class MarketMovementTests(unittest.TestCase):
         self.assertEqual(move["spread_move"], -1.5)
         self.assertEqual(move["total_move"], 1.5)
         self.assertTrue(move["moved"])
-        self.assertIsNotNone(move["opening_moneyline"])
-        self.assertIsNotNone(move["current_moneyline"])
-        self.assertIsNotNone(move["moneyline_move"])
+        # Real ML quotes absent — synthetic only on display fields.
+        self.assertIsNone(move["opening_moneyline"])
+        self.assertIsNone(move["current_moneyline"])
+        self.assertIsNone(move["moneyline_move"])
+        self.assertIsNotNone(move["opening_moneyline_display"])
+        self.assertIsNotNone(move["current_moneyline_display"])
         # Eventual fields are present as stubs.
         self.assertIsNone(move["spread_velocity"])
         self.assertIsNone(move["consensus_move"])

@@ -66,7 +66,7 @@ export interface FieldOpportunity {
  * Data Sources
  * -------------------------------------------------------------------------- */
 
-export type DataSourceKind = "csv" | "nflverse";
+export type DataSourceKind = "csv" | "nflverse" | "sportsdataverse";
 
 export interface DataSourceOption {
   id: string;
@@ -122,6 +122,14 @@ export interface NflverseSelection {
   preMapped?: boolean;
   rowCount?: number;
 }
+
+/** Alias — sportsdataverse catalog mirrors nflverse shape. */
+export type SportsdataverseCatalog = NflverseCatalog;
+export type SportsdataverseDatasetOption = NflverseDatasetOption;
+export type SportsdataverseSelection = NflverseSelection;
+export type SportsdataversePreviewResult = NflversePreviewResult;
+export type SportsdataverseIngestMode = NflverseIngestMode;
+export type SportsdataverseRefreshResult = NflverseRefreshResult;
 
 export interface NflversePreviewResult {
   source_id: string;

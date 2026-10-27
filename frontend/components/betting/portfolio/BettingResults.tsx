@@ -12,6 +12,7 @@ import {
   YAxis,
 } from "recharts";
 
+import { useShowAnalysisTitle } from "@/components/analysis/AnalysisFormatContext";
 import { formatAmerican } from "@/components/betting/formatMarketValues";
 import {
   loadBettingPortfolio,
@@ -31,6 +32,7 @@ import {
   BettingPortfolioAnalyzeResult,
   BettingResultsPayload,
   BettingSlate,
+  BettingSport,
   getBettingResults,
 } from "@/services/api";
 
@@ -38,6 +40,7 @@ interface Props {
   slate: BettingSlate;
   season: number | null;
   week: number | null;
+  sport?: BettingSport;
 }
 
 type ResultsView = "model" | "portfolio";
@@ -85,7 +88,9 @@ export default function BettingResults({
   slate,
   season,
   week,
+  sport = "NFL",
 }: Props) {
+  const showTitle = useShowAnalysisTitle();
   const [view, setView] = useState<ResultsView>("model");
   const [modelPayload, setModelPayload] =
     useState<BettingResultsPayload | null>(null);
@@ -101,7 +106,7 @@ export default function BettingResults({
       setError(null);
       try {
         const [model, portfolioStored] = await Promise.all([
-          getBettingResults({ season, week }),
+          getBettingResults({ season, week, sport }),
           Promise.resolve(loadBettingPortfolio()),
         ]);
         if (cancelled) return;
@@ -111,6 +116,7 @@ export default function BettingResults({
             positions: portfolioStored.positions,
             season,
             week,
+            sport,
             status_filter: "all",
           });
           if (cancelled) return;
@@ -135,7 +141,7 @@ export default function BettingResults({
     return () => {
       cancelled = true;
     };
-  }, [season, week, slate.slate_id]);
+  }, [season, week, sport, slate.slate_id]);
 
   const model = modelPayload?.model_results;
   const feedback = modelPayload?.calibration_feedback;
@@ -144,6 +150,7 @@ export default function BettingResults({
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
+        {showTitle ? (
         <div>
           <h2
             className="text-2xl font-semibold tracking-tight"
@@ -166,6 +173,9 @@ export default function BettingResults({
             {modelPayload?.label || slate.label}
           </p>
         </div>
+        ) : (
+          <div />
+        )}
         <div
           className="flex rounded-lg border p-1"
           style={{ borderColor: snapshotTokens.border }}

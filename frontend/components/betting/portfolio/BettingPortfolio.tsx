@@ -3,12 +3,13 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { Info } from "lucide-react";
 
+import { useShowAnalysisTitle } from "@/components/analysis/AnalysisFormatContext";
+import { formatAmerican } from "@/components/betting/formatMarketValues";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
 import TeamLogo, {
   TeamMatchupLabel,
   teamInSelection,
 } from "@/components/teams/TeamLogo";
-import { formatAmerican } from "@/components/betting/formatMarketValues";
 import {
   exportBettingPortfolio,
   loadBettingPortfolio,
@@ -24,6 +25,7 @@ import {
   BettingPortfolioHealthRow,
   BettingPortfolioPosition,
   BettingSlate,
+  BettingSport,
   createBettingPortfolioPosition,
   generateBettingPortfolio,
 } from "@/services/api";
@@ -32,6 +34,7 @@ interface Props {
   slate: BettingSlate;
   season: number | null;
   week: number | null;
+  sport?: BettingSport;
   pendingMarket?: BettingMarket | null;
   onPendingMarketConsumed?: () => void;
   onOpenMarket?: (
@@ -52,10 +55,12 @@ export default function BettingPortfolio({
   slate,
   season,
   week,
+  sport = "NFL",
   pendingMarket = null,
   onPendingMarketConsumed,
   onOpenMarket,
 }: Props) {
+  const showTitle = useShowAnalysisTitle();
   const [positions, setPositions] = useState<
     BettingPortfolioPosition[]
   >([]);
@@ -99,7 +104,7 @@ export default function BettingPortfolio({
     if (!hydrated) return;
     void recalculate(positions, statusFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, season, week, statusFilter]);
+  }, [hydrated, season, week, sport, statusFilter]);
 
   useEffect(() => {
     if (!pendingMarket) return;
@@ -119,6 +124,7 @@ export default function BettingPortfolio({
         positions: nextPositions,
         season,
         week,
+        sport,
         status_filter:
           filter === "settled" ? "all" : filter,
       });
@@ -166,6 +172,7 @@ export default function BettingPortfolio({
         risk_exposure: riskExposureInput,
         season,
         week,
+        sport,
         risk: riskProfile,
       });
       const generated = result.positions ?? [];
@@ -296,6 +303,7 @@ export default function BettingPortfolio({
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
+        {showTitle ? (
         <div>
           <h2
             className="text-2xl font-semibold tracking-tight"
@@ -312,6 +320,9 @@ export default function BettingPortfolio({
             InsightPilot.
           </p>
         </div>
+        ) : (
+          <div />
+        )}
         <div className="flex flex-wrap gap-2">
           <select
             className="rounded-lg border bg-white px-3 py-2 text-sm"
@@ -500,8 +511,10 @@ export default function BettingPortfolio({
                           <TeamLogo
                             abbreviation={teamInSelection(
                               row.selection,
-                              [row.away_team, row.home_team]
+                              [row.away_team, row.home_team],
+                              sport
                             )}
+                            sport={sport}
                             size={18}
                           />
                           <span>{row.selection || "—"}</span>
@@ -516,6 +529,7 @@ export default function BettingPortfolio({
                             label={row.event_label}
                             away={row.away_team}
                             home={row.home_team}
+                            sport={sport}
                             size={16}
                           />
                         </span>
@@ -679,6 +693,7 @@ export default function BettingPortfolio({
         onTab={setDetailTab}
         exposureTab={exposureTab}
         onExposureTab={setExposureTab}
+        sport={sport}
         exposure={analytics?.exposure}
         correlations={analytics?.correlations ?? []}
         edgeDistribution={analytics?.edge_distribution ?? []}
@@ -1520,6 +1535,7 @@ function PortfolioDetailTabs({
   onTab,
   exposureTab,
   onExposureTab,
+  sport,
   exposure,
   correlations,
   edgeDistribution,
@@ -1530,6 +1546,7 @@ function PortfolioDetailTabs({
   onTab: (tab: DetailTab) => void;
   exposureTab: ExposureTab;
   onExposureTab: (tab: ExposureTab) => void;
+  sport: BettingSport;
   exposure?: BettingPortfolioAnalytics["exposure"];
   correlations: BettingPortfolioAnalytics["correlations"];
   edgeDistribution: BettingPortfolioAnalytics["edge_distribution"];
@@ -1583,6 +1600,7 @@ function PortfolioDetailTabs({
           <ExposurePanel
             tab={exposureTab}
             onTab={onExposureTab}
+            sport={sport}
             exposure={exposure}
           />
         ) : null}
@@ -1619,10 +1637,12 @@ function PortfolioDetailTabs({
 function ExposurePanel({
   tab,
   onTab,
+  sport,
   exposure,
 }: {
   tab: ExposureTab;
   onTab: (tab: ExposureTab) => void;
+  sport: BettingSport;
   exposure?: BettingPortfolioAnalytics["exposure"];
 }) {
   const tabs: Array<{ id: ExposureTab; label: string }> = [
@@ -1708,12 +1728,20 @@ function ExposurePanel({
                 >
                   {tab === "team" && row.team ? (
                     <span className="inline-flex items-center gap-1.5 normal-case">
-                      <TeamLogo abbreviation={row.team} size={18} />
+                      <TeamLogo
+                        abbreviation={row.team}
+                        sport={sport}
+                        size={18}
+                      />
                       <span>{row.team}</span>
                     </span>
                   ) : tab === "game" ? (
                     <span className="normal-case">
-                      <TeamMatchupLabel label={row.game} size={18} />
+                      <TeamMatchupLabel
+                        label={row.game}
+                        sport={sport}
+                        size={18}
+                      />
                     </span>
                   ) : (
                     row.game

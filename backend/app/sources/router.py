@@ -14,13 +14,18 @@ import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 
 from app.services.analysis import analyze_dataframe
+from app.sources import cfb_lifecycle
 from app.sources import data_lifecycle
 from app.sources import nflverse as nflverse_source
+from app.sources import sportsdataverse as sportsdataverse_source
 from app.sources.schemas import (
     DfsSalaryUploadResponse,
     NflverseAnalyzeRequest,
     NflversePreviewRequest,
     NflverseRefreshRequest,
+    ScoresandoddsRefreshRequest,
+    SportsdataversePreviewRequest,
+    SportsdataverseRefreshRequest,
 )
 
 
@@ -50,8 +55,317 @@ def list_sources():
                 "kind": "connector",
                 "homepage": "https://nflverse.nflverse.com/",
             },
+            {
+                "id": "sportsdataverse",
+                "name": "sportsdataverse",
+                "description": (
+                    "College football canonical model from "
+                    "sportsdataverse — teams, players, "
+                    "schedules, box scores, and lines."
+                ),
+                "kind": "connector",
+                "homepage": "https://py.sportsdataverse.org/",
+            },
+            {
+                "id": "scoresandodds",
+                "name": "ScoresAndOdds",
+                "description": (
+                    "Live consensus odds (spreads, totals, "
+                    "moneylines) for NCAAF, NFL, NBA, NHL, MLB, "
+                    "and NCAAB — upserts into fact_game_market."
+                ),
+                "kind": "connector",
+                "homepage": "https://www.scoresandodds.com/",
+                "leagues": [
+                    "ncaaf",
+                    "nfl",
+                    "nba",
+                    "nhl",
+                    "mlb",
+                    "ncaab",
+                ],
+            },
         ]
     }
+
+
+@router.post("/scoresandodds/refresh")
+def refresh_scoresandodds_odds(
+    request: ScoresandoddsRefreshRequest,
+):
+    """
+    Refresh market lines from ScoresAndOdds.com.
+
+    Uses the Action Network scoreboard JSON that powers the
+    ScoresAndOdds pages, then upserts into fact_game_market:
+
+      ncaaf → college_football
+      nfl → fantasy_football
+      nba / nhl / mlb / ncaab → sports_odds
+    """
+
+    league = (request.league or "ncaaf").strip().lower()
+    try:
+        if league == "nfl":
+            from app.canonical.odds_scoresandodds import (
+                ingest_nfl_scoresandodds_markets,
+            )
+
+            result = ingest_nfl_scoresandodds_markets(
+                season=request.season,
+                weeks=request.weeks or None,
+                persist=request.persist,
+            )
+        elif league == "ncaaf":
+            from app.canonical.cfb.odds_scoresandodds import (
+                ingest_scoresandodds_markets,
+            )
+
+            result = ingest_scoresandodds_markets(
+                season=request.season,
+                weeks=request.weeks or None,
+                persist=request.persist,
+            )
+        elif league in {"nba", "nhl", "mlb", "ncaab"}:
+            from app.canonical.sports_odds.odds_scoresandodds import (
+                ingest_scoresandodds_markets,
+            )
+
+            result = ingest_scoresandodds_markets(
+                league,
+                season=request.season,
+                dates=request.dates or None,
+                persist=request.persist,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported league {request.league!r}; "
+                "use 'ncaaf', 'nfl', 'nba', 'nhl', 'mlb', or 'ncaab'."
+            )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Failed to refresh ScoresAndOdds {league} odds: "
+                f"{exc}"
+            ),
+        ) from exc
+
+    return {
+        "source_id": "scoresandodds",
+        "league": league,
+        **result,
+    }
+
+
+@router.get("/sportsdataverse/datasets")
+def list_sportsdataverse_datasets():
+    try:
+        current_season = sportsdataverse_source.get_current_season()
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Unable to reach sportsdataverse data right now: "
+                f"{exc}"
+            ),
+        ) from exc
+
+    datasets = sportsdataverse_source.list_datasets()
+    historical = cfb_lifecycle.historical_seasons(
+        current_season=current_season,
+    )
+    return {
+        "source_id": "sportsdataverse",
+        "current_season": current_season,
+        "historical_seasons": historical,
+        "historical_season_count": (
+            cfb_lifecycle.HISTORICAL_SEASON_COUNT
+        ),
+        "foundation": "college_football",
+        "datasets": datasets,
+        "domains": [
+            {
+                "id": dataset["domain"],
+                "label": dataset["domain_label"],
+            }
+            for dataset in datasets
+        ],
+        "available_seasons": list(
+            range(
+                sportsdataverse_source.MIN_SEASON,
+                current_season + 1,
+            )
+        ),
+        "refresh_scopes": [
+            "historical",
+            "current",
+            "seasons",
+        ],
+        "ingest_modes": cfb_lifecycle.list_ingest_modes(),
+        "ingest_layers": list(cfb_lifecycle.LAYER_ORDER),
+    }
+
+
+@router.post("/sportsdataverse/preview")
+def preview_sportsdataverse_dataset(
+    request: SportsdataversePreviewRequest,
+    background_tasks: BackgroundTasks,
+):
+    try:
+        df, dataset, seasons = sportsdataverse_source.load_dataset(
+            request.dataset_id,
+            request.seasons or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Failed to load sportsdataverse dataset: "
+                f"{exc}"
+            ),
+        ) from exc
+
+    if dataset.id == "dim_team":
+        from app.canonical.cfb import dim_team as dim_team_mod
+
+        if (
+            dim_team_mod.dim_team_count() == 0
+            and dim_team_mod._DIM_TEAM_CACHE_WITH_KEYS is not None
+            and not dim_team_mod._DIM_TEAM_CACHE_WITH_KEYS.empty
+        ):
+            background_tasks.add_task(
+                dim_team_mod.upsert_dim_team,
+                dim_team_mod._DIM_TEAM_CACHE_WITH_KEYS.copy(),
+            )
+
+    if dataset.id == "dim_player":
+        from app.canonical.cfb import dim_player as dim_player_mod
+
+        if (
+            dim_player_mod.dim_player_count() == 0
+            and dim_player_mod._DIM_PLAYER_CACHE_WITH_KEYS is not None
+            and not dim_player_mod._DIM_PLAYER_CACHE_WITH_KEYS.empty
+        ):
+            background_tasks.add_task(
+                dim_player_mod.upsert_dim_player,
+                dim_player_mod._DIM_PLAYER_CACHE_WITH_KEYS.copy(),
+            )
+
+    if dataset.id == "dim_game":
+        from app.canonical.cfb import dim_game as dim_game_mod
+
+        if (
+            dim_game_mod.dim_game_count() == 0
+            and dim_game_mod._DIM_GAME_CACHE_WITH_KEYS is not None
+            and not dim_game_mod._DIM_GAME_CACHE_WITH_KEYS.empty
+        ):
+            background_tasks.add_task(
+                dim_game_mod.upsert_dim_game,
+                dim_game_mod._DIM_GAME_CACHE_WITH_KEYS.copy(),
+            )
+
+    sample_rows = sportsdataverse_source.sample_records(df)
+    prebuilt_mappings = (
+        sportsdataverse_source.build_prebuilt_mappings(df)
+    )
+    label = sportsdataverse_source.source_label(
+        dataset,
+        seasons,
+    )
+    return {
+        "source_id": "sportsdataverse",
+        "dataset_id": dataset.id,
+        "dataset_name": dataset.name,
+        "domain": dataset.domain,
+        "domain_label": dataset.domain_label,
+        "seasons": seasons,
+        "label": label,
+        "row_count": int(len(df)),
+        "column_count": int(len(df.columns)),
+        "fields": sportsdataverse_source.dataframe_fields(df),
+        "sample_rows": sample_rows,
+        "sample_row_count": len(sample_rows),
+        "pre_mapped": True,
+        "prebuilt_mappings": prebuilt_mappings,
+        "notes": dataset.notes,
+        "foundation": "college_football",
+    }
+
+
+@router.post("/sportsdataverse/refresh")
+def refresh_sportsdataverse_data(
+    request: SportsdataverseRefreshRequest,
+):
+    """
+    Run a college football ingestion job.
+
+    Modes:
+      historical  — multi-season dims + facts
+      incremental — current-season update
+      reprocess   — rebuild facts
+    """
+
+    try:
+        result = cfb_lifecycle.refresh_pipeline(
+            mode=request.mode,
+            scope=request.scope,
+            seasons=request.seasons or None,
+            layers=request.layers or None,
+            dataset_ids=request.dataset_ids or None,
+            persist=request.persist,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Failed to refresh sportsdataverse data: "
+                f"{exc}"
+            ),
+        ) from exc
+
+    return {
+        "source_id": "sportsdataverse",
+        **result,
+    }
+
+
+@router.get("/sportsdataverse/quality")
+def get_sportsdataverse_data_quality(
+    live: bool = True,
+):
+    """College football canonical data-quality report."""
+
+    try:
+        return cfb_lifecycle.get_college_data_quality(live=live)
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Failed to load college football data quality: "
+                f"{exc}"
+            ),
+        ) from exc
 
 
 @router.get("/nflverse/datasets")
@@ -1344,7 +1658,7 @@ def list_betting_weeks(
     season: int | None = None,
     sport: str = "NFL",
 ):
-    """Available NFL weeks with betting market coverage."""
+    """Available weeks with betting market coverage (NFL or CFB)."""
 
     from app.analysis.insights.betting import (
         list_betting_weeks as _list_weeks,
@@ -1369,7 +1683,7 @@ def get_betting_slate(
     probability_engine: str = "logistic",
 ):
     """
-    NFL Sports Betting slate for a week.
+    Sports Betting slate for a week (NFL or CFB).
 
     Returns events, expanded markets (spread / total /
     moneyline), model vs market comparisons, and signals.
@@ -1408,6 +1722,7 @@ def get_betting_slate(
 def get_betting_event_detail(
     event_id: str,
     season: int | None = None,
+    sport: str = "NFL",
 ):
     """Single-event betting analysis payload."""
 
@@ -1419,6 +1734,7 @@ def get_betting_event_detail(
         result = get_betting_event(
             event_id,
             season=season,
+            sport=sport,
         )
     except Exception as exc:
         traceback.print_exc()
@@ -1522,7 +1838,6 @@ def get_nflverse_betting_results(
     once final scores are available.
     """
 
-    del sport
     from app.analysis.insights.betting import (
         build_betting_results,
     )
@@ -1531,6 +1846,7 @@ def get_nflverse_betting_results(
         return build_betting_results(
             season=season,
             week=week,
+            sport=sport,
         )
     except Exception as exc:
         traceback.print_exc()
@@ -1562,6 +1878,7 @@ def generate_nflverse_betting_portfolio(payload: dict):
             ),
             season=payload.get("season"),
             week=payload.get("week"),
+            sport=str(payload.get("sport") or "NFL"),
             risk=str(payload.get("risk") or "balanced"),
             market_types=list(
                 payload.get("market_types") or []
@@ -1592,6 +1909,81 @@ def generate_nflverse_betting_portfolio(payload: dict):
         ) from exc
 
 
+@router.get("/nflverse/betting/daily-slate/sports")
+def list_nflverse_daily_betting_sports(date: str | None = None):
+    """
+    List which sports have eligible markets for the given day
+    (default: today in America/New_York).
+    """
+
+    from app.analysis.insights.betting import (
+        list_daily_sport_availability,
+    )
+
+    try:
+        return list_daily_sport_availability(slate_date=date)
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Failed to load daily sport availability: "
+                f"{exc}"
+            ),
+        ) from exc
+
+
+@router.post("/nflverse/betting/daily-slate/generate")
+def generate_nflverse_daily_betting_slate(payload: dict):
+    """
+    Generate a same-day multi-sport bet slate via weighted-random
+    sampling on implied / model win probabilities.
+    """
+
+    from app.analysis.insights.betting import (
+        generate_daily_betting_slate,
+    )
+
+    try:
+        seed_raw = payload.get("seed")
+        sports_raw = payload.get("sports")
+        max_picks_raw = payload.get("max_picks")
+        return generate_daily_betting_slate(
+            total_units=float(payload.get("total_units") or 0),
+            max_picks=(
+                int(max_picks_raw)
+                if max_picks_raw is not None
+                else None
+            ),
+            risk=str(payload.get("risk") or "balanced"),
+            slate_date=payload.get("date"),
+            sports=(
+                [str(item) for item in sports_raw]
+                if isinstance(sports_raw, list)
+                else None
+            ),
+            seed=(
+                int(seed_raw)
+                if seed_raw is not None
+                else None
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Failed to generate daily betting slate: "
+                f"{exc}"
+            ),
+        ) from exc
+
+
 @router.post("/nflverse/betting/portfolio/analyze")
 def analyze_nflverse_betting_portfolio(payload: dict):
     """
@@ -1609,6 +2001,7 @@ def analyze_nflverse_betting_portfolio(payload: dict):
             list(payload.get("positions") or []),
             season=payload.get("season"),
             week=payload.get("week"),
+            sport=str(payload.get("sport") or "NFL"),
             status_filter=str(
                 payload.get("status_filter") or "open"
             ),

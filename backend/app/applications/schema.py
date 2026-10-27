@@ -12,9 +12,14 @@ SCHEMA_STATEMENTS = [
         icon TEXT,
         status TEXT NOT NULL DEFAULT 'active',
         analyses JSONB NOT NULL DEFAULT '[]'::jsonb,
+        settings JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
+    """,
+    """
+    ALTER TABLE analytical_applications
+    ADD COLUMN IF NOT EXISTS settings JSONB NOT NULL DEFAULT '{}'::jsonb
     """,
     """
     CREATE INDEX IF NOT EXISTS

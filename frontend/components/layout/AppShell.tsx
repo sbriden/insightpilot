@@ -15,7 +15,12 @@ interface AppShellProps {
  */
 export default function AppShell({ children }: AppShellProps) {
   const pathname = usePathname() ?? "";
-  const isApplications = pathname.startsWith("/applications");
+  // Prefer path-based shell choice; empty pathname on first paint can
+  // briefly disagree with the client and trigger hydration mismatches.
+  const isApplications =
+    typeof pathname === "string" &&
+    pathname.length > 0 &&
+    pathname.startsWith("/applications");
 
   if (isApplications) {
     return <div className="ip-app min-h-screen">{children}</div>;

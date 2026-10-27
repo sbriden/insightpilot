@@ -67,6 +67,10 @@ STATUS_LABELS = {
 REASON_CODES = {
     "NO_PREDICTION": "No model prediction available.",
     "NO_MARKET_PRICE": "Missing market implied probability or offered odds.",
+    "PRICING_DATA_UNAVAILABLE": (
+        "No valid offered sportsbook price — market-relative edge/EV "
+        "unavailable → Pass / No Bet. Forecast may still be shown."
+    ),
     "EV_BELOW_FLOOR": "Expected value below band floor → Pass / No Bet.",
     "EDGE_BELOW_FLOOR": "Probability edge below band floor → Pass / No Bet.",
     "CONFIDENCE_TOO_LOW": "Model confidence below band requirement → Pass.",
@@ -84,6 +88,104 @@ REASON_CODES = {
     "PASSES_STRONG": "Clears Strong Bet thresholds.",
     "PASSES_LEAN": "Clears Lean thresholds (not Strong).",
 }
+
+# Bases that may justify Strong Bet / Lean via edge or EV.
+VALID_OFFERED_EV_BASES = frozenset({"offered_price"})
+VALID_MARKET_EDGE_BASES = frozenset(
+    {"vig_adjusted_market", "single_side_american"}
+)
+# Explicitly non-qualifying diagnostic / assumed pricing.
+NON_QUALIFYING_EV_BASES = frozenset(
+    {"assumed_minus_110", "unavailable", "reference_coin_flip"}
+)
+NON_QUALIFYING_EDGE_BASES = frozenset(
+    {"reference_coin_flip", "unavailable"}
+)
+
+
+def offered_price_is_valid_for_qualification(
+    *,
+    offered_odds: float | int | None,
+    expected_value_basis: str | None = None,
+    edge_probability_basis: str | None = None,
+    market_probability: float | None = None,
+    market_probability_source: str | None = None,
+) -> dict[str, Any]:
+    """
+    Strong/Lean may use market-relative edge/EV only with a real offer.
+
+    Assumed −110 juice and coin-flip reference edges are diagnostic
+    only — they cannot qualify a bet.
+    """
+
+    from app.analysis.insights.betting.pricing import (
+        american_to_implied_prob,
+    )
+
+    ev_basis = str(expected_value_basis or "").strip().lower()
+    edge_basis = str(edge_probability_basis or "").strip().lower()
+    mkt_src = str(market_probability_source or "").strip().lower()
+    odds = num(offered_odds)
+    odds_ok = (
+        odds is not None
+        and american_to_implied_prob(odds) is not None
+    )
+
+    # Legacy callers (tests / old rows) omit bases but supply odds +
+    # market_p — treat as offered-price when not explicitly assumed.
+    if not ev_basis and not edge_basis and odds_ok:
+        if mkt_src in {
+            "synthetic_minus_110",
+            "spread_logistic",
+            "unavailable",
+        }:
+            odds_ok = False
+        elif mkt_src in {"", "unverified_legacy"} and market_probability is None:
+            # Odds alone without market_p / basis is not enough after
+            # the ATS −110 convention — require explicit offered basis
+            # or a book-derived market probability source.
+            odds_ok = False
+        elif mkt_src in {
+            "two_way_american",
+            "single_side_american",
+        }:
+            ev_basis = "offered_price"
+            edge_basis = (
+                "vig_adjusted_market"
+                if mkt_src == "two_way_american"
+                else "single_side_american"
+            )
+        elif market_probability is not None and odds_ok:
+            # Explicit market_p + odds from tests / real quotes.
+            ev_basis = "offered_price"
+            edge_basis = "vig_adjusted_market"
+
+    ev_ok = ev_basis in VALID_OFFERED_EV_BASES
+    edge_ok = edge_basis in VALID_MARKET_EDGE_BASES
+    if ev_basis in NON_QUALIFYING_EV_BASES:
+        ev_ok = False
+    if edge_basis in NON_QUALIFYING_EDGE_BASES:
+        edge_ok = False
+
+    available = bool(odds_ok and ev_ok and edge_ok)
+    return {
+        "available": available,
+        "offered_odds_ok": odds_ok,
+        "expected_value_basis_ok": ev_ok,
+        "edge_probability_basis_ok": edge_ok,
+        "expected_value_basis": ev_basis or None,
+        "edge_probability_basis": edge_basis or None,
+        "market_probability_source": mkt_src or None,
+        "note": (
+            None
+            if available
+            else (
+                "Pricing data unavailable for qualification — "
+                "need a valid offered price with offered-price EV "
+                "and market-relative edge."
+            )
+        ),
+    }
 
 
 def resolve_classification_thresholds(
@@ -504,12 +606,17 @@ def qualify_bet(
     min_edge_prob_pp: float | None = None,
     min_confidence: set[str] | None = None,
     min_data_quality: set[str] | None = None,
+    expected_value_basis: str | None = None,
+    edge_probability_basis: str | None = None,
+    market_probability_source: str | None = None,
 ) -> dict[str, Any]:
     """
     Threshold-based classification: Strong Bet | Lean | Pass.
 
-    EV at offered price is the primary gate; edge pp is secondary.
-    Uncertainty / data-quality failures force Pass even with large edge.
+    EV at a *valid offered* price is the primary gate; market-relative
+    edge pp is secondary. Assumed −110 / coin-flip reference values
+    cannot qualify. Uncertainty / data-quality failures force Pass
+    even with large edge.
     """
 
     confidence = str(model_confidence or "Low").strip().title()
@@ -536,8 +643,18 @@ def qualify_bet(
     if min_data_quality is not None:
         lean_band["min_data_quality"] = frozenset(min_data_quality)
 
-    ev = num(expected_value)
-    edge_pp = num(edge_probability)
+    pricing = offered_price_is_valid_for_qualification(
+        offered_odds=offered_odds,
+        expected_value_basis=expected_value_basis,
+        edge_probability_basis=edge_probability_basis,
+        market_probability=market_probability,
+        market_probability_source=market_probability_source,
+    )
+    # Only price-based EV / market-relative edge count toward bands.
+    ev = num(expected_value) if pricing["expected_value_basis_ok"] else None
+    edge_pp = (
+        num(edge_probability) if pricing["edge_probability_basis_ok"] else None
+    )
     market_p = num(market_probability)
     cal_p = num(prediction.get("calibrated_probability"))
     raw_p = num(prediction.get("raw_probability"))
@@ -558,10 +675,11 @@ def qualify_bet(
         probability_calibrated=probability_calibrated,
     )
 
-    has_price = market_p is not None or offered_odds is not None
     gates = {
         "has_prediction": bool(prediction.get("has_prediction")),
-        "has_market_probability": has_price,
+        "has_valid_offered_price": bool(pricing["available"]),
+        # Back-compat alias used by older diagnostics.
+        "has_market_probability": bool(pricing["available"]),
         "min_edge": (
             edge_pp is not None
             and float(edge_pp) >= float(lean_band["min_edge_prob_pp"])
@@ -586,8 +704,11 @@ def qualify_bet(
         entry = _reason("NO_PREDICTION")
         reason_entries.append(entry)
         reasons_fail.append(entry["message"])
-    if not gates["has_market_probability"]:
-        entry = _reason("NO_MARKET_PRICE")
+    if not gates["has_valid_offered_price"]:
+        entry = _reason(
+            "PRICING_DATA_UNAVAILABLE",
+            pricing.get("note"),
+        )
         reason_entries.append(entry)
         reasons_fail.append(entry["message"])
 
@@ -601,7 +722,8 @@ def qualify_bet(
         reasons_fail.append(entry["message"])
     else:
         reasons_pass.append(
-            f"EV {float(ev):+.1f}% ≥ +{lean_band['min_ev_pct']:g}%."
+            f"EV {float(ev):+.1f}% ≥ +{lean_band['min_ev_pct']:g}% "
+            f"(offered price)."
         )
 
     if not gates["min_edge"]:
@@ -615,7 +737,8 @@ def qualify_bet(
     else:
         reasons_pass.append(
             f"Edge {float(edge_pp):+.1f} pp ≥ "
-            f"+{lean_band['min_edge_prob_pp']:g} pp."
+            f"+{lean_band['min_edge_prob_pp']:g} pp "
+            f"(vs market)."
         )
 
     if not gates["confidence"]:
@@ -707,6 +830,13 @@ def qualify_bet(
 
     pricing_audit = {
         "offered_odds": offered_odds,
+        "pricing_available_for_qualification": bool(pricing["available"]),
+        "expected_value_basis": pricing.get("expected_value_basis"),
+        "edge_probability_basis": pricing.get("edge_probability_basis"),
+        "market_probability_source": pricing.get(
+            "market_probability_source"
+        ),
+        "pricing_note": pricing.get("note"),
         "calibrated_probability": (
             round(float(cal_p), 4) if cal_p is not None else None
         ),
@@ -724,6 +854,16 @@ def qualify_bet(
         ),
         "edge_probability_pp": (
             round(float(edge_pp), 2) if edge_pp is not None else None
+        ),
+        "diagnostic_expected_value_pct": (
+            round(float(expected_value), 2)
+            if num(expected_value) is not None
+            else None
+        ),
+        "diagnostic_edge_probability_pp": (
+            round(float(edge_probability), 2)
+            if num(edge_probability) is not None
+            else None
         ),
         "probability_calibrated": bool(probability_calibrated),
         "model_agreement": uncertainty.get("model_agreement"),
@@ -820,6 +960,9 @@ def evaluate_market_decision(
     push_probability: float | None = None,
     model_agreement: float | None = None,
     classification_thresholds: dict[str, Any] | None = None,
+    expected_value_basis: str | None = None,
+    edge_probability_basis: str | None = None,
+    market_probability_source: str | None = None,
 ) -> dict[str, Any]:
     """Full prediction → Strong Bet / Lean / Pass payload."""
 
@@ -854,6 +997,9 @@ def evaluate_market_decision(
         model_agreement=model_agreement,
         probability_calibrated=probability_calibrated,
         classification_thresholds=classification_thresholds,
+        expected_value_basis=expected_value_basis,
+        edge_probability_basis=edge_probability_basis,
+        market_probability_source=market_probability_source,
     )
     return {
         "prediction": prediction,

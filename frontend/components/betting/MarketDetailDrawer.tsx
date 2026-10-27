@@ -7,6 +7,7 @@ import {
   BettingEvent,
   BettingInjuryNote,
   BettingMarket,
+  BettingOpponentTendency,
 } from "@/services/api";
 
 interface Props {
@@ -357,6 +358,14 @@ export default function MarketDetailDrawer({
             <GameScriptsPanel scripts={event.game_scripts} />
           ) : null}
 
+          {event?.opponent_tendency?.available ? (
+            <OpponentTendencyPanel
+              tendency={event.opponent_tendency}
+              homeLabel={event.home_team || "Home"}
+              awayLabel={event.away_team || "Away"}
+            />
+          ) : null}
+
           {injuries.length > 0 ? (
             <div>
               <p
@@ -407,6 +416,105 @@ export default function MarketDetailDrawer({
           </div>
         </div>
       </aside>
+    </div>
+  );
+}
+
+function OpponentTendencyPanel({
+  tendency,
+  homeLabel,
+  awayLabel,
+}: {
+  tendency: BettingOpponentTendency;
+  homeLabel: string;
+  awayLabel: string;
+}) {
+  const sit = tendency.situational;
+  const sides = [
+    { label: awayLabel, profile: tendency.away },
+    { label: homeLabel, profile: tendency.home },
+  ];
+  let sitNote = "not applied";
+  if (sit?.applied) {
+    sitNote = [
+      `${awayLabel} ${fmtAdj(sit.away_pts)}`,
+      `${homeLabel} ${fmtAdj(sit.home_pts)}`,
+    ].join(" · ");
+    if (sit.home_faces_tier) {
+      sitNote += ` (faces ${sit.home_faces_tier}/${sit.away_faces_tier})`;
+    }
+  } else if (sit?.reason === "below_threshold") {
+    sitNote = "gated off (below 0.5 pts)";
+  } else if (sit?.reason === "sample_gate") {
+    sitNote = "gated off (sample)";
+  }
+
+  return (
+    <div>
+      <p
+        className="text-xs font-semibold uppercase tracking-[0.14em]"
+        style={{ color: snapshotTokens.textMuted }}
+      >
+        Opponent Tendency
+      </p>
+      <p
+        className="mt-1 text-xs"
+        style={{ color: snapshotTokens.textSecondary }}
+      >
+        Margin residual vs pregame market / model by opponent tier
+        (positive = outperformance).
+      </p>
+      <div
+        className="mt-3 overflow-hidden rounded-xl border"
+        style={{ borderColor: snapshotTokens.border }}
+      >
+        <table className="w-full text-left text-xs">
+          <thead
+            style={{
+              background: snapshotTokens.background,
+              color: snapshotTokens.textMuted,
+            }}
+          >
+            <tr>
+              <th className="px-3 py-2 font-medium">Side</th>
+              <th className="px-3 py-2 font-medium">Elite mkt</th>
+              <th className="px-3 py-2 font-medium">Elite mdl</th>
+              <th className="px-3 py-2 font-medium">Soft mkt</th>
+              <th className="px-3 py-2 font-medium">Vol</th>
+            </tr>
+          </thead>
+          <tbody style={{ color: snapshotTokens.textPrimary }}>
+            {sides.map((row) => (
+              <tr
+                key={row.label}
+                style={{ borderTop: `1px solid ${snapshotTokens.border}` }}
+              >
+                <td className="px-3 py-2 font-medium">{row.label}</td>
+                <td className="px-3 py-2 tabular-nums">
+                  {fmtAdj(row.profile?.elite_margin_resid_mkt)}
+                </td>
+                <td className="px-3 py-2 tabular-nums">
+                  {fmtAdj(row.profile?.elite_margin_resid_model)}
+                </td>
+                <td className="px-3 py-2 tabular-nums">
+                  {fmtAdj(row.profile?.soft_margin_resid_mkt)}
+                </td>
+                <td className="px-3 py-2 tabular-nums">
+                  {row.profile?.resid_vol_mkt != null
+                    ? row.profile.resid_vol_mkt.toFixed(1)
+                    : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p
+        className="mt-2 text-xs"
+        style={{ color: snapshotTokens.textSecondary }}
+      >
+        Situational pts: {sitNote}
+      </p>
     </div>
   );
 }
