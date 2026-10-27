@@ -28,6 +28,46 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ??
   "http://localhost:8000";
 
+const ADMIN_TOKEN_STORAGE_KEY = "ip_admin_token";
+
+export function getAdminToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setAdminToken(token: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (!token) {
+      window.localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+  } catch {
+    // Ignore storage failures (private mode, etc.).
+  }
+}
+
+function withAuthHeaders(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers || undefined);
+  const token = getAdminToken();
+  if (token && !headers.has("X-Admin-Token")) {
+    headers.set("X-Admin-Token", token);
+  }
+  return { ...init, headers };
+}
+
+async function apiFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> {
+  return fetch(input, withAuthHeaders(init));
+}
+
 
 async function handleResponse<T>(
   response: Response
@@ -99,7 +139,7 @@ async function fetchWithRetry(
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const response = await fetch(input, init);
+      const response = await apiFetch(input, init);
       if (
         !response.ok
         && isRetryableHttpStatus(response.status)
@@ -197,7 +237,7 @@ export async function uploadDataset(
 
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/upload/`,
       {
         method:
@@ -225,7 +265,7 @@ export async function getDataSources(): Promise<{
 }> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/`
     );
 
@@ -239,7 +279,7 @@ export async function getDataSources(): Promise<{
 export async function getNflverseCatalog(): Promise<NflverseCatalog> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/nflverse/datasets`
     );
 
@@ -256,7 +296,7 @@ export async function previewNflverseDataset(
 ): Promise<NflversePreviewResult> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/nflverse/preview`,
       {
         method: "POST",
@@ -280,7 +320,7 @@ export async function previewNflverseDataset(
 export async function getSportsdataverseCatalog(): Promise<NflverseCatalog> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/sportsdataverse/datasets`
     );
 
@@ -297,7 +337,7 @@ export async function previewSportsdataverseDataset(
 ): Promise<NflversePreviewResult> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/sportsdataverse/preview`,
       {
         method: "POST",
@@ -323,7 +363,7 @@ export async function getSportsdataverseDataQuality(
 ): Promise<Record<string, unknown>> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/sportsdataverse/quality?live=${live ? "true" : "false"}`
     );
 
@@ -512,7 +552,7 @@ export async function listFantasyPlayers(
       : "";
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/nflverse/players${query}`,
       { cache: "no-store" }
     );
@@ -675,7 +715,7 @@ export async function listFantasyTeams(): Promise<{
   teams: FantasyTeamSummary[];
   count: number;
 }> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/teams`,
     { cache: "no-store" }
   );
@@ -694,7 +734,7 @@ export async function getFantasyTeamStats(
   const query = params.toString()
     ? `?${params.toString()}`
     : "";
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/teams/${encodeURIComponent(team)}/stats${query}`,
     { cache: "no-store" }
   );
@@ -717,7 +757,7 @@ export async function searchFantasyPlayers(
   });
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/nflverse/players/search?${params.toString()}`
     );
 
@@ -861,7 +901,7 @@ export async function getFantasyPlayerStats(
   const query = params.toString()
     ? `?${params.toString()}`
     : "";
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/players/${encodeURIComponent(playerId)}/stats${query}`,
     { cache: "no-store" }
   );
@@ -1016,7 +1056,7 @@ export async function getFantasyPlayerUsage(
   const query = params.toString()
     ? `?${params.toString()}`
     : "";
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/players/${encodeURIComponent(playerId)}/usage${query}`,
     { cache: "no-store" }
   );
@@ -1181,7 +1221,7 @@ export async function getFantasyPlayerMatchups(
   const query = params.toString()
     ? `?${params.toString()}`
     : "";
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/players/${encodeURIComponent(playerId)}/matchups${query}`,
     { cache: "no-store" }
   );
@@ -1300,7 +1340,7 @@ export async function getFantasyPlayerNews(
   const query = params.toString()
     ? `?${params.toString()}`
     : "";
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/players/${encodeURIComponent(playerId)}/news${query}`,
     { cache: "no-store" }
   );
@@ -1330,7 +1370,7 @@ export async function getFantasyPlayerSnapshot(
       : "";
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/nflverse/players/${encodeURIComponent(playerId)}/snapshot${query}`
     );
 
@@ -1789,7 +1829,7 @@ export async function generateDfsPortfolio(payload: {
   season?: number | null;
   seed?: number | null;
 }): Promise<DfsPortfolioResult> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/dfs/portfolio`,
     {
       method: "POST",
@@ -1810,7 +1850,7 @@ export async function listDfsSites(): Promise<{
     slots: string[];
   }>;
 }> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/dfs/sites`,
     { cache: "no-store" }
   );
@@ -1832,7 +1872,7 @@ export async function listDfsWeeks(
   const query = params.toString()
     ? `?${params.toString()}`
     : "";
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/dfs/weeks${query}`,
     { cache: "no-store" }
   );
@@ -1872,7 +1912,7 @@ export async function listDfsSlates(
   const query = params.toString()
     ? `?${params.toString()}`
     : "";
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/dfs/slates${query}`,
     { cache: "no-store" }
   );
@@ -1909,7 +1949,7 @@ export async function getDfsSlate(
   const query = params.toString()
     ? `?${params.toString()}`
     : "";
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/dfs/slate/${encodeURIComponent(slateId)}${query}`,
     { cache: "no-store" }
   );
@@ -1932,7 +1972,7 @@ export async function optimizeDfsLineup(
     season?: number | null;
   }
 ): Promise<DfsOptimizeResult> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/dfs/optimize`,
     {
       method: "POST",
@@ -1989,7 +2029,7 @@ export async function uploadDfsSalaries(options: {
   if (options.week != null) {
     formData.append("week", String(options.week));
   }
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/dfs/salaries/upload`,
     {
       method: "POST",
@@ -2170,7 +2210,7 @@ export async function getNflverseDataQuality(
   });
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/nflverse/quality?${params.toString()}`
     );
 
@@ -2189,7 +2229,7 @@ export async function analyzeNflverseDataset(
 ): Promise<DatasetAnalysis> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/sources/nflverse/analyze`,
       {
         method: "POST",
@@ -2221,7 +2261,7 @@ export async function createDataProduct(
 ) {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/data-products/`,
       {
         method:
@@ -2263,7 +2303,7 @@ export async function getDataProducts() {
     `${API_BASE_URL}/api/data-products`;
 
   const response =
-    await fetch(
+    await apiFetch(
       url
     );
 
@@ -2290,7 +2330,7 @@ export async function getProductVersions(
 ) {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/data-products/by-definition/${encodeURIComponent(definitionId)}/versions`
     );
 
@@ -2317,7 +2357,7 @@ export async function getDataProduct(
 ) {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/data-products/${productId}`
     );
 
@@ -2344,7 +2384,7 @@ export async function archiveDataProduct(
 ) {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/data-products/${productId}`,
       {
         method:
@@ -2410,7 +2450,7 @@ export async function updateDataProduct(
   try {
 
     const response =
-      await fetch(
+      await apiFetch(
         url,
         {
           method:
@@ -2494,7 +2534,7 @@ export async function updateDataProduct(
 export async function getDatasetTypes(): Promise<DatasetType[]> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/types`
     );
 
@@ -2525,7 +2565,7 @@ export async function getDatasetTypeDataProducts(
 ) {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/${datasetTypeId}/data-products`
     );
 
@@ -2563,7 +2603,7 @@ export async function getSavedFieldMappings(
 ): Promise<SavedFieldMappingsRecord | null> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/${datasetTypeId}/field-mappings`
     );
 
@@ -2599,7 +2639,7 @@ export async function saveSavedFieldMappings(
 ): Promise<SavedFieldMappingsRecord> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/${datasetTypeId}/field-mappings`,
       {
         method: "PUT",
@@ -2642,7 +2682,7 @@ export async function mapDatasetFields(
 ) {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/field-mapping`,
       {
         method:
@@ -2694,7 +2734,7 @@ export async function identifyBusinessConcepts(
 ): Promise<ConceptIdentificationResult> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/identify-concepts`,
       {
         method: "POST",
@@ -2731,7 +2771,7 @@ export async function detectAnalyticalCapabilities(
 ): Promise<CapabilityDetectionResult> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/detect-capabilities`,
       {
         method: "POST",
@@ -2768,7 +2808,7 @@ export async function generateAnalyticalCandidates(
 ): Promise<AnalyticalCandidateResult> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/generate-analysis-candidates`,
       {
         method: "POST",
@@ -2806,7 +2846,7 @@ export async function classifyDataset(
 ): Promise<DatasetClassificationResult> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/classify`,
       {
         method: "POST",
@@ -2838,7 +2878,7 @@ export async function determineDatasetGrain(
 ): Promise<GrainDeterminationResult> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/determine-grain`,
       {
         method: "POST",
@@ -2876,7 +2916,7 @@ export async function fetchSemanticUnderstanding(
 }> {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/datasets/semantic-understanding`,
       {
         method: "POST",
@@ -2912,7 +2952,7 @@ export async function calculateDataCoverage(
 ) {
 
   const response =
-    await fetch(
+    await apiFetch(
       `${API_BASE_URL}/api/data-products/coverage`,
       {
         method:
@@ -3324,7 +3364,7 @@ export async function listBettingWeeks(
   }
   params.set("sport", sport);
   const query = `?${params.toString()}`;
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/betting/weeks${query}`,
     { cache: "no-store" }
   );
@@ -3344,7 +3384,7 @@ export async function getBettingSlate(options?: {
   if (options?.week != null) {
     params.set("week", String(options.week));
   }
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/betting/slate?${params.toString()}`,
     { cache: "no-store" }
   );
@@ -3631,7 +3671,7 @@ export async function getBettingResults(options?: {
   if (options?.week != null) {
     params.set("week", String(options.week));
   }
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/betting/results?${params.toString()}`,
     { cache: "no-store" }
   );
@@ -3861,7 +3901,7 @@ export async function analyzeBettingPortfolio(payload: {
   sport?: BettingSport;
   status_filter?: string;
 }): Promise<BettingPortfolioAnalyzeResult> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/betting/portfolio/analyze`,
     {
       method: "POST",
@@ -3934,7 +3974,7 @@ export async function generateBettingPortfolio(payload: {
   risk?: "conservative" | "balanced" | "aggressive" | string;
   market_types?: string[];
 }): Promise<BettingPortfolioGenerateResult> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/betting/portfolio/generate`,
     {
       method: "POST",
@@ -4035,7 +4075,7 @@ export async function listDailyBettingSports(options?: {
     params.set("date", options.date);
   }
   const query = params.toString();
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/betting/daily-slate/sports${
       query ? `?${query}` : ""
     }`,
@@ -4093,7 +4133,7 @@ export async function generateDailyBettingSlate(payload: {
   sports?: DailyBettingSport[] | string[];
   seed?: number | null;
 }): Promise<DailyBettingSlateResult> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/betting/daily-slate/generate`,
     {
       method: "POST",
@@ -4120,7 +4160,7 @@ export async function createBettingPortfolioPosition(payload: {
   entry_price?: number | null;
   entry_line?: number | null;
 }): Promise<BettingPortfolioPosition> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/sources/nflverse/betting/portfolio/position`,
     {
       method: "POST",
@@ -4206,14 +4246,24 @@ export interface AnalyticalApplication {
   status: string;
   analyses: AnalyticalApplicationAnalysis[];
   settings?: AnalyticalApplicationSettings;
+  is_published?: boolean;
+  public_slug?: string | null;
+  custom_domain?: string | null;
+  published_at?: string | null;
   created_at?: string;
   updated_at?: string;
 }
 
+export type AnalyticalApplicationPublishPayload = {
+  is_published?: boolean;
+  public_slug?: string | null;
+  custom_domain?: string | null;
+};
+
 export async function listAnalyticalApplications(): Promise<
   AnalyticalApplication[]
 > {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/applications`,
     { cache: "no-store" }
   );
@@ -4223,8 +4273,28 @@ export async function listAnalyticalApplications(): Promise<
 export async function getAnalyticalApplication(
   applicationId: string
 ): Promise<AnalyticalApplication> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/applications/${encodeURIComponent(applicationId)}`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+export async function getPublishedApplicationBySlug(
+  slug: string
+): Promise<AnalyticalApplication> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/public/applications/by-slug/${encodeURIComponent(slug)}`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+export async function getPublishedApplicationByDomain(
+  host: string
+): Promise<AnalyticalApplication> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/public/applications/by-domain/${encodeURIComponent(host)}`,
     { cache: "no-store" }
   );
   return handleResponse(response);
@@ -4237,7 +4307,7 @@ export async function createAnalyticalApplication(payload: {
   analyses: AnalyticalApplicationAnalysis[];
   settings?: AnalyticalApplicationSettings;
 }): Promise<AnalyticalApplication> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/applications`,
     {
       method: "POST",
@@ -4257,9 +4327,9 @@ export async function updateAnalyticalApplication(
     icon?: string | null;
     analyses?: AnalyticalApplicationAnalysis[];
     settings?: AnalyticalApplicationSettings;
-  }
+  } & AnalyticalApplicationPublishPayload
 ): Promise<AnalyticalApplication> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/applications/${encodeURIComponent(applicationId)}`,
     {
       method: "PUT",
@@ -4274,7 +4344,7 @@ export async function updateAnalyticalApplication(
 export async function deleteAnalyticalApplication(
   applicationId: string
 ): Promise<void> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/api/applications/${encodeURIComponent(applicationId)}`,
     {
       method: "DELETE",
@@ -4282,4 +4352,48 @@ export async function deleteAnalyticalApplication(
     }
   );
   await handleResponse(response);
+}
+
+export async function getAdminAuthStatus(): Promise<{
+  auth_required: boolean;
+}> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/admin/status`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+export async function loginAdmin(password: string): Promise<{
+  ok: boolean;
+  auth_required: boolean;
+  token: string;
+}> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/admin/login`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+      cache: "no-store",
+    }
+  );
+  const result = await handleResponse<{
+    ok: boolean;
+    auth_required: boolean;
+    token: string;
+  }>(response);
+  setAdminToken(result.token);
+  return result;
+}
+
+export async function logoutAdmin(): Promise<void> {
+  try {
+    await apiFetch(`${API_BASE_URL}/api/admin/logout`, {
+      method: "POST",
+      cache: "no-store",
+    });
+  } finally {
+    setAdminToken(null);
+  }
 }

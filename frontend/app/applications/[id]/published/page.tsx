@@ -68,7 +68,8 @@ export default function PublishedApplicationPage() {
           Application unavailable
         </h1>
         <p className="text-sm" style={{ color: appTheme.silver }}>
-          {error || "Not found."}
+          {error ||
+            "Not found. This is the admin preview; public visitors use /p/<slug>."}
         </p>
         <Link
           href="/applications"

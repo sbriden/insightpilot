@@ -21,8 +21,13 @@ export default function AppShell({ children }: AppShellProps) {
     typeof pathname === "string" &&
     pathname.length > 0 &&
     pathname.startsWith("/applications");
+  const isPublicShell =
+    typeof pathname === "string" &&
+    (pathname.startsWith("/p/") ||
+      pathname === "/p" ||
+      pathname === "/login");
 
-  if (isApplications) {
+  if (isApplications || isPublicShell) {
     return <div className="ip-app min-h-screen">{children}</div>;
   }
 

@@ -1,0 +1,28 @@
+InsightPilot — Render deploy checklist
+======================================
+
+1. Push this branch to GitHub.
+2. In Render: New → Blueprint → select the repo (uses render.yaml).
+3. Before / during first deploy, set these Blueprint env values:
+   - insightpilot-api / CORS_ORIGINS
+       = https://<your-web-service>.onrender.com
+   - insightpilot-web / NEXT_PUBLIC_API_URL
+       = https://<your-api-service>.onrender.com
+         (must be set before the web image build — it is baked into the bundle)
+   - insightpilot-web / NEXT_PUBLIC_PRIMARY_HOSTS
+       = <your-web-service>.onrender.com
+   - ADMIN_PASSWORD on BOTH api and web (same value)
+   - NEXT_PUBLIC_REQUIRE_ADMIN_AUTH is already "1" in render.yaml
+4. After deploy, open the web URL → /login → studio.
+5. Data refresh (NFL/CFB) is synchronous and can take many minutes.
+   Prefer Render Shell on insightpilot-api, e.g.:
+     curl -X POST -H "X-Admin-Token: $TOKEN" \
+       "$API/api/sources/nflverse/refresh"
+   Platform HTTP timeouts may kill long browser-triggered refreshes.
+6. Published apps:
+   - Studio → Publish → set slug → Publish
+   - Public path: https://<web>/p/<slug>
+   - Optional custom domain: add domain on the web service in Render,
+     CNAME to the Render hostname, set custom_domain in Publish panel.
+
+Railway: same Dockerfiles/env vars; swap hosts when signups reopen.

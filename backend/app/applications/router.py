@@ -40,6 +40,8 @@ def post_application(payload: dict):
         return create_application(payload)
     except HTTPException:
         raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
 
@@ -61,6 +63,8 @@ def put_application(application_id: str, payload: dict):
         return updated
     except HTTPException:
         raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
 

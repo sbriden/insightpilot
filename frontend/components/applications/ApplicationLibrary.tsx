@@ -253,6 +253,11 @@ export default function ApplicationLibrary() {
                 ) : null}
                 <p className="mt-3 text-xs" style={{ color: appTheme.slate }}>
                   {formatUpdated(app.updated_at)}
+                  {app.is_published
+                    ? app.public_slug
+                      ? ` · Live /p/${app.public_slug}`
+                      : " · Live"
+                    : " · Draft"}
                 </p>
                 <div className="mt-6 flex flex-wrap gap-2">
                   <Link
@@ -262,7 +267,11 @@ export default function ApplicationLibrary() {
                     Open
                   </Link>
                   <Link
-                    href={`/applications/${app.id}/published`}
+                    href={
+                      app.is_published && app.public_slug
+                        ? `/p/${encodeURIComponent(app.public_slug)}`
+                        : `/applications/${app.id}/published`
+                    }
                     target="_blank"
                     rel="noopener noreferrer"
                     className="rounded-lg px-3 py-1.5 text-sm font-medium"
@@ -272,7 +281,7 @@ export default function ApplicationLibrary() {
                       background: "rgba(0,229,255,0.08)",
                     }}
                   >
-                    Published
+                    {app.is_published ? "Open live" : "Preview"}
                   </Link>
                   <Link
                     href={`/applications/${app.id}/edit`}

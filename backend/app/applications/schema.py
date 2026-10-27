@@ -22,9 +22,37 @@ SCHEMA_STATEMENTS = [
     ADD COLUMN IF NOT EXISTS settings JSONB NOT NULL DEFAULT '{}'::jsonb
     """,
     """
+    ALTER TABLE analytical_applications
+    ADD COLUMN IF NOT EXISTS is_published BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    ALTER TABLE analytical_applications
+    ADD COLUMN IF NOT EXISTS public_slug TEXT
+    """,
+    """
+    ALTER TABLE analytical_applications
+    ADD COLUMN IF NOT EXISTS custom_domain TEXT
+    """,
+    """
+    ALTER TABLE analytical_applications
+    ADD COLUMN IF NOT EXISTS published_at TIMESTAMP
+    """,
+    """
     CREATE INDEX IF NOT EXISTS
     idx_analytical_applications_updated
     ON analytical_applications (updated_at DESC)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS
+    idx_analytical_applications_public_slug
+    ON analytical_applications (public_slug)
+    WHERE public_slug IS NOT NULL AND status <> 'deleted'
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS
+    idx_analytical_applications_custom_domain
+    ON analytical_applications (custom_domain)
+    WHERE custom_domain IS NOT NULL AND status <> 'deleted'
     """,
 ]
 

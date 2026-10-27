@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -25,6 +25,7 @@ import {
   useAppTheme,
   useAppThemeChrome,
 } from "@/components/applications/ApplicationThemeContext";
+import PublishApplicationPanel from "@/components/applications/PublishApplicationPanel";
 import {
   getRegistryAnalysis,
   LEGACY_PLAYER_OVERVIEW_KEY,
@@ -87,9 +88,13 @@ function buildNavGroups(
 }
 
 export default function ApplicationWorkspace({
-  application,
+  application: initialApplication,
   mode = "studio",
 }: Props) {
+  const [application, setApplication] = useState(initialApplication);
+  useEffect(() => {
+    setApplication(initialApplication);
+  }, [initialApplication]);
   const settings = useMemo(
     () => normalizeApplicationSettings(application.settings),
     [application.settings]
@@ -101,6 +106,7 @@ export default function ApplicationWorkspace({
         application={application}
         mode={mode}
         settings={settings}
+        onApplicationUpdated={setApplication}
       />
     </ApplicationThemeProvider>
   );
@@ -110,12 +116,15 @@ function ApplicationWorkspaceInner({
   application,
   mode = "studio",
   settings,
+  onApplicationUpdated,
 }: Props & {
   settings: ReturnType<typeof normalizeApplicationSettings>;
+  onApplicationUpdated: (app: AnalyticalApplication) => void;
 }) {
   const theme = useAppTheme();
   const chrome = useAppThemeChrome();
   const isPublished = mode === "published";
+  const [showPublishPanel, setShowPublishPanel] = useState(false);
   const groups = useMemo(
     () => buildNavGroups(application.analyses),
     [application.analyses]
@@ -144,7 +153,11 @@ function ApplicationWorkspaceInner({
       isLogoDataUrl(application.icon) ||
         (application.icon && application.icon.startsWith("http"))
     );
-  const publishedHref = `/applications/${application.id}/published`;
+  const previewHref = `/applications/${application.id}/published`;
+  const liveHref =
+    application.is_published && application.public_slug
+      ? `/p/${encodeURIComponent(application.public_slug)}`
+      : previewHref;
 
   const activeGroup = useMemo(
     () =>
@@ -269,11 +282,10 @@ function ApplicationWorkspaceInner({
             ) : null}
             {!isPublished ? (
               <>
-                <Link
-                  href={publishedHref}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title="Open published view"
+                <button
+                  type="button"
+                  title="Publish settings"
+                  onClick={() => setShowPublishPanel((value) => !value)}
                   className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
                   style={{
                     color: theme.cyan,
@@ -281,9 +293,27 @@ function ApplicationWorkspaceInner({
                     background: "rgba(0,229,255,0.08)",
                   }}
                 >
+                  {application.is_published ? "Live" : "Publish"}
+                </button>
+                <Link
+                  href={liveHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={
+                    application.is_published
+                      ? "Open public URL"
+                      : "Open admin preview"
+                  }
+                  className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+                  style={{
+                    color: theme.silver,
+                    border: `1px solid ${theme.border}`,
+                  }}
+                >
                   <ExternalLink className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">View published</span>
-                  <span className="sm:hidden">Published</span>
+                  <span className="hidden sm:inline">
+                    {application.is_published ? "Open live" : "Preview"}
+                  </span>
                 </Link>
                 <button
                   type="button"
@@ -294,7 +324,7 @@ function ApplicationWorkspaceInner({
                   }
                   disabled={refreshLoading}
                   onClick={() => void handleDataRefresh()}
-                  className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors disabled:opacity-60"
+                  className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-medium transition-colors disabled:opacity-60"
                   style={{ color: theme.silver }}
                 >
                   <RefreshCw
@@ -331,6 +361,15 @@ function ApplicationWorkspaceInner({
           </div>
         </header>
         <div className="ip-app-beam shrink-0" />
+
+        {!isPublished && showPublishPanel ? (
+          <div className="shrink-0 px-4 py-3 lg:px-5">
+            <PublishApplicationPanel
+              application={application}
+              onUpdated={onApplicationUpdated}
+            />
+          </div>
+        ) : null}
 
         <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1">
