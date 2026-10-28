@@ -14,6 +14,24 @@ function primaryHosts(): Set<string> {
   );
 }
 
+function isPrimaryHostName(host: string): boolean {
+  if (!host) return true;
+  const normalized = host.toLowerCase();
+  const primaries = primaryHosts();
+  if (primaries.has(normalized)) return true;
+  // Host header may omit or include :443; also allow bare hostname match.
+  const bare = normalized.split(":")[0];
+  if (primaries.has(bare)) return true;
+  for (const primary of primaries) {
+    if (primary.split(":")[0] === bare) return true;
+  }
+  // Default Render service hostnames are the admin/studio app, not
+  // customer custom domains. Without this, a missing PRIMARY_HOSTS
+  // env rewrites every page to /p/by-host → "Not found".
+  if (bare.endsWith(".onrender.com")) return true;
+  return false;
+}
+
 function isPublicPath(pathname: string): boolean {
   if (
     pathname.startsWith("/p/") ||
@@ -53,8 +71,7 @@ export function middleware(request: NextRequest) {
     .split(",")[0]
     .trim();
   const { pathname } = request.nextUrl;
-  const primaries = primaryHosts();
-  const isPrimaryHost = !host || primaries.has(host);
+  const isPrimaryHost = isPrimaryHostName(host);
 
   // Custom domain → public published shell resolved by Host.
   if (!isPrimaryHost && !pathname.startsWith("/_next/")) {
