@@ -532,9 +532,9 @@ export default function PlayerUsageTab({
                       borderRadius: 8,
                       borderColor: snapshotTokens.border,
                     }}
-                    formatter={(value: number | null) => [
+                    formatter={(value) => [
                       formatUsageValue(
-                        value,
+                        value == null ? null : Number(value),
                         chartMetric
                           && [
                               "snap_pct",
@@ -799,7 +799,7 @@ export default function PlayerUsageTab({
                           <OppProdTooltip
                             active={props.active}
                             payload={
-                              props.payload as Array<{
+                              props.payload as unknown as Array<{
                                 payload?: FantasyUsageOppProdPoint & {
                                   name?: string;
                                 };

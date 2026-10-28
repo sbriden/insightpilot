@@ -885,8 +885,8 @@ export default function PlayerMatchupsTab({
                       borderRadius: 8,
                       borderColor: snapshotTokens.border,
                     }}
-                    formatter={(value: number) => [
-                      formatMetricValue(value, 1),
+                    formatter={(value) => [
+                      formatMetricValue(Number(value ?? 0), 1),
                       "Difficulty / 10",
                     ]}
                     labelFormatter={(_, payload) => {

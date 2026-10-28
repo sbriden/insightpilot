@@ -1087,13 +1087,14 @@ function toLineupPlayer(
       Math.round(slotProjection * multiplier * 10) / 10,
     // Keep season FPPG base_projection from the slate player;
     // do not overwrite with the (already opponent-adjusted) slot proj.
+    base_projection: player.base_projection ?? undefined,
     floor:
       player.floor == null
-        ? player.floor
+        ? undefined
         : Math.round(player.floor * multiplier * 10) / 10,
     ceiling:
       player.ceiling == null
-        ? player.ceiling
+        ? undefined
         : Math.round(player.ceiling * multiplier * 10) / 10,
     locked,
     is_captain: slot === "CPT",

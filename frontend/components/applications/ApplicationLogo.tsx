@@ -122,7 +122,7 @@ export default function ApplicationLogo({
       return (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={src}
+          src={src ?? undefined}
           alt={name}
           title={name}
           className={`shrink-0 object-contain object-left ${className}`}
@@ -139,7 +139,7 @@ export default function ApplicationLogo({
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={src}
+        src={src ?? undefined}
         alt=""
         title={name}
         width={size}

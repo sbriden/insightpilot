@@ -620,7 +620,7 @@ export default function FantasyFootballProductPage() {
               }
             )
               .filter(
-                (analysis) =>
+                (analysis: { id: string }) =>
                   analysis.id !== "waiver_wire"
               )
           );

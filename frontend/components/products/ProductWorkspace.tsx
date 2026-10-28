@@ -216,7 +216,7 @@ export default function ProductWorkspace({
                         className={`rounded-full px-2 py-0.5 text-xs ${
                           selected
                             ? "bg-white/15 text-white"
-                            : tab.emphasis
+                            : "emphasis" in tab && tab.emphasis
                               ? "bg-red-100 text-red-700"
                               : "bg-gray-100 text-gray-600"
                         }`}

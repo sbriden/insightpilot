@@ -412,7 +412,9 @@ export default function CandidateFindingsPanel({
                   </td>
 
                   <td className="max-w-xs px-4 py-3 text-gray-700">
-                    {finding.evidence || "—"}
+                    {typeof finding.evidence === "string"
+                      ? finding.evidence || "—"
+                      : "—"}
                   </td>
 
                   <td className="px-4 py-3">

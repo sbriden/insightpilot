@@ -27,7 +27,6 @@ import {
   DatasetTypeRecommendation,
   GrainDeterminationResult,
   DataSourceKind,
-  FieldMapping,
   NflverseSelection,
   NflversePreviewResult,
 } from "@/types/dataset";
@@ -2019,7 +2018,12 @@ export default function CreateDataProductPage() {
             maxReachableIndex={
               maxReachableIndex
             }
-            onStepClick={goToStep}
+            onStepClick={(stepId, index) => {
+              goToStep(
+                stepId as typeof currentStepId,
+                index
+              );
+            }}
           />
 
         </div>
@@ -2298,10 +2302,9 @@ export default function CreateDataProductPage() {
               ) => {
                 setFieldMappings(
                   current => {
-
-                    const next =
+                    const next: FieldMapping[] =
                       current.map(
-                        mapping => {
+                        (mapping): FieldMapping => {
                           if (
                             mapping.requiredField !==
                             requiredField
@@ -2311,16 +2314,13 @@ export default function CreateDataProductPage() {
                           return {
                             ...mapping,
                             uploadedField,
-                            matchType:
-                              uploadedField
-                                ? "manual"
-                                : "missing",
-                            confidence:
-                              uploadedField
-                                ? 1
-                                : 0,
-                            valid:
-                              !!uploadedField,
+                            matchType: uploadedField
+                              ? "manual"
+                              : "missing",
+                            confidence: uploadedField
+                              ? 1
+                              : 0,
+                            valid: !!uploadedField,
                           };
                         }
                       );
@@ -2331,7 +2331,6 @@ export default function CreateDataProductPage() {
                     );
 
                     return next;
-
                   }
                 );
               }}
