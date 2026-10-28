@@ -1,13 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 
-import { appTheme } from "@/components/applications/appTheme";
 import ApplicationLogo, {
   isLogoDataUrl,
   normalizeLogoType,
 } from "@/components/applications/ApplicationLogo";
+import {
+  appTheme,
+  appThemeCssVars,
+  getAppThemeDefinition,
+} from "@/components/applications/appTheme";
 import {
   getRegistryAnalysis,
   sourceProductLabels,
@@ -28,6 +32,208 @@ function formatUpdated(value?: string) {
   const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(date.getUTCDate()).padStart(2, "0");
   return `Updated ${yyyy}-${mm}-${dd}`;
+}
+
+function ApplicationTile({ app, onDelete }: {
+  app: AnalyticalApplication;
+  onDelete: (app: AnalyticalApplication) => void;
+}) {
+  const settings = normalizeApplicationSettings(app.settings);
+  const definition = getAppThemeDefinition(settings.theme);
+  const { tokens, chrome } = definition;
+  const themeVars = appThemeCssVars(tokens, definition.id) as CSSProperties;
+
+  const keys = (app.analyses || []).map((row) => row.analysis_key);
+  const products = sourceProductLabels(keys);
+  const names = keys
+    .map((key) => getRegistryAnalysis(key)?.name || key)
+    .slice(0, 5);
+  const logoType = normalizeLogoType(settings.logo_type);
+  const hasWordmark =
+    logoType === "wordmark" &&
+    Boolean(
+      isLogoDataUrl(app.icon) ||
+        (app.icon && app.icon.startsWith("http"))
+    );
+
+  const secondaryBtn: CSSProperties = {
+    color: tokens.cyan,
+    border: `1px solid ${tokens.borderActive}`,
+    background: chrome.selectionBg,
+    borderRadius: chrome.radiusButton,
+    fontWeight: chrome.buttonWeight,
+    minHeight: chrome.touchTarget,
+    transitionDuration: chrome.durationFast,
+  };
+  const quietBtn: CSSProperties = {
+    color: tokens.white,
+    background: tokens.deepBlue,
+    border: `1px solid ${tokens.border}`,
+    borderRadius: chrome.radiusButton,
+    minHeight: chrome.touchTarget,
+    transitionDuration: chrome.durationFast,
+  };
+
+  return (
+    <article
+      data-app-theme={definition.id}
+      data-app-scheme={definition.scheme}
+      className="flex flex-col transition-all"
+      style={{
+        ...themeVars,
+        background: tokens.midnight,
+        color: tokens.white,
+        border: `1px solid ${tokens.border}`,
+        borderRadius: chrome.radiusCard,
+        boxShadow: chrome.shadowCard,
+        padding: chrome.cardPadding,
+        fontFamily: chrome.fontSans,
+        fontVariantNumeric: chrome.fontVariantNumeric,
+        transitionDuration: chrome.durationNormal,
+      }}
+    >
+      <div className="flex items-start gap-3">
+        {hasWordmark ? (
+          <div className="min-w-0 flex-1">
+            <ApplicationLogo
+              src={app.icon}
+              name={app.name}
+              variant="wordmark"
+              size={40}
+            />
+            <p
+              className="mt-2"
+              style={{
+                color: tokens.silver,
+                fontSize: chrome.typeBody,
+              }}
+            >
+              {app.description || names.join(" · ")}
+            </p>
+          </div>
+        ) : (
+          <>
+            <ApplicationLogo
+              src={app.icon}
+              name={app.name}
+              variant="square"
+              size={36}
+            />
+            <div className="min-w-0 flex-1">
+              <h2
+                className="ip-heading font-semibold"
+                style={{
+                  color: tokens.white,
+                  fontFamily: chrome.fontDisplay,
+                  fontSize: chrome.typeSection,
+                  letterSpacing: chrome.headingTracking,
+                }}
+              >
+                {app.name}
+              </h2>
+              <p
+                className="mt-2"
+                style={{
+                  color: tokens.silver,
+                  fontSize: chrome.typeBody,
+                }}
+              >
+                {app.description || names.join(" · ")}
+              </p>
+            </div>
+          </>
+        )}
+      </div>
+
+      <p
+        className="mt-4 font-medium"
+        style={{
+          color: tokens.white,
+          fontSize: chrome.typeBody,
+        }}
+      >
+        {keys.length} analysis{keys.length === 1 ? "" : "es"}
+      </p>
+      {products ? (
+        <p
+          className="mt-1"
+          style={{
+            color: tokens.slate,
+            fontSize: chrome.typeMeta,
+            letterSpacing: chrome.labelTracking,
+          }}
+        >
+          {products}
+        </p>
+      ) : null}
+      <p
+        className="mt-3"
+        style={{
+          color: tokens.slate,
+          fontSize: chrome.typeMeta,
+        }}
+      >
+        {formatUpdated(app.updated_at)}
+        {app.is_published
+          ? app.public_slug
+            ? ` · Live /p/${app.public_slug}`
+            : " · Live"
+          : " · Draft"}
+      </p>
+
+      <div
+        className="mt-6 flex flex-wrap gap-2"
+        style={{ gap: chrome.space2 }}
+      >
+        <Link
+          href={`/applications/${app.id}`}
+          className="inline-flex items-center px-3 text-sm"
+          style={{
+            background: tokens.gradient,
+            color: tokens.ctaText,
+            borderRadius: chrome.radiusButton,
+            fontWeight: chrome.buttonWeight,
+            minHeight: chrome.touchTarget,
+          }}
+        >
+          Open
+        </Link>
+        <Link
+          href={
+            app.is_published && app.public_slug
+              ? `/p/${encodeURIComponent(app.public_slug)}`
+              : `/applications/${app.id}/published`
+          }
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center px-3 text-sm font-medium"
+          style={secondaryBtn}
+        >
+          {app.is_published ? "Open live" : "Preview"}
+        </Link>
+        <Link
+          href={`/applications/${app.id}/edit`}
+          className="inline-flex items-center px-3 text-sm font-medium"
+          style={quietBtn}
+        >
+          Edit
+        </Link>
+        <button
+          type="button"
+          onClick={() => onDelete(app)}
+          className="inline-flex items-center px-3 text-sm font-medium transition-colors"
+          style={{
+            color: tokens.slate,
+            borderRadius: chrome.radiusButton,
+            minHeight: chrome.touchTarget,
+            transitionDuration: chrome.durationFast,
+          }}
+        >
+          Delete
+        </button>
+      </div>
+    </article>
+  );
 }
 
 export default function ApplicationLibrary() {
@@ -179,133 +385,13 @@ export default function ApplicationLibrary() {
 
       {!loading && apps.length > 0 ? (
         <div className="grid gap-4 lg:grid-cols-2">
-          {apps.map((app) => {
-            const keys = (app.analyses || []).map((row) => row.analysis_key);
-            const products = sourceProductLabels(keys);
-            const names = keys
-              .map((key) => getRegistryAnalysis(key)?.name || key)
-              .slice(0, 5);
-            const logoType = normalizeLogoType(
-              normalizeApplicationSettings(app.settings).logo_type
-            );
-            const hasWordmark =
-              logoType === "wordmark" &&
-              Boolean(
-                isLogoDataUrl(app.icon) ||
-                  (app.icon && app.icon.startsWith("http"))
-              );
-            return (
-              <article
-                key={app.id}
-                className="ip-app-panel flex flex-col rounded-2xl p-6 transition-all duration-200"
-              >
-                <div className="flex items-start gap-3">
-                  {hasWordmark ? (
-                    <div className="min-w-0 flex-1">
-                      <ApplicationLogo
-                        src={app.icon}
-                        name={app.name}
-                        variant="wordmark"
-                        size={40}
-                      />
-                      <p
-                        className="mt-2 text-sm"
-                        style={{ color: appTheme.silver }}
-                      >
-                        {app.description || names.join(" · ")}
-                      </p>
-                    </div>
-                  ) : (
-                    <>
-                      <ApplicationLogo
-                        src={app.icon}
-                        name={app.name}
-                        variant="square"
-                        size={36}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <h2
-                          className="ip-heading text-xl font-semibold"
-                          style={{ color: appTheme.white }}
-                        >
-                          {app.name}
-                        </h2>
-                        <p
-                          className="mt-2 text-sm"
-                          style={{ color: appTheme.silver }}
-                        >
-                          {app.description || names.join(" · ")}
-                        </p>
-                      </div>
-                    </>
-                  )}
-                </div>
-                <p
-                  className="mt-4 text-sm font-medium"
-                  style={{ color: appTheme.white }}
-                >
-                  {keys.length} analysis{keys.length === 1 ? "" : "es"}
-                </p>
-                {products ? (
-                  <p className="mt-1 text-xs" style={{ color: appTheme.slate }}>
-                    {products}
-                  </p>
-                ) : null}
-                <p className="mt-3 text-xs" style={{ color: appTheme.slate }}>
-                  {formatUpdated(app.updated_at)}
-                  {app.is_published
-                    ? app.public_slug
-                      ? ` · Live /p/${app.public_slug}`
-                      : " · Live"
-                    : " · Draft"}
-                </p>
-                <div className="mt-6 flex flex-wrap gap-2">
-                  <Link
-                    href={`/applications/${app.id}`}
-                    className="ip-app-cta rounded-lg px-3 py-1.5 text-sm"
-                  >
-                    Open
-                  </Link>
-                  <Link
-                    href={
-                      app.is_published && app.public_slug
-                        ? `/p/${encodeURIComponent(app.public_slug)}`
-                        : `/applications/${app.id}/published`
-                    }
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="rounded-lg px-3 py-1.5 text-sm font-medium"
-                    style={{
-                      color: appTheme.cyan,
-                      border: `1px solid ${appTheme.borderActive}`,
-                      background: "rgba(0,229,255,0.08)",
-                    }}
-                  >
-                    {app.is_published ? "Open live" : "Preview"}
-                  </Link>
-                  <Link
-                    href={`/applications/${app.id}/edit`}
-                    className="rounded-lg px-3 py-1.5 text-sm font-medium"
-                    style={{
-                      color: appTheme.white,
-                      background: appTheme.deepBlue,
-                      border: `1px solid ${appTheme.border}`,
-                    }}
-                  >
-                    Edit
-                  </Link>
-                  <button
-                    type="button"
-                    onClick={() => void onDelete(app)}
-                    className="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
-                    style={{ color: appTheme.slate }}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </article>
-            );
-          })}
+          {apps.map((app) => (
+            <ApplicationTile
+              key={app.id}
+              app={app}
+              onDelete={(row) => void onDelete(row)}
+            />
+          ))}
         </div>
       ) : null}
     </div>

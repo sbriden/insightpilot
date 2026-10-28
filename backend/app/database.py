@@ -12,9 +12,23 @@ _DEFAULT_DATABASE_URL = (
 DATABASE_URL = os.getenv("DATABASE_URL", _DEFAULT_DATABASE_URL).strip() or (
     _DEFAULT_DATABASE_URL
 )
-# Render and some hosts still issue postgres:// URLs.
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://") :]
+
+
+def _normalize_database_url(url: str) -> str:
+    """Prefer psycopg2 (in requirements) over psycopg3.
+
+    Render connection strings may be postgres:// or postgresql+psycopg://.
+    """
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://") :]
+    if url.startswith("postgresql+psycopg://"):
+        url = "postgresql+psycopg2://" + url[len("postgresql+psycopg://") :]
+    elif url.startswith("postgresql://"):
+        url = "postgresql+psycopg2://" + url[len("postgresql://") :]
+    return url
+
+
+DATABASE_URL = _normalize_database_url(DATABASE_URL)
 
 
 engine = create_engine(
