@@ -202,13 +202,14 @@ export interface NflverseRefreshResult {
   mode_label?: string;
   scope: string;
   seasons: number[];
-  current_season: number;
-  historical_season_count: number;
+  current_season?: number;
+  historical_season_count?: number;
   layers?: string[];
   datasets_refreshed: number;
   row_count_total?: number;
   force_refresh?: boolean;
   persisted?: boolean;
+  background?: boolean;
   started_at?: string;
   finished_at?: string;
   status?: string;

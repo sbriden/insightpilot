@@ -393,6 +393,70 @@ def _record_ingestion_state(
         pass
 
 
+def get_latest_ingestion_state() -> dict[str, Any] | None:
+    """Return the most recently updated CFB ingestion job, if any."""
+
+    try:
+        ensure_ingestion_state_schema()
+        statement = text(
+            f"""
+            SELECT
+                job_key,
+                mode,
+                seasons,
+                layers,
+                datasets_completed,
+                current_season,
+                status,
+                started_at,
+                finished_at,
+                row_count_total,
+                detail,
+                updated_at
+            FROM {INGESTION_STATE_TABLE}
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        )
+        with engine.connect() as connection:
+            row = connection.execute(statement).mappings().first()
+        if row is None:
+            return None
+        detail = row["detail"]
+        if isinstance(detail, str):
+            detail = json.loads(detail)
+        return {
+            "job_key": row["job_key"],
+            "mode": row["mode"],
+            "seasons": list(row["seasons"] or []),
+            "layers": list(row["layers"] or []),
+            "datasets_completed": list(
+                row["datasets_completed"] or []
+            ),
+            "current_season": row["current_season"],
+            "status": row["status"],
+            "started_at": (
+                row["started_at"].isoformat()
+                if row["started_at"] is not None
+                else None
+            ),
+            "finished_at": (
+                row["finished_at"].isoformat()
+                if row["finished_at"] is not None
+                else None
+            ),
+            "row_count_total": int(row["row_count_total"] or 0),
+            "detail": detail if isinstance(detail, dict) else {},
+            "updated_at": (
+                row["updated_at"].isoformat()
+                if row["updated_at"] is not None
+                else None
+            ),
+        }
+    except Exception:
+        return None
+
+
 def run_ingest(
     *,
     mode: str = MODE_INCREMENTAL,

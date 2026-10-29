@@ -89,9 +89,53 @@ def list_sources():
     }
 
 
+def _run_scoresandodds_refresh(
+    request: ScoresandoddsRefreshRequest,
+) -> dict:
+    league = (request.league or "ncaaf").strip().lower()
+    if league == "nfl":
+        from app.canonical.odds_scoresandodds import (
+            ingest_nfl_scoresandodds_markets,
+        )
+
+        result = ingest_nfl_scoresandodds_markets(
+            season=request.season,
+            weeks=request.weeks or None,
+            persist=request.persist,
+        )
+    elif league == "ncaaf":
+        from app.canonical.cfb.odds_scoresandodds import (
+            ingest_scoresandodds_markets,
+        )
+
+        result = ingest_scoresandodds_markets(
+            season=request.season,
+            weeks=request.weeks or None,
+            persist=request.persist,
+        )
+    elif league in {"nba", "nhl", "mlb", "ncaab"}:
+        from app.canonical.sports_odds.odds_scoresandodds import (
+            ingest_scoresandodds_markets,
+        )
+
+        result = ingest_scoresandodds_markets(
+            league,
+            season=request.season,
+            dates=request.dates or None,
+            persist=request.persist,
+        )
+    else:
+        raise ValueError(
+            f"Unsupported league {request.league!r}; "
+            "use 'ncaaf', 'nfl', 'nba', 'nhl', 'mlb', or 'ncaab'."
+        )
+    return {"league": league, **result}
+
+
 @router.post("/scoresandodds/refresh")
 def refresh_scoresandodds_odds(
     request: ScoresandoddsRefreshRequest,
+    background_tasks: BackgroundTasks,
 ):
     """
     Refresh market lines from ScoresAndOdds.com.
@@ -105,43 +149,20 @@ def refresh_scoresandodds_odds(
     """
 
     league = (request.league or "ncaaf").strip().lower()
+    if request.background:
+        background_tasks.add_task(_run_scoresandodds_refresh, request)
+        return {
+            "source_id": "scoresandodds",
+            "league": league,
+            "status": "accepted",
+            "background": True,
+            "message": (
+                f"ScoresAndOdds {league} refresh started in the background."
+            ),
+        }
+
     try:
-        if league == "nfl":
-            from app.canonical.odds_scoresandodds import (
-                ingest_nfl_scoresandodds_markets,
-            )
-
-            result = ingest_nfl_scoresandodds_markets(
-                season=request.season,
-                weeks=request.weeks or None,
-                persist=request.persist,
-            )
-        elif league == "ncaaf":
-            from app.canonical.cfb.odds_scoresandodds import (
-                ingest_scoresandodds_markets,
-            )
-
-            result = ingest_scoresandodds_markets(
-                season=request.season,
-                weeks=request.weeks or None,
-                persist=request.persist,
-            )
-        elif league in {"nba", "nhl", "mlb", "ncaab"}:
-            from app.canonical.sports_odds.odds_scoresandodds import (
-                ingest_scoresandodds_markets,
-            )
-
-            result = ingest_scoresandodds_markets(
-                league,
-                season=request.season,
-                dates=request.dates or None,
-                persist=request.persist,
-            )
-        else:
-            raise ValueError(
-                f"Unsupported league {request.league!r}; "
-                "use 'ncaaf', 'nfl', 'nba', 'nhl', 'mlb', or 'ncaab'."
-            )
+        result = _run_scoresandodds_refresh(request)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -159,7 +180,6 @@ def refresh_scoresandodds_odds(
 
     return {
         "source_id": "scoresandodds",
-        "league": league,
         **result,
     }
 
@@ -306,9 +326,23 @@ def preview_sportsdataverse_dataset(
     }
 
 
+def _run_sportsdataverse_refresh(
+    request: SportsdataverseRefreshRequest,
+) -> dict:
+    return cfb_lifecycle.refresh_pipeline(
+        mode=request.mode,
+        scope=request.scope,
+        seasons=request.seasons or None,
+        layers=request.layers or None,
+        dataset_ids=request.dataset_ids or None,
+        persist=request.persist,
+    )
+
+
 @router.post("/sportsdataverse/refresh")
 def refresh_sportsdataverse_data(
     request: SportsdataverseRefreshRequest,
+    background_tasks: BackgroundTasks,
 ):
     """
     Run a college football ingestion job.
@@ -319,15 +353,29 @@ def refresh_sportsdataverse_data(
       reprocess   — rebuild facts
     """
 
-    try:
-        result = cfb_lifecycle.refresh_pipeline(
-            mode=request.mode,
-            scope=request.scope,
-            seasons=request.seasons or None,
-            layers=request.layers or None,
-            dataset_ids=request.dataset_ids or None,
-            persist=request.persist,
+    if request.background:
+        background_tasks.add_task(
+            _run_sportsdataverse_refresh, request
         )
+        return {
+            "source_id": "sportsdataverse",
+            "status": "accepted",
+            "background": True,
+            "mode": request.mode or request.scope,
+            "scope": request.scope,
+            "seasons": request.seasons or [],
+            "layers": request.layers or [],
+            "datasets_refreshed": 0,
+            "results": [],
+            "message": (
+                "CFB refresh started in the background. "
+                "This can take several minutes; check Data Quality "
+                "or GET /api/sources/sportsdataverse/ingestion-status."
+            ),
+        }
+
+    try:
+        result = _run_sportsdataverse_refresh(request)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -347,6 +395,12 @@ def refresh_sportsdataverse_data(
         "source_id": "sportsdataverse",
         **result,
     }
+
+
+@router.get("/sportsdataverse/ingestion-status")
+def sportsdataverse_ingestion_status():
+    state = cfb_lifecycle.get_latest_ingestion_state()
+    return {"source_id": "sportsdataverse", "latest": state}
 
 
 @router.get("/sportsdataverse/quality")
@@ -1009,9 +1063,21 @@ def analyze_nflverse_dataset(
     return context.to_api_response()
 
 
+def _run_nflverse_refresh(request: NflverseRefreshRequest) -> dict:
+    return data_lifecycle.refresh_pipeline(
+        mode=request.mode,
+        scope=request.scope,
+        seasons=request.seasons or None,
+        layers=request.layers or None,
+        dataset_ids=request.dataset_ids or None,
+        persist=request.persist,
+    )
+
+
 @router.post("/nflverse/refresh")
 def refresh_nflverse_data(
     request: NflverseRefreshRequest,
+    background_tasks: BackgroundTasks,
 ):
     """
     Run a fantasy data ingestion job.
@@ -1021,17 +1087,32 @@ def refresh_nflverse_data(
       incremental — current-season update (new week data)
       reprocess   — rebuild derived metrics/signals from
                     facts already stored in Postgres
+
+    By default runs in the background so reverse-proxy timeouts
+    (Render, Next /api-proxy) do not abort the job mid-flight.
     """
 
+    if request.background:
+        background_tasks.add_task(_run_nflverse_refresh, request)
+        return {
+            "source_id": "nflverse",
+            "status": "accepted",
+            "background": True,
+            "mode": request.mode or request.scope,
+            "scope": request.scope,
+            "seasons": request.seasons or [],
+            "layers": request.layers or [],
+            "datasets_refreshed": 0,
+            "results": [],
+            "message": (
+                "NFL refresh started in the background. "
+                "This can take several minutes; check Data Quality "
+                "or GET /api/sources/nflverse/ingestion-status."
+            ),
+        }
+
     try:
-        result = data_lifecycle.refresh_pipeline(
-            mode=request.mode,
-            scope=request.scope,
-            seasons=request.seasons or None,
-            layers=request.layers or None,
-            dataset_ids=request.dataset_ids or None,
-            persist=request.persist,
-        )
+        result = _run_nflverse_refresh(request)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -1051,6 +1132,12 @@ def refresh_nflverse_data(
         "source_id": "nflverse",
         **result,
     }
+
+
+@router.get("/nflverse/ingestion-status")
+def nflverse_ingestion_status():
+    state = data_lifecycle.get_latest_ingestion_state()
+    return {"source_id": "nflverse", "latest": state}
 
 
 @router.get("/nflverse/players")

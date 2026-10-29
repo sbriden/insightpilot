@@ -34,6 +34,8 @@ class NflverseRefreshRequest(BaseModel):
     layers: list[str] = Field(default_factory=list)
     dataset_ids: list[str] = Field(default_factory=list)
     persist: bool = True
+    # Default true: Render/proxy HTTP timeouts kill long sync refreshes.
+    background: bool = True
 
 
 class SportsdataversePreviewRequest(BaseModel):
@@ -57,6 +59,7 @@ class SportsdataverseRefreshRequest(BaseModel):
     layers: list[str] = Field(default_factory=list)
     dataset_ids: list[str] = Field(default_factory=list)
     persist: bool = True
+    background: bool = True
 
 
 class ScoresandoddsRefreshRequest(BaseModel):
@@ -78,6 +81,7 @@ class ScoresandoddsRefreshRequest(BaseModel):
     weeks: list[int] = Field(default_factory=list)
     dates: list[str] = Field(default_factory=list)
     persist: bool = True
+    background: bool = True
 
 
 class DfsSalaryUploadResponse(BaseModel):

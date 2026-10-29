@@ -2089,9 +2089,11 @@ export async function refreshNflverseData(
         dataset_ids: datasetIds,
         layers,
         persist,
+        background: true,
       }),
     },
-    { attempts: 3, baseDelayMs: 750 }
+    // Do not retry long ingest kicks — proxy timeouts look like network errors.
+    { attempts: 1, baseDelayMs: 750 }
   );
 
   if (!response.ok) {
@@ -2138,9 +2140,10 @@ export async function refreshSportsdataverseData(
         dataset_ids: datasetIds,
         layers,
         persist,
+        background: true,
       }),
     },
-    { attempts: 3, baseDelayMs: 750 }
+    { attempts: 1, baseDelayMs: 750 }
   );
 
   if (!response.ok) {
@@ -2172,6 +2175,9 @@ export interface ScoresandoddsRefreshResult {
   unmatched?: number;
   skipped?: number;
   persisted?: boolean;
+  background?: boolean;
+  status?: string;
+  message?: string | null;
   note?: string | null;
   sample_unmatched?: Array<{
     week?: number | null;
@@ -2202,9 +2208,10 @@ export async function refreshScoresandoddsData(options?: {
         weeks: options?.weeks ?? [],
         dates: options?.dates ?? [],
         persist: options?.persist ?? true,
+        background: true,
       }),
     },
-    { attempts: 3, baseDelayMs: 750 }
+    { attempts: 1, baseDelayMs: 750 }
   );
 
   if (!response.ok) {

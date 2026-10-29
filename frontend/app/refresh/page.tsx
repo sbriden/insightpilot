@@ -277,23 +277,32 @@ export default function DataRefreshPage() {
       setError(null);
       const result = await refreshNflverseData(mode);
       setLastResult(result);
+      const accepted = result.status === "accepted" || result.background;
       const message =
         result.message
         ?? result.validation?.message
-        ?? `${result.mode_label || mode} completed.`;
+        ?? (accepted
+          ? `${mode} started in the background. Refresh Data Quality in a few minutes.`
+          : `${result.mode_label || mode} completed.`);
       setRefreshMessage(message);
       window.dispatchEvent(
         new CustomEvent("insightpilot:fantasy-data-refreshed", {
           detail: { mode, result },
         })
       );
-      const qualityResult = await getNflverseDataQuality(true);
-      setQuality(qualityResult);
+      if (!accepted) {
+        const qualityResult = await getNflverseDataQuality(true);
+        setQuality(qualityResult);
+      }
     } catch (runError) {
-      setError(
+      const raw =
         runError instanceof Error
           ? runError.message
-          : "Refresh failed."
+          : "Refresh failed.";
+      setError(
+        /failed to fetch/i.test(raw)
+          ? `${raw} — long refreshes should start in the background after you redeploy the API. For a first seed, use Render Shell on insightpilot-api: python -m app.scripts.seed_data`
+          : raw
       );
     } finally {
       setRefreshLoading(null);
@@ -307,15 +316,20 @@ export default function DataRefreshPage() {
       setError(null);
       const result = await refreshSportsdataverseData(mode);
       setLastResult(result);
+      const accepted = result.status === "accepted" || result.background;
       const message =
         result.message
-        ?? `${result.mode_label || mode} completed.`;
+        ?? (accepted
+          ? `${mode} started in the background. Refresh CFB quality in a few minutes.`
+          : `${result.mode_label || mode} completed.`);
       setRefreshMessage(message);
-      const qualityResult =
-        await getSportsdataverseDataQuality(true);
-      setCfbQuality(qualityResult);
-      const catalogResult = await getSportsdataverseCatalog();
-      setCfbCatalog(catalogResult);
+      if (!accepted) {
+        const qualityResult =
+          await getSportsdataverseDataQuality(true);
+        setCfbQuality(qualityResult);
+        const catalogResult = await getSportsdataverseCatalog();
+        setCfbCatalog(catalogResult);
+      }
     } catch (runError) {
       setError(
         runError instanceof Error
@@ -334,17 +348,25 @@ export default function DataRefreshPage() {
       setError(null);
       const result = await refreshScoresandoddsData({ league });
       const label = league.toUpperCase();
-      setRefreshMessage(
-        `ScoresAndOdds ${label} odds refresh: matched `
-        + `${result.matched ?? 0} of ${result.fetched ?? 0} `
-        + `games`
-        + (
-          result.weeks?.length
-            ? ` (week ${result.weeks.join(", ")})`
-            : ""
-        )
-        + "."
-      );
+      if (result.status === "accepted" || result.background) {
+        setRefreshMessage(
+          result.note
+            || result.message
+            || `ScoresAndOdds ${label} refresh started in the background.`
+        );
+      } else {
+        setRefreshMessage(
+          `ScoresAndOdds ${label} odds refresh: matched `
+          + `${result.matched ?? 0} of ${result.fetched ?? 0} `
+          + `games`
+          + (
+            result.weeks?.length
+              ? ` (week ${result.weeks.join(", ")})`
+              : ""
+          )
+          + "."
+        );
+      }
       window.dispatchEvent(
         new CustomEvent("insightpilot:fantasy-data-refreshed", {
           detail: { mode: "scoresandodds", league, result },
