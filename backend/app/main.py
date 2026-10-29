@@ -118,9 +118,13 @@ app.add_middleware(AdminAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
+    # Browser calls go cross-origin from the Next web service; login
+    # alone does not prove CORS is configured. Allow Render hosts by
+    # default so a missing CORS_ORIGINS does not blank the studio.
+    allow_origin_regex=r"https://.*\.onrender\.com",
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*", ADMIN_TOKEN_HEADER],
+    allow_headers=["*", ADMIN_TOKEN_HEADER, "Authorization"],
 )
 
 

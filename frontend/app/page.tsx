@@ -79,7 +79,9 @@ export default function DataProductsHomePage() {
         );
 
         setError(
-          "Unable to load data products."
+          loadError instanceof Error
+            ? loadError.message
+            : "Unable to load data products."
         );
 
       } finally {

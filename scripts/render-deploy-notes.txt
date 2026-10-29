@@ -6,6 +6,8 @@ InsightPilot — Render deploy checklist
 3. Before / during first deploy, set these Blueprint env values:
    - insightpilot-api / CORS_ORIGINS
        = https://<your-web-service>.onrender.com
+         (exact web origin). Code also allows https://*.onrender.com
+         via regex, but set this explicitly anyway.
    - insightpilot-web / NEXT_PUBLIC_API_URL
        = https://<your-api-service>.onrender.com
          (API service URL — NOT the frontend URL.
