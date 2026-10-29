@@ -4,14 +4,13 @@ const ADMIN_COOKIE = "ip_admin";
 
 function apiBaseUrl(): string {
   // Prefer runtime API_URL so login works even if NEXT_PUBLIC_* was
-  // wrong/missing at image build time. NEXT_PUBLIC_API_URL is baked
-  // into the client bundle and still required for browser API calls.
+  // wrong/missing at image build time.
   const raw = (
     process.env.API_URL ||
     process.env.NEXT_PUBLIC_API_URL ||
     "http://localhost:8000"
   ).trim();
-  return raw.replace(/\/$/, "");
+  return raw.replace(/\/$/, "").replace(/\/api$/i, "");
 }
 
 function detailFromPayload(payload: unknown, status: number): string {

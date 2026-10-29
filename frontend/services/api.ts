@@ -24,9 +24,23 @@ import {
 } from "@/types/report";
 
 
+function normalizeApiOrigin(raw: string): string {
+  return raw.trim().replace(/\/$/, "").replace(/\/api$/i, "");
+}
+
+/**
+ * Browser calls go through the Next same-origin `/api-proxy` so CORS and a
+ * mis-baked NEXT_PUBLIC_API_URL cannot break the studio. Server-side code
+ * still talks to the API origin directly.
+ */
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:8000";
+  typeof window === "undefined"
+    ? normalizeApiOrigin(
+        process.env.API_URL ||
+          process.env.NEXT_PUBLIC_API_URL ||
+          "http://localhost:8000"
+      )
+    : "/api-proxy";
 
 const ADMIN_TOKEN_STORAGE_KEY = "ip_admin_token";
 
@@ -2314,7 +2328,7 @@ export async function getDataProducts() {
       await response.text();
 
     throw new Error(
-      `Failed to load data products: ${errorText}`
+      `Failed to load data products from ${url}: ${errorText}`
     );
 
   }

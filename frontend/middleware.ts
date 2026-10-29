@@ -37,7 +37,8 @@ function isPublicPath(pathname: string): boolean {
     pathname.startsWith("/p/") ||
     pathname === "/p" ||
     pathname === "/login" ||
-    pathname.startsWith("/api/admin/")
+    pathname.startsWith("/api/admin/") ||
+    pathname.startsWith("/api-proxy/")
   ) {
     return true;
   }

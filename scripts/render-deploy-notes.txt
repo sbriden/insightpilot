@@ -13,7 +13,9 @@ InsightPilot — Render deploy checklist
          (API service URL — NOT the frontend URL.
           Must be set before the web image build — baked into the bundle.)
    - insightpilot-web / API_URL
-       = same as NEXT_PUBLIC_API_URL (runtime; used by /api/admin/session)
+       = same API origin (runtime). Used by /api/admin/session and
+         /api-proxy/* (browser traffic is same-origin via the proxy).
+         Do NOT append /api to this value.
    - insightpilot-web / NEXT_PUBLIC_PRIMARY_HOSTS
        = <your-web-service>.onrender.com
          (hostname only, no https://). Missing this used to rewrite
