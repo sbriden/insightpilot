@@ -1,30 +1,78 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const ADMIN_COOKIE = "ip_admin";
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+function apiBaseUrl(): string {
+  // Prefer runtime API_URL so login works even if NEXT_PUBLIC_* was
+  // wrong/missing at image build time. NEXT_PUBLIC_API_URL is baked
+  // into the client bundle and still required for browser API calls.
+  const raw = (
+    process.env.API_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    "http://localhost:8000"
+  ).trim();
+  return raw.replace(/\/$/, "");
+}
+
+function detailFromPayload(payload: unknown, status: number): string {
+  if (payload && typeof payload === "object" && "detail" in payload) {
+    const detail = (payload as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail;
+    }
+  }
+  if (status === 404) {
+    return (
+      "API login endpoint not found. On insightpilot-web, set API_URL " +
+      "and NEXT_PUBLIC_API_URL to your API service URL " +
+      "(e.g. https://insightpilot-api.onrender.com), then rebuild/redeploy."
+    );
+  }
+  if (status === 401) {
+    return "Invalid password.";
+  }
+  return `Login failed (HTTP ${status}).`;
+}
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const password = String(body?.password || "");
+  const base = apiBaseUrl();
+  const loginUrl = `${base}/api/admin/login`;
 
-  const upstream = await fetch(`${API_BASE_URL}/api/admin/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password }),
-    cache: "no-store",
-  });
+  let upstream: Response;
+  try {
+    upstream = await fetch(loginUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+      cache: "no-store",
+    });
+  } catch {
+    return NextResponse.json(
+      {
+        detail:
+          `Unable to reach API at ${base}. Set API_URL / NEXT_PUBLIC_API_URL ` +
+          "to your insightpilot-api URL and redeploy the web service.",
+      },
+      { status: 502 }
+    );
+  }
 
   const payload = await upstream.json().catch(() => ({}));
   if (!upstream.ok) {
     return NextResponse.json(
-      { detail: payload?.detail || "Invalid password." },
+      { detail: detailFromPayload(payload, upstream.status) },
       { status: upstream.status }
     );
   }
 
   const response = NextResponse.json(payload);
-  const token = String(payload?.token || "");
+  const token = String(
+    payload && typeof payload === "object" && "token" in payload
+      ? (payload as { token?: unknown }).token || ""
+      : ""
+  );
   if (token) {
     const secure =
       process.env.NODE_ENV === "production" ||
