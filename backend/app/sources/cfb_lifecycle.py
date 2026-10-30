@@ -124,12 +124,16 @@ def historical_seasons(
     current_season: int | None = None,
     count: int = HISTORICAL_SEASON_COUNT,
 ) -> list[int]:
+    from app.runtime_limits import low_memory_mode, low_memory_season_count
+
     current = int(
         current_season
         if current_season is not None
         else sdv_source.get_current_season()
     )
     resolved_count = max(1, int(count))
+    if low_memory_mode():
+        resolved_count = min(resolved_count, low_memory_season_count())
     start = max(MIN_SEASON, current - resolved_count + 1)
     return list(range(start, current + 1))
 
@@ -292,18 +296,31 @@ def refresh_dataset(
     force_refresh: bool = True,
     persist: bool = True,
 ) -> dict[str, Any]:
+    from app.runtime_limits import low_memory_mode, reclaim_memory
+
     callables = _refresh_callables()
     if dataset_id not in callables:
         raise ValueError(
             f"Dataset '{dataset_id}' does not support refresh."
         )
 
-    frame = callables[dataset_id](
-        seasons,
-        force_refresh=force_refresh,
-        persist=persist,
+    row_count = 0
+    season_batches = (
+        [[int(season)] for season in seasons]
+        if low_memory_mode() and len(seasons) > 1
+        else [list(seasons)]
     )
-    row_count = 0 if frame is None else int(len(frame))
+    for batch in season_batches:
+        frame = callables[dataset_id](
+            batch,
+            force_refresh=force_refresh,
+            persist=persist,
+        )
+        row_count += 0 if frame is None else int(len(frame))
+        del frame
+        if low_memory_mode():
+            reclaim_memory()
+
     return {
         "dataset_id": dataset_id,
         "seasons": list(seasons),
@@ -466,9 +483,17 @@ def run_ingest(
     persist: bool = True,
     force_refresh: bool | None = None,
 ) -> dict[str, Any]:
+    from app.runtime_limits import (
+        filter_datasets_for_memory,
+        low_memory_mode,
+        reclaim_memory,
+    )
+
     sdv_source.clear_all_cfb_caches()
 
     resolved_mode = normalize_ingest_mode(mode)
+    if low_memory_mode() and resolved_mode == MODE_HISTORICAL:
+        resolved_mode = MODE_INCREMENTAL
     definition = INGEST_MODES[resolved_mode]
     current = sdv_source.get_current_season()
 
@@ -484,12 +509,16 @@ def run_ingest(
             season_scope,
             current_season=current,
         )
+    if low_memory_mode() and len(resolved_seasons) > 1:
+        resolved_seasons = [max(resolved_seasons)]
 
     resolved_layers = layers_for_mode(
         resolved_mode,
         layers=layers,
     )
-    ordered = datasets_for_layers(resolved_layers)
+    ordered = filter_datasets_for_memory(
+        datasets_for_layers(resolved_layers)
+    )
 
     if dataset_ids:
         requested = [
@@ -549,6 +578,8 @@ def run_ingest(
                 persist=persist,
             )
         )
+        if low_memory_mode():
+            reclaim_memory()
 
     finished_at = datetime.now(timezone.utc)
     row_count_total = sum(
@@ -576,6 +607,12 @@ def run_ingest(
         "message": (
             "College football data loaded successfully "
             "(dims and facts)."
+            + (
+                " Low-memory mode: current season only; "
+                "heavy team/defense fact builds were skipped."
+                if low_memory_mode()
+                else ""
+            )
         ),
         "caches_cleared": caches_cleared,
         "foundation": "college_football",

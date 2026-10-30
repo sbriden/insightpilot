@@ -1729,13 +1729,186 @@ def _allocate_singles_and_parlays(
             )
             singles[0] = topped
 
+    singles, parlays, unallocated, reason = _fully_allocate_budget(
+        singles,
+        parlays,
+        total_units=total,
+        exponent=exponent,
+        risk_label=risk_label,
+        generated_at=generated_at,
+        fallback_reason=single_reason,
+    )
+    return singles, parlays, unallocated, reason
+
+
+def _clone_side_from_pick(pick: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild a side dict so stake refreshes keep payout fields in sync."""
+
+    return {
+        "candidate_id": pick.get("candidate_id"),
+        "sport": pick.get("sport"),
+        "event_id": pick.get("event_id"),
+        "event_label": pick.get("event_label"),
+        "market_key": pick.get("market_key"),
+        "market_type": pick.get("market_type"),
+        "selection": pick.get("selection"),
+        "line": pick.get("line"),
+        "price": pick.get("price") or pick.get("offered_odds"),
+        "home_team": pick.get("home_team"),
+        "away_team": pick.get("away_team"),
+        "home_logo_url": pick.get("home_logo_url"),
+        "away_logo_url": pick.get("away_logo_url"),
+        "start_time": pick.get("start_time"),
+        "source": pick.get("source"),
+        "quote_timestamp": pick.get("quote_timestamp"),
+        "selection_method": pick.get("selection_method"),
+        "selection_probability": pick.get("selection_probability"),
+        "fair_probability": pick.get("fair_probability"),
+        "raw_implied_probability": pick.get("raw_implied_probability"),
+    }
+
+
+def _with_updated_units(
+    pick: dict[str, Any],
+    *,
+    units: int,
+    risk_label: str,
+    exponent: float,
+    generated_at: str,
+) -> dict[str, Any]:
+    units = int(units)
+    if pick.get("kind") == "parlay":
+        legs: list[dict[str, Any]] = []
+        for leg in pick.get("legs") or []:
+            legs.append(
+                {
+                    **leg,
+                    "fair_probability": float(
+                        leg.get("fair_probability")
+                        or leg.get("win_probability")
+                        or 0.0
+                    ),
+                }
+            )
+        return _parlay_from_legs(
+            legs,
+            units=units,
+            risk_label=risk_label,
+            exponent=exponent,
+            generated_at=generated_at,
+        )
+    return _pick_from_selected(
+        _clone_side_from_pick(pick),
+        units=units,
+        risk_label=risk_label,
+        exponent=exponent,
+        generated_at=generated_at,
+    )
+
+
+def _fully_allocate_budget(
+    singles: list[dict[str, Any]],
+    parlays: list[dict[str, Any]],
+    *,
+    total_units: int,
+    exponent: float,
+    risk_label: str,
+    generated_at: str,
+    fallback_reason: str | None,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    int,
+    str | None,
+]:
+    """
+    Guarantee the user's full stake is placed on the card.
+
+    Risk-profile max_stake may leave remainder after the primary
+    pass; pour that remainder into existing picks (no max-stake
+    ceiling) so allocated_units == total_units whenever picks exist.
+    """
+
+    total = int(total_units)
+    allocated = sum(int(p["units"]) for p in singles) + sum(
+        int(p["units"]) for p in parlays
+    )
+    leftover = max(0, total - allocated)
+    if leftover <= 0:
+        return singles, parlays, 0, None
+    if not singles and not parlays:
+        return (
+            singles,
+            parlays,
+            leftover,
+            fallback_reason or "no_picks_to_absorb_budget",
+        )
+
+    indexed: list[tuple[str, int, dict[str, Any]]] = [
+        ("single", index, pick) for index, pick in enumerate(singles)
+    ] + [
+        ("parlay", index, pick) for index, pick in enumerate(parlays)
+    ]
+    stubs = [
+        {
+            "fair_probability": float(
+                pick.get("fair_probability") or 0.0
+            )
+        }
+        for _kind, _index, pick in indexed
+    ]
+    adds, rem, _ = _allocate_by_probability(
+        stubs,
+        total_units=leftover,
+        exponent=exponent,
+        min_stake=0,
+        max_stake=leftover,
+    )
+    for add, (kind, index, pick) in zip(adds, indexed):
+        if add <= 0:
+            continue
+        updated = _with_updated_units(
+            pick,
+            units=int(pick["units"]) + int(add),
+            risk_label=risk_label,
+            exponent=exponent,
+            generated_at=generated_at,
+        )
+        if kind == "single":
+            singles[index] = updated
+        else:
+            parlays[index] = updated
+
+    if rem > 0:
+        # Rounding crumbs — fold into the highest-probability pick.
+        kind, index, pick = max(
+            indexed,
+            key=lambda row: float(
+                row[2].get("fair_probability") or 0.0
+            ),
+        )
+        current = (
+            singles[index] if kind == "single" else parlays[index]
+        )
+        updated = _with_updated_units(
+            current,
+            units=int(current["units"]) + int(rem),
+            risk_label=risk_label,
+            exponent=exponent,
+            generated_at=generated_at,
+        )
+        if kind == "single":
+            singles[index] = updated
+        else:
+            parlays[index] = updated
+
     allocated = sum(int(p["units"]) for p in singles) + sum(
         int(p["units"]) for p in parlays
     )
     unallocated = max(0, total - allocated)
     reason = None
     if unallocated > 0:
-        reason = single_reason or "budget_not_fully_allocated"
+        reason = fallback_reason or "budget_not_fully_allocated"
     return singles, parlays, unallocated, reason
 
 
@@ -2000,17 +2173,20 @@ def _allocate_by_probability(
     Allocate whole-unit stakes with weight = p^exponent.
 
     Returns (stakes, unallocated_units, reason).
-    Never exceeds ``total_units``.
+    Never exceeds ``total_units``. ``min_stake`` may be 0 when
+    distributing remainder onto existing picks.
     """
 
     n = len(selected)
     total = int(total_units)
-    min_stake = int(min_stake)
+    min_stake = max(0, int(min_stake))
     max_stake = max(min_stake, int(max_stake))
 
     if n == 0:
         return [], total, "no_selected_bets"
-    if min_stake * n > total:
+    if total <= 0:
+        return [0] * n, 0, None
+    if min_stake > 0 and min_stake * n > total:
         return [0] * n, total, "min_stakes_exceed_budget"
 
     weights = [

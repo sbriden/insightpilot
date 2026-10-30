@@ -168,12 +168,16 @@ def historical_seasons(
     current_season: int | None = None,
     count: int = HISTORICAL_SEASON_COUNT,
 ) -> list[int]:
+    from app.runtime_limits import low_memory_mode, low_memory_season_count
+
     current = int(
         current_season
         if current_season is not None
         else nflverse_source.get_current_season()
     )
     resolved_count = max(1, int(count))
+    if low_memory_mode():
+        resolved_count = min(resolved_count, low_memory_season_count())
     start = max(1999, current - resolved_count + 1)
     return list(range(start, current + 1))
 
@@ -402,18 +406,33 @@ def refresh_dataset(
     force_refresh: bool = True,
     persist: bool = True,
 ) -> dict[str, Any]:
+    from app.runtime_limits import low_memory_mode, reclaim_memory
+
     callables = _refresh_callables()
     if dataset_id not in callables:
         raise ValueError(
             f"Dataset '{dataset_id}' does not support refresh."
         )
 
-    frame = callables[dataset_id](
-        seasons,
-        force_refresh=force_refresh,
-        persist=persist,
+    row_count = 0
+    # One season at a time on small instances so PBP/stats frames
+    # are not retained across the full historical window.
+    season_batches = (
+        [[int(season)] for season in seasons]
+        if low_memory_mode() and len(seasons) > 1
+        else [list(seasons)]
     )
-    row_count = 0 if frame is None else int(len(frame))
+    for batch in season_batches:
+        frame = callables[dataset_id](
+            batch,
+            force_refresh=force_refresh,
+            persist=persist,
+        )
+        row_count += 0 if frame is None else int(len(frame))
+        del frame
+        if low_memory_mode():
+            reclaim_memory()
+
     return {
         "dataset_id": dataset_id,
         "seasons": list(seasons),
@@ -534,12 +553,20 @@ def run_ingest(
     from app.canonical.cache_control import (
         clear_all_fantasy_caches,
     )
+    from app.runtime_limits import (
+        filter_datasets_for_memory,
+        low_memory_mode,
+        reclaim_memory,
+    )
 
     # Drop stale in-memory frames before rebuilding so derived
     # layers read the latest Postgres facts.
     clear_all_fantasy_caches()
 
     resolved_mode = normalize_ingest_mode(mode)
+    if low_memory_mode() and resolved_mode == MODE_HISTORICAL:
+        # Full multi-season + PBP ingest exceeds 512MB hosts.
+        resolved_mode = MODE_INCREMENTAL
     definition = INGEST_MODES[resolved_mode]
     current = nflverse_source.get_current_season()
 
@@ -555,12 +582,16 @@ def run_ingest(
             season_scope,
             current_season=current,
         )
+    if low_memory_mode() and len(resolved_seasons) > 1:
+        resolved_seasons = [max(resolved_seasons)]
 
     resolved_layers = layers_for_mode(
         resolved_mode,
         layers=layers,
     )
-    ordered = datasets_for_layers(resolved_layers)
+    ordered = filter_datasets_for_memory(
+        datasets_for_layers(resolved_layers)
+    )
 
     if dataset_ids:
         requested = [
@@ -638,6 +669,8 @@ def run_ingest(
                     persist=persist,
                 )
             )
+            if low_memory_mode():
+                reclaim_memory()
 
     # 1) Load / refresh foundation tables (dims + facts).
     _run_queue(foundation_queue)
@@ -671,6 +704,13 @@ def run_ingest(
         if validation is None
         else str(validation.get("message"))
     )
+    if low_memory_mode():
+        message = (
+            f"{message} Low-memory mode is on: current season only; "
+            "play-by-play heavy facts "
+            "(usage/efficiency/team/defense) were skipped. "
+            "Upgrade past 512MB for full ingest."
+        )
     if validation_blocked:
         status = "failed_validation"
         message = str(

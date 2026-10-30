@@ -41,6 +41,10 @@ services:
         value: gpt-4o-mini
       - key: INSIGHTPILOT_AI_ENABLED
         value: "1"
+      - key: INSIGHTPILOT_LOW_MEMORY
+        value: "1"
+      - key: INSIGHTPILOT_LOW_MEMORY_SEASONS
+        value: "1"
       - key: PYTHONUNBUFFERED
         value: "1"
 

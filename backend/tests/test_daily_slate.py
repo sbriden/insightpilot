@@ -644,19 +644,20 @@ class DailySlateTests(unittest.TestCase):
                 "away_moneyline": 320,
             },
         ]
-        with patch.object(
-            mod,
-            "_load_sao_games_for_date",
-            return_value=[live_rows[0]],
-        ):
-            with patch(
-                "app.sources.scoresandodds.fetch_odds_rows",
-                return_value=(live_rows, {"mocked": True}),
+        with patch.object(mod, "_event_started", return_value=False):
+            with patch.object(
+                mod,
+                "_load_sao_games_for_date",
+                return_value=[live_rows[0]],
             ):
-                rows, meta = mod._candidates_from_sao(
-                    league="nba",
-                    target_date=target,
-                )
+                with patch(
+                    "app.sources.scoresandodds.fetch_odds_rows",
+                    return_value=(live_rows, {"mocked": True}),
+                ):
+                    rows, meta = mod._candidates_from_sao(
+                        league="nba",
+                        target_date=target,
+                    )
 
         self.assertEqual(meta["source"], "scoresandodds_live")
         self.assertEqual(meta["games"], 4)
@@ -684,15 +685,16 @@ class DailySlateTests(unittest.TestCase):
                 }
             ]
         )
-        with patch(
-            "app.canonical.sports_odds.fact_game_market"
-            ".load_fact_game_market_from_db",
-            return_value=frame,
-        ):
-            rows = mod._load_sao_games_for_date(
-                "nba",
-                date(2026, 10, 27),
-            )
+        with patch.object(mod, "_event_started", return_value=False):
+            with patch(
+                "app.canonical.sports_odds.fact_game_market"
+                ".load_fact_game_market_from_db",
+                return_value=frame,
+            ):
+                rows = mod._load_sao_games_for_date(
+                    "nba",
+                    date(2026, 10, 27),
+                )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["away_abbr"], "SAC")
 
@@ -721,10 +723,11 @@ class DailySlateTests(unittest.TestCase):
         self.assertIsNone(result["max_picks"])
         self.assertEqual(result["sports_requested"], ["NBA", "NFL"])
         self.assertGreater(result["allocated_units"], 0)
-        self.assertLessEqual(
+        self.assertEqual(
             result["allocated_units"],
             result["total_units"],
         )
+        self.assertEqual(result.get("unallocated_units") or 0, 0)
         self.assertGreater(len(result["picks"]), 0)
         self.assertEqual(result["meta"]["eligible_markets"], 12)
         self.assertEqual(result["meta"]["sampled_markets"], 12)
@@ -823,6 +826,41 @@ class DailySlateTests(unittest.TestCase):
                     fav_hits += 1
 
         self.assertGreater(fav_hits / trials, 0.65)
+
+    def test_full_budget_always_allocated_when_picks_exist(self):
+        pool = _two_way_pool(16)
+        for row in pool[8:]:
+            row["sport"] = "NBA"
+        with patch.object(
+            mod,
+            "_collect_candidates",
+            return_value=(pool, {"mocked": True}),
+        ):
+            for total, risk, max_picks in (
+                (10, "balanced", None),
+                (25, "conservative", None),
+                (50, "aggressive", 5),
+                (7, "balanced", 3),
+            ):
+                result = mod.generate_daily_betting_slate(
+                    total_units=total,
+                    max_picks=max_picks,
+                    risk=risk,
+                    slate_date="2026-10-23",
+                    sports=["NFL", "NBA"],
+                    seed=11,
+                )
+                self.assertGreater(len(result["picks"]), 0)
+                self.assertEqual(result["total_units"], total)
+                self.assertEqual(result["allocated_units"], total)
+                self.assertEqual(
+                    result.get("unallocated_units") or 0,
+                    0,
+                )
+                self.assertEqual(
+                    sum(int(p["units"]) for p in result["picks"]),
+                    total,
+                )
 
     def test_rejects_non_positive_units(self):
         with self.assertRaises(ValueError):

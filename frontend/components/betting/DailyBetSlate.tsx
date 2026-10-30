@@ -60,13 +60,32 @@ function formatWinPct(value: number | null | undefined): string {
   return `${Math.round(value * 100)}%`;
 }
 
-function formatMoney(value: number): string {
-  // U+00A4 CURRENCY SIGN (&curren;) — generic, not dollar-specific.
-  return `\u00A4${Math.round(value)}`;
+type StakeDisplay = "units" | "dollars";
+
+function formatStake(
+  value: number,
+  display: StakeDisplay,
+  options?: { signed?: boolean }
+): string {
+  const rounded = Math.round(value);
+  const sign =
+    options?.signed && rounded > 0
+      ? "+"
+      : options?.signed && rounded < 0
+        ? "-"
+        : "";
+  const abs = Math.abs(rounded);
+  if (display === "dollars") {
+    return `${sign}$${abs}`;
+  }
+  // U+00A4 CURRENCY SIGN — generic unit marker, not dollar-specific.
+  return `${sign}\u00A4${abs}`;
 }
 
 export default function DailyBetSlate() {
   const [totalUnits, setTotalUnits] = useState(10);
+  const [stakeDisplay, setStakeDisplay] =
+    useState<StakeDisplay>("units");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [maxPicks, setMaxPicks] = useState<number | null>(null);
   const [risk, setRisk] = useState<DailyBettingRisk>("balanced");
@@ -292,17 +311,61 @@ export default function DailyBetSlate() {
           ) : null}
         </div>
 
-        <label className="block space-y-2">
-          <span
-            className="text-xs font-semibold uppercase tracking-[0.14em]"
-            style={{ color: snapshotTokens.textMuted }}
-          >
-            Total units
-          </span>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className="text-xs font-semibold uppercase tracking-[0.14em]"
+              style={{ color: snapshotTokens.textMuted }}
+            >
+              {stakeDisplay === "dollars" ? "Total dollars" : "Total units"}
+            </span>
+            <div
+              className="grid grid-cols-2 gap-1 rounded-lg p-0.5"
+              style={{ background: snapshotTokens.background }}
+              role="radiogroup"
+              aria-label="Stake display"
+            >
+              {(
+                [
+                  { id: "units", label: "Units" },
+                  { id: "dollars", label: "Dollars" },
+                ] as const
+              ).map((option) => {
+                const selected = stakeDisplay === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setStakeDisplay(option.id)}
+                    className="rounded-md px-2.5 py-1 text-xs font-semibold"
+                    style={
+                      selected
+                        ? {
+                            background: snapshotTokens.blue,
+                            color: snapshotTokens.white,
+                          }
+                        : {
+                            background: "transparent",
+                            color: snapshotTokens.textSecondary,
+                          }
+                    }
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
-              aria-label="Decrease units"
+              aria-label={
+                stakeDisplay === "dollars"
+                  ? "Decrease dollars"
+                  : "Decrease units"
+              }
               className="h-11 w-11 shrink-0 rounded-xl text-lg font-semibold"
               style={{
                 background: snapshotTokens.background,
@@ -314,26 +377,42 @@ export default function DailyBetSlate() {
             >
               −
             </button>
-            <input
-              type="number"
-              min={1}
-              step={1}
-              inputMode="numeric"
-              value={totalUnits}
-              onChange={(event) =>
-                setTotalUnits(
-                  Math.max(0, Math.round(Number(event.target.value) || 0))
-                )
-              }
-              className="h-11 w-full rounded-xl border px-3 text-center text-lg font-semibold tabular-nums"
-              style={{
-                borderColor: snapshotTokens.border,
-                color: snapshotTokens.textPrimary,
-              }}
-            />
+            <div className="relative w-full">
+              <span
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-lg font-semibold tabular-nums"
+                style={{ color: snapshotTokens.textMuted }}
+                aria-hidden
+              >
+                {stakeDisplay === "dollars" ? "$" : "\u00A4"}
+              </span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                value={totalUnits}
+                onChange={(event) =>
+                  setTotalUnits(
+                    Math.max(
+                      0,
+                      Math.round(Number(event.target.value) || 0)
+                    )
+                  )
+                }
+                className="h-11 w-full rounded-xl border py-0 pl-8 pr-3 text-center text-lg font-semibold tabular-nums"
+                style={{
+                  borderColor: snapshotTokens.border,
+                  color: snapshotTokens.textPrimary,
+                }}
+              />
+            </div>
             <button
               type="button"
-              aria-label="Increase units"
+              aria-label={
+                stakeDisplay === "dollars"
+                  ? "Increase dollars"
+                  : "Increase units"
+              }
               className="h-11 w-11 shrink-0 rounded-xl text-lg font-semibold"
               style={{
                 background: snapshotTokens.background,
@@ -344,7 +423,7 @@ export default function DailyBetSlate() {
               +
             </button>
           </div>
-        </label>
+        </div>
 
         <div className="space-y-3">
           <button
@@ -602,8 +681,11 @@ export default function DailyBetSlate() {
                       className="mt-0.5 text-xl font-semibold tabular-nums tracking-tight"
                       style={{ color: snapshotTokens.textPrimary }}
                     >
-                      {totalPossibleWin >= 0 ? "+" : ""}
-                      {Math.round(totalPossibleWin)}u
+                      {stakeDisplay === "dollars"
+                        ? formatStake(totalPossibleWin, "dollars", {
+                            signed: true,
+                          })
+                        : `${totalPossibleWin >= 0 ? "+" : ""}${Math.round(totalPossibleWin)}u`}
                     </p>
                     <p
                       className="text-xs tabular-nums"
@@ -629,6 +711,7 @@ export default function DailyBetSlate() {
               <PickCard
                 key={`${pick.kind}-${pick.event_id ?? "x"}-${index}`}
                 pick={pick}
+                stakeDisplay={stakeDisplay}
               />
             ))}
           </div>
@@ -656,7 +739,13 @@ export default function DailyBetSlate() {
   );
 }
 
-function PickCard({ pick }: { pick: DailyBettingPick }) {
+function PickCard({
+  pick,
+  stakeDisplay,
+}: {
+  pick: DailyBettingPick;
+  stakeDisplay: StakeDisplay;
+}) {
   const isParlay = pick.kind === "parlay";
   const sport = String(pick.sport || "MULTI");
   const marketProb =
@@ -721,9 +810,9 @@ function PickCard({ pick }: { pick: DailyBettingPick }) {
               className="text-xs"
               style={{ color: snapshotTokens.textMuted }}
             >
-              To win {formatMoney(pick.potential_profit)}
+              To win {formatStake(pick.potential_profit, stakeDisplay)}
               {pick.potential_payout != null
-                ? ` · pays ${formatMoney(pick.potential_payout)}`
+                ? ` · pays ${formatStake(pick.potential_payout, stakeDisplay)}`
                 : ""}
             </p>
           ) : null}
@@ -733,7 +822,7 @@ function PickCard({ pick }: { pick: DailyBettingPick }) {
             className="text-lg font-semibold tabular-nums"
             style={{ color: snapshotTokens.textPrimary }}
           >
-            {formatMoney(pick.units)}
+            {formatStake(pick.units, stakeDisplay)}
           </p>
           <p
             className="text-xs tabular-nums"

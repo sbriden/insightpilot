@@ -24,11 +24,12 @@ InsightPilot — Render deploy checklist
    - ADMIN_PASSWORD on BOTH api and web (same value)
    - NEXT_PUBLIC_REQUIRE_ADMIN_AUTH is already "1" in render.yaml
 4. After deploy, open the web URL → /login → studio.
-5. Seed / refresh data (can take many minutes):
-   Preferred — Render Shell on insightpilot-api:
-     python -m app.scripts.seed_data
-     python -m app.scripts.seed_data --mode historical
-   UI Refresh kicks jobs in the background after API redeploy.
+5. Seed / refresh data:
+   Free tier is 512MB — set INSIGHTPILOT_LOW_MEMORY=1 on the API
+   (skips PBP-heavy facts, current season only). Do NOT run
+   historical on free; upgrade RAM for full loads.
+   UI Refresh: run NFL incremental, wait until finished, then CFB,
+   then odds — one job at a time.
    Progress: GET /api/sources/nflverse/ingestion-status
              GET /api/sources/sportsdataverse/ingestion-status
 6. Published apps:
