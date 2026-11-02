@@ -18,11 +18,21 @@ from app.analysis.insights.betting.daily_slate import (
     generate_daily_betting_slate,
     list_daily_sport_availability,
 )
+from app.analysis.insights.betting.guided_slate import (
+    back_guided_step,
+    confirm_guided_slate,
+    replace_guided_pick,
+    review_guided_slate,
+    select_guided_pick,
+    start_guided_slate,
+)
 
 __all__ = [
     "analyze_betting_portfolio",
+    "back_guided_step",
     "build_betting_results",
     "build_betting_slate",
+    "confirm_guided_slate",
     "create_position_from_market",
     "find_betting_event_by_matchup",
     "generate_betting_portfolio",
@@ -30,4 +40,8 @@ __all__ = [
     "get_betting_event",
     "list_betting_weeks",
     "list_daily_sport_availability",
+    "replace_guided_pick",
+    "review_guided_slate",
+    "select_guided_pick",
+    "start_guided_slate",
 ]

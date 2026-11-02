@@ -97,6 +97,13 @@ export default function SportsBettingAnalyzer({
   }, [initialTab]);
 
   useEffect(() => {
+    // Daily Bet Slate does not use the week / model-slate board.
+    // Skip that work so the daily generator can open immediately.
+    if (tab === "daily") {
+      setLoading(false);
+      setError(null);
+      return;
+    }
     let cancelled = false;
     loadedSlateKey.current = null;
     setSlate(null);
@@ -145,9 +152,10 @@ export default function SportsBettingAnalyzer({
     return () => {
       cancelled = true;
     };
-  }, [sport]);
+  }, [sport, tab]);
 
   useEffect(() => {
+    if (tab === "daily") return;
     if (week == null || season == null) return;
     const key = `${sport}:${season}:${week}:${slateReloadKey}`;
     if (loadedSlateKey.current === key) return;
@@ -189,7 +197,7 @@ export default function SportsBettingAnalyzer({
     return () => {
       cancelled = true;
     };
-  }, [sport, season, week, slateReloadKey]);
+  }, [sport, season, week, slateReloadKey, tab]);
 
   useEffect(() => {
     function onFantasyRefresh() {

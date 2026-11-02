@@ -595,6 +595,39 @@ class DailySlateTests(unittest.TestCase):
         self.assertEqual(len(rejected), 0)
         self.assertEqual(len(markets), 3)
 
+    def test_expand_sao_ncaab_attaches_logos(self):
+        game = {
+            "provider_game_id": "g-ncaab",
+            "home_abbr": "MICH",
+            "away_abbr": "CONN",
+            "start_time": "2026-11-02T19:00:00Z",
+            "spread": -4.5,
+            "over_under": 145.5,
+            "home_moneyline": -180,
+            "away_moneyline": 150,
+        }
+        rows = mod._expand_sao_game_candidates(
+            game,
+            sport="NCAAB",
+            league="ncaab",
+        )
+        self.assertGreater(len(rows), 0)
+        self.assertTrue(
+            all(row.get("home_logo_url") for row in rows)
+        )
+        self.assertTrue(
+            all(row.get("away_logo_url") for row in rows)
+        )
+        self.assertIn(
+            "/teamlogos/ncaab/500/mich.png",
+            str(rows[0]["home_logo_url"]),
+        )
+        # Canonical CONN maps back to Action Network uconn slug.
+        self.assertIn(
+            "/teamlogos/ncaab/500/uconn.png",
+            str(rows[0]["away_logo_url"]),
+        )
+
     def test_candidates_from_sao_prefers_live_over_partial_db(self):
         target = date(2026, 10, 27)
         live_rows = [
@@ -664,39 +697,94 @@ class DailySlateTests(unittest.TestCase):
         event_ids = {row["event_id"] for row in rows}
         self.assertEqual(len(event_ids), 4)
 
-    def test_load_sao_games_uses_et_start_time_not_utc_game_date(self):
-        import pandas as pd
+    def test_load_sao_games_routes_by_league(self):
+        with patch.object(
+            mod,
+            "_load_sports_odds_games_for_date",
+            return_value=[{"home_abbr": "SAS"}],
+        ) as mock_nba:
+            rows = mod._load_sao_games_for_date(
+                "nba",
+                date(2026, 10, 27),
+            )
+        mock_nba.assert_called_once()
+        self.assertEqual(rows[0]["home_abbr"], "SAS")
 
-        frame = pd.DataFrame(
-            [
-                {
-                    "game_id": "sao:nba:late",
-                    "game_date": date(2026, 10, 28),
-                    "start_time": "2026-10-28T00:00:00+00:00",
-                    "home_abbr": "SAS",
-                    "away_abbr": "SAC",
-                    "home_name": "Spurs",
-                    "away_name": "Kings",
-                    "spread": -3.5,
-                    "over_under": 230.5,
-                    "home_moneyline": -160,
-                    "away_moneyline": 140,
-                    "status": "scheduled",
-                }
-            ]
+        with patch.object(
+            mod,
+            "_load_nfl_odds_games_for_date",
+            return_value=[{"home_abbr": "KC"}],
+        ) as mock_nfl:
+            rows = mod._load_sao_games_for_date(
+                "nfl",
+                date(2026, 11, 2),
+            )
+        mock_nfl.assert_called_once()
+        self.assertEqual(rows[0]["home_abbr"], "KC")
+
+        with patch.object(
+            mod,
+            "_load_ncaaf_odds_games_for_date",
+            return_value=[{"home_abbr": "OSU"}],
+        ) as mock_cfb:
+            rows = mod._load_sao_games_for_date(
+                "ncaaf",
+                date(2026, 11, 1),
+            )
+        mock_cfb.assert_called_once()
+        self.assertEqual(rows[0]["home_abbr"], "OSU")
+
+    def test_record_on_target_date_uses_et_start_time(self):
+        # 2026-10-28T00:00Z is still 2026-10-27 in ET.
+        self.assertTrue(
+            mod._record_on_target_date(
+                start_time="2026-10-28T00:00:00+00:00",
+                game_date=date(2026, 10, 28),
+                target_date=date(2026, 10, 27),
+            )
         )
+        self.assertFalse(
+            mod._record_on_target_date(
+                start_time="2026-10-28T00:00:00+00:00",
+                game_date=date(2026, 10, 28),
+                target_date=date(2026, 10, 28),
+            )
+        )
+
+    def test_candidates_prefer_db_skips_live_fetch(self):
+        target = date(2026, 11, 2)
+        db_rows = [
+            {
+                "provider_game_id": "nfl-1",
+                "home_abbr": "KC",
+                "away_abbr": "DEN",
+                "start_time": "2026-11-03T01:15:00+00:00",
+                "status": "scheduled",
+                "spread": -7.5,
+                "over_under": 44.5,
+                "home_moneyline": -320,
+                "away_moneyline": 260,
+            }
+        ]
         with patch.object(mod, "_event_started", return_value=False):
-            with patch(
-                "app.canonical.sports_odds.fact_game_market"
-                ".load_fact_game_market_from_db",
-                return_value=frame,
+            with patch.object(
+                mod,
+                "_load_sao_games_for_date",
+                return_value=db_rows,
             ):
-                rows = mod._load_sao_games_for_date(
-                    "nba",
-                    date(2026, 10, 27),
-                )
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["away_abbr"], "SAC")
+                with patch(
+                    "app.sources.scoresandodds.fetch_odds_rows",
+                ) as mock_live:
+                    rows, meta = mod._candidates_from_sao(
+                        league="nfl",
+                        target_date=target,
+                        prefer_db=True,
+                        include_openings=False,
+                    )
+        mock_live.assert_not_called()
+        self.assertEqual(meta["source"], "odds_db")
+        self.assertEqual(meta["games"], 1)
+        self.assertGreaterEqual(len(rows), 4)
 
     def test_generate_daily_slate_with_mocked_pool(self):
         pool = _two_way_pool(12)

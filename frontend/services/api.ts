@@ -16,6 +16,7 @@ import {
   NflverseRefreshResult,
   NflverseDataQualityResult,
   NflverseIngestMode,
+  IngestionStatusResult,
 } from "@/types/dataset";
 
 import {
@@ -385,6 +386,22 @@ export async function getSportsdataverseDataQuality(
     response
   );
 
+}
+
+
+export async function getNflverseIngestionStatus(): Promise<IngestionStatusResult> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/sources/nflverse/ingestion-status`
+  );
+  return handleResponse<IngestionStatusResult>(response);
+}
+
+
+export async function getSportsdataverseIngestionStatus(): Promise<IngestionStatusResult> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/sources/sportsdataverse/ingestion-status`
+  );
+  return handleResponse<IngestionStatusResult>(response);
 }
 
 
@@ -4171,6 +4188,195 @@ export async function generateDailyBettingSlate(payload: {
     }
   );
   return handleResponse(response);
+}
+
+/* ── Guided Market Slate ───────────────────────────────────── */
+
+export interface GuidedSlateCandidate {
+  candidate_id: string;
+  sport?: string;
+  event_id?: string;
+  event_label?: string;
+  market_key?: string;
+  market_type?: string;
+  selection?: string;
+  line?: number | null;
+  price?: number | null;
+  offered_odds?: number | null;
+  fair_probability?: number | null;
+  home_team?: string | null;
+  away_team?: string | null;
+  home_logo_url?: string | null;
+  away_logo_url?: string | null;
+  start_time?: string | null;
+  potential_profit?: number | null;
+  potential_payout?: number | null;
+  selected_at?: string | null;
+  selection_odds?: number | null;
+}
+
+export interface GuidedSlateLeg {
+  leg_index: number;
+  bucket_id: string;
+  bucket_label?: string;
+  odds_text?: string;
+  prompt?: string;
+  status: string;
+  selection?: GuidedSlateCandidate | null;
+}
+
+export interface GuidedSlateTicket {
+  ticket_index: number;
+  ticket_type: "single" | "parlay" | string;
+  leg_count: number;
+  stake: number;
+  status: string;
+  legs: GuidedSlateLeg[];
+  combined_odds?: number | null;
+  potential_profit?: number | null;
+  potential_payout?: number | null;
+}
+
+export interface GuidedSlateStep {
+  step_index: number;
+  ticket_index: number;
+  leg_index: number;
+  ticket_type: string;
+  leg_count: number;
+  stake: number;
+  bucket_id: string;
+  bucket_label?: string;
+  odds_text?: string;
+  prompt?: string;
+  status: string;
+}
+
+export interface GuidedSlateSession {
+  session_id: string;
+  label?: string;
+  mode?: string;
+  risk?: string;
+  risk_label?: string;
+  sports?: string[];
+  date?: string;
+  status?: string;
+  confirmed?: boolean;
+  total_exposure?: number;
+  single_exposure?: number;
+  parlay_exposure?: number;
+  ticket_count?: number;
+  tickets?: GuidedSlateTicket[];
+  steps?: GuidedSlateStep[];
+  current_step_index?: number;
+  adjustment_message?: string | null;
+  odds_alerts?: Array<{
+    candidate_id?: string;
+    ticket_index?: number;
+    leg_index?: number;
+    reason?: string;
+    selected_odds?: number | null;
+    current_odds?: number | null;
+  }>;
+  summary?: {
+    ticket_count?: number;
+    singles?: number;
+    parlays?: number;
+    individual_picks?: number;
+    completed_steps?: number;
+    total_steps?: number;
+    total_exposure?: number;
+    single_exposure?: number;
+    parlay_exposure?: number;
+    risk_label?: string;
+    status?: string;
+  };
+}
+
+export interface GuidedSlateResponse {
+  session: GuidedSlateSession;
+  current_step?: GuidedSlateStep | null;
+  candidates?: GuidedSlateCandidate[];
+  odds_alerts?: GuidedSlateSession["odds_alerts"];
+}
+
+async function postGuidedSlate(
+  path: string,
+  body: Record<string, unknown>
+): Promise<GuidedSlateResponse> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/daily-slate/guided/${path}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    }
+  );
+  return handleResponse(response);
+}
+
+export async function startGuidedDailySlate(payload: {
+  ticket_count: number;
+  total_exposure: number;
+  risk?: DailyBettingRisk | string;
+  date?: string | null;
+  sports?: DailyBettingSport[] | string[];
+  seed?: number | null;
+}): Promise<GuidedSlateResponse> {
+  return postGuidedSlate("start", {
+    ticket_count: payload.ticket_count,
+    total_exposure: payload.total_exposure,
+    risk: payload.risk ?? "balanced",
+    date: payload.date ?? null,
+    sports: payload.sports ?? null,
+    seed: payload.seed ?? null,
+  });
+}
+
+export async function listGuidedDailySlateCandidates(payload: {
+  session: GuidedSlateSession;
+}): Promise<GuidedSlateResponse> {
+  return postGuidedSlate("candidates", {
+    session: payload.session,
+  });
+}
+
+export async function selectGuidedDailySlatePick(payload: {
+  session: GuidedSlateSession;
+  candidate_id: string;
+}): Promise<GuidedSlateResponse> {
+  return postGuidedSlate("select", {
+    session: payload.session,
+    candidate_id: payload.candidate_id,
+  });
+}
+
+export async function replaceGuidedDailySlatePick(payload: {
+  session: GuidedSlateSession;
+  step_index: number;
+}): Promise<GuidedSlateResponse> {
+  return postGuidedSlate("replace", {
+    session: payload.session,
+    step_index: payload.step_index,
+  });
+}
+
+export async function backGuidedDailySlate(payload: {
+  session: GuidedSlateSession;
+}): Promise<GuidedSlateResponse> {
+  return postGuidedSlate("back", { session: payload.session });
+}
+
+export async function reviewGuidedDailySlate(payload: {
+  session: GuidedSlateSession;
+}): Promise<GuidedSlateResponse> {
+  return postGuidedSlate("review", { session: payload.session });
+}
+
+export async function confirmGuidedDailySlate(payload: {
+  session: GuidedSlateSession;
+}): Promise<GuidedSlateResponse> {
+  return postGuidedSlate("confirm", { session: payload.session });
 }
 
 export async function createBettingPortfolioPosition(payload: {

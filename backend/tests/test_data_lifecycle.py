@@ -338,6 +338,47 @@ class DataLifecycleTests(unittest.TestCase):
             result["message"],
         )
 
+    @patch(
+        "app.canonical.data_quality.validate_ingested_seasons",
+    )
+    @patch(
+        "app.sources.nflverse.get_current_season",
+    )
+    @patch(
+        "app.sources.data_lifecycle.get_latest_ingestion_state",
+    )
+    def test_fantasy_data_quality_stored_report_skips_table_load(
+        self,
+        mock_latest,
+        mock_season,
+        mock_validate,
+    ):
+        mock_latest.return_value = {
+            "current_season": 2025,
+            "seasons": [2025],
+            "status": "completed",
+            "mode": "incremental",
+            "detail": {
+                "validation": {
+                    "passed": True,
+                    "status": "passed",
+                    "message": "stored",
+                },
+            },
+        }
+        result = data_lifecycle.get_fantasy_data_quality(
+            live=False,
+        )
+        mock_validate.assert_not_called()
+        mock_season.assert_not_called()
+        self.assertEqual(
+            result["report_source"],
+            "ingestion_state",
+        )
+        self.assertEqual(result["current_season"], 2025)
+        self.assertEqual(result["seasons"], [2025])
+        self.assertEqual(result["message"], "stored")
+
 
 if __name__ == "__main__":
     unittest.main()

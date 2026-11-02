@@ -12,6 +12,7 @@ Pipeline layers (ordered): dims → facts
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -410,6 +411,56 @@ def _record_ingestion_state(
         pass
 
 
+def _serialize_ingestion_row(row: Any) -> dict[str, Any]:
+    detail = row["detail"]
+    if isinstance(detail, str):
+        detail = json.loads(detail)
+    return {
+        "job_key": row["job_key"],
+        "mode": row["mode"],
+        "seasons": list(row["seasons"] or []),
+        "layers": list(row["layers"] or []),
+        "datasets_completed": list(
+            row["datasets_completed"] or []
+        ),
+        "current_season": row["current_season"],
+        "status": row["status"],
+        "started_at": (
+            row["started_at"].isoformat()
+            if row["started_at"] is not None
+            else None
+        ),
+        "finished_at": (
+            row["finished_at"].isoformat()
+            if row["finished_at"] is not None
+            else None
+        ),
+        "row_count_total": int(row["row_count_total"] or 0),
+        "detail": detail if isinstance(detail, dict) else {},
+        "updated_at": (
+            row["updated_at"].isoformat()
+            if row["updated_at"] is not None
+            else None
+        ),
+    }
+
+
+_INGESTION_SELECT = """
+    job_key,
+    mode,
+    seasons,
+    layers,
+    datasets_completed,
+    current_season,
+    status,
+    started_at,
+    finished_at,
+    row_count_total,
+    detail,
+    updated_at
+"""
+
+
 def get_latest_ingestion_state() -> dict[str, Any] | None:
     """Return the most recently updated CFB ingestion job, if any."""
 
@@ -417,19 +468,7 @@ def get_latest_ingestion_state() -> dict[str, Any] | None:
         ensure_ingestion_state_schema()
         statement = text(
             f"""
-            SELECT
-                job_key,
-                mode,
-                seasons,
-                layers,
-                datasets_completed,
-                current_season,
-                status,
-                started_at,
-                finished_at,
-                row_count_total,
-                detail,
-                updated_at
+            SELECT {_INGESTION_SELECT}
             FROM {INGESTION_STATE_TABLE}
             ORDER BY updated_at DESC
             LIMIT 1
@@ -439,39 +478,33 @@ def get_latest_ingestion_state() -> dict[str, Any] | None:
             row = connection.execute(statement).mappings().first()
         if row is None:
             return None
-        detail = row["detail"]
-        if isinstance(detail, str):
-            detail = json.loads(detail)
-        return {
-            "job_key": row["job_key"],
-            "mode": row["mode"],
-            "seasons": list(row["seasons"] or []),
-            "layers": list(row["layers"] or []),
-            "datasets_completed": list(
-                row["datasets_completed"] or []
-            ),
-            "current_season": row["current_season"],
-            "status": row["status"],
-            "started_at": (
-                row["started_at"].isoformat()
-                if row["started_at"] is not None
-                else None
-            ),
-            "finished_at": (
-                row["finished_at"].isoformat()
-                if row["finished_at"] is not None
-                else None
-            ),
-            "row_count_total": int(row["row_count_total"] or 0),
-            "detail": detail if isinstance(detail, dict) else {},
-            "updated_at": (
-                row["updated_at"].isoformat()
-                if row["updated_at"] is not None
-                else None
-            ),
-        }
+        return _serialize_ingestion_row(row)
     except Exception:
         return None
+
+
+def list_ingestion_states_by_mode() -> dict[str, dict[str, Any]]:
+    """Return the latest CFB ingestion job for each mode."""
+
+    try:
+        ensure_ingestion_state_schema()
+        statement = text(
+            f"""
+            SELECT DISTINCT ON (mode)
+                {_INGESTION_SELECT}
+            FROM {INGESTION_STATE_TABLE}
+            ORDER BY mode, updated_at DESC
+            """
+        )
+        with engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+        return {
+            str(row["mode"]): _serialize_ingestion_row(row)
+            for row in rows
+            if row.get("mode")
+        }
+    except Exception:
+        return {}
 
 
 def run_ingest(
@@ -670,39 +703,57 @@ def refresh_pipeline(
     )
 
 
+_COLLEGE_QUALITY_TABLES = (
+    "dim_team",
+    "dim_player",
+    "dim_game",
+    "fact_player_game",
+    "fact_team_game",
+    "fact_defensive_game",
+    "fact_game_market",
+)
+_college_quality_cache: tuple[float, dict[str, Any]] | None = None
+_COLLEGE_QUALITY_TTL_SECONDS = 60.0
+
+
 def get_college_data_quality(
     *,
     live: bool = True,
 ) -> dict[str, Any]:
-    """Lightweight row-count quality report for CFB tables."""
+    """Row-count quality report for CFB tables.
 
-    del live
+    ``live=False`` reuses a short-lived count so the refresh page
+    can paint without scanning every fact table again.
+    """
+
+    global _college_quality_cache
+    now = time.monotonic()
+    if (
+        not live
+        and _college_quality_cache is not None
+        and now - _college_quality_cache[0] < _COLLEGE_QUALITY_TTL_SECONDS
+    ):
+        return _college_quality_cache[1]
+
     ensure_college_schema()
-    tables = [
-        "dim_team",
-        "dim_player",
-        "dim_game",
-        "fact_player_game",
-        "fact_team_game",
-        "fact_defensive_game",
-        "fact_game_market",
-    ]
     counts: dict[str, int] = {}
-    with engine.connect() as connection:
-        for table in tables:
-            try:
-                result = connection.execute(
-                    text(
-                        f"SELECT COUNT(*) FROM {COLLEGE_SCHEMA}.{table}"
-                    )
-                )
-                counts[table] = int(result.scalar() or 0)
-            except Exception:
-                counts[table] = 0
+    count_sql = ", ".join(
+        f"(SELECT COUNT(*) FROM {COLLEGE_SCHEMA}.{table}) AS {table}"
+        for table in _COLLEGE_QUALITY_TABLES
+    )
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(f"SELECT {count_sql}")
+            ).mappings().first()
+        for table in _COLLEGE_QUALITY_TABLES:
+            counts[table] = int((row or {}).get(table) or 0)
+    except Exception:
+        counts = {table: 0 for table in _COLLEGE_QUALITY_TABLES}
 
     empty = [name for name, count in counts.items() if count == 0]
     passed = len(empty) == 0
-    return {
+    payload = {
         "source_id": "sportsdataverse",
         "foundation": "college_football",
         "status": "passed" if passed else "incomplete",
@@ -717,3 +768,5 @@ def get_college_data_quality(
         "table_counts": counts,
         "empty_tables": empty,
     }
+    _college_quality_cache = (now, payload)
+    return payload

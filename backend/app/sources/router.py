@@ -400,7 +400,14 @@ def refresh_sportsdataverse_data(
 @router.get("/sportsdataverse/ingestion-status")
 def sportsdataverse_ingestion_status():
     state = cfb_lifecycle.get_latest_ingestion_state()
-    return {"source_id": "sportsdataverse", "latest": state}
+    by_mode = cfb_lifecycle.list_ingestion_states_by_mode()
+    return {
+        "source_id": "sportsdataverse",
+        "latest": state,
+        "by_mode": by_mode,
+        "pipeline": cfb_lifecycle.PIPELINE_BY_LAYER,
+        "layers": list(cfb_lifecycle.LAYER_ORDER),
+    }
 
 
 @router.get("/sportsdataverse/quality")
@@ -1137,7 +1144,14 @@ def refresh_nflverse_data(
 @router.get("/nflverse/ingestion-status")
 def nflverse_ingestion_status():
     state = data_lifecycle.get_latest_ingestion_state()
-    return {"source_id": "nflverse", "latest": state}
+    by_mode = data_lifecycle.list_ingestion_states_by_mode()
+    return {
+        "source_id": "nflverse",
+        "latest": state,
+        "by_mode": by_mode,
+        "pipeline": data_lifecycle.PIPELINE_BY_LAYER,
+        "layers": list(data_lifecycle.LAYER_ORDER),
+    }
 
 
 @router.get("/nflverse/players")
@@ -2068,6 +2082,174 @@ def generate_nflverse_daily_betting_slate(payload: dict):
                 "Failed to generate daily betting slate: "
                 f"{exc}"
             ),
+        ) from exc
+
+
+def _guided_session_from_payload(payload: dict) -> dict:
+    session = payload.get("session")
+    if not isinstance(session, dict) or not session.get("session_id"):
+        raise HTTPException(
+            status_code=400,
+            detail="A guided slate session payload is required.",
+        )
+    return session
+
+
+@router.post("/nflverse/betting/daily-slate/guided/start")
+def start_nflverse_guided_daily_slate(payload: dict):
+    """
+    Start a Guided Market Slate session from ticket count, exposure,
+    and risk. Template selection is internal-only.
+    """
+
+    from app.analysis.insights.betting import start_guided_slate
+
+    try:
+        sports_raw = payload.get("sports")
+        seed_raw = payload.get("seed")
+        return start_guided_slate(
+            ticket_count=int(payload.get("ticket_count") or 0),
+            total_exposure=float(
+                payload.get("total_exposure")
+                or payload.get("total_units")
+                or 0
+            ),
+            risk=str(payload.get("risk") or "balanced"),
+            slate_date=payload.get("date"),
+            sports=(
+                [str(item) for item in sports_raw]
+                if isinstance(sports_raw, list)
+                else None
+            ),
+            seed=(
+                int(seed_raw) if seed_raw is not None else None
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to start guided slate: {exc}",
+        ) from exc
+
+
+@router.post("/nflverse/betting/daily-slate/guided/candidates")
+def guided_daily_slate_candidates(payload: dict):
+    """Return eligible candidates for the session's current step."""
+
+    from app.analysis.insights.betting.guided_slate import (
+        guided_candidates_payload,
+    )
+
+    try:
+        session = _guided_session_from_payload(payload)
+        return guided_candidates_payload(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to load guided candidates: {exc}",
+        ) from exc
+
+
+@router.post("/nflverse/betting/daily-slate/guided/select")
+def select_nflverse_guided_daily_slate_pick(payload: dict):
+    from app.analysis.insights.betting import select_guided_pick
+
+    try:
+        session = _guided_session_from_payload(payload)
+        candidate_id = str(payload.get("candidate_id") or "").strip()
+        if not candidate_id:
+            raise ValueError("candidate_id is required.")
+        return select_guided_pick(
+            session,
+            candidate_id=candidate_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to select guided pick: {exc}",
+        ) from exc
+
+
+@router.post("/nflverse/betting/daily-slate/guided/replace")
+def replace_nflverse_guided_daily_slate_pick(payload: dict):
+    from app.analysis.insights.betting import replace_guided_pick
+
+    try:
+        session = _guided_session_from_payload(payload)
+        return replace_guided_pick(
+            session,
+            step_index=int(payload.get("step_index") or 0),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to replace guided pick: {exc}",
+        ) from exc
+
+
+@router.post("/nflverse/betting/daily-slate/guided/back")
+def back_nflverse_guided_daily_slate(payload: dict):
+    from app.analysis.insights.betting import back_guided_step
+
+    try:
+        session = _guided_session_from_payload(payload)
+        return back_guided_step(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to go back on guided slate: {exc}",
+        ) from exc
+
+
+@router.post("/nflverse/betting/daily-slate/guided/review")
+def review_nflverse_guided_daily_slate(payload: dict):
+    from app.analysis.insights.betting import review_guided_slate
+
+    try:
+        session = _guided_session_from_payload(payload)
+        return review_guided_slate(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to review guided slate: {exc}",
+        ) from exc
+
+
+@router.post("/nflverse/betting/daily-slate/guided/confirm")
+def confirm_nflverse_guided_daily_slate(payload: dict):
+    from app.analysis.insights.betting import confirm_guided_slate
+
+    try:
+        session = _guided_session_from_payload(payload)
+        return confirm_guided_slate(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to confirm guided slate: {exc}",
         ) from exc
 
 

@@ -785,6 +785,58 @@ def run_ingest(
     return payload
 
 
+def _serialize_ingestion_row(row: Any) -> dict[str, Any]:
+    detail = row["detail"]
+    if isinstance(detail, str):
+        import json
+
+        detail = json.loads(detail)
+    return {
+        "job_key": row["job_key"],
+        "mode": row["mode"],
+        "seasons": list(row["seasons"] or []),
+        "layers": list(row["layers"] or []),
+        "datasets_completed": list(
+            row["datasets_completed"] or []
+        ),
+        "current_season": row["current_season"],
+        "status": row["status"],
+        "started_at": (
+            row["started_at"].isoformat()
+            if row["started_at"] is not None
+            else None
+        ),
+        "finished_at": (
+            row["finished_at"].isoformat()
+            if row["finished_at"] is not None
+            else None
+        ),
+        "row_count_total": int(row["row_count_total"] or 0),
+        "detail": detail if isinstance(detail, dict) else {},
+        "updated_at": (
+            row["updated_at"].isoformat()
+            if row["updated_at"] is not None
+            else None
+        ),
+    }
+
+
+_INGESTION_SELECT = """
+    job_key,
+    mode,
+    seasons,
+    layers,
+    datasets_completed,
+    current_season,
+    status,
+    started_at,
+    finished_at,
+    row_count_total,
+    detail,
+    updated_at
+"""
+
+
 def get_latest_ingestion_state() -> dict[str, Any] | None:
     """Return the most recently updated ingestion job, if any."""
 
@@ -792,19 +844,7 @@ def get_latest_ingestion_state() -> dict[str, Any] | None:
         ensure_ingestion_state_schema()
         statement = text(
             f"""
-            SELECT
-                job_key,
-                mode,
-                seasons,
-                layers,
-                datasets_completed,
-                current_season,
-                status,
-                started_at,
-                finished_at,
-                row_count_total,
-                detail,
-                updated_at
+            SELECT {_INGESTION_SELECT}
             FROM {INGESTION_STATE_TABLE}
             ORDER BY updated_at DESC
             LIMIT 1
@@ -814,41 +854,33 @@ def get_latest_ingestion_state() -> dict[str, Any] | None:
             row = connection.execute(statement).mappings().first()
         if row is None:
             return None
-        detail = row["detail"]
-        if isinstance(detail, str):
-            import json
-
-            detail = json.loads(detail)
-        return {
-            "job_key": row["job_key"],
-            "mode": row["mode"],
-            "seasons": list(row["seasons"] or []),
-            "layers": list(row["layers"] or []),
-            "datasets_completed": list(
-                row["datasets_completed"] or []
-            ),
-            "current_season": row["current_season"],
-            "status": row["status"],
-            "started_at": (
-                row["started_at"].isoformat()
-                if row["started_at"] is not None
-                else None
-            ),
-            "finished_at": (
-                row["finished_at"].isoformat()
-                if row["finished_at"] is not None
-                else None
-            ),
-            "row_count_total": int(row["row_count_total"] or 0),
-            "detail": detail if isinstance(detail, dict) else {},
-            "updated_at": (
-                row["updated_at"].isoformat()
-                if row["updated_at"] is not None
-                else None
-            ),
-        }
+        return _serialize_ingestion_row(row)
     except Exception:
         return None
+
+
+def list_ingestion_states_by_mode() -> dict[str, dict[str, Any]]:
+    """Return the latest ingestion job for each mode."""
+
+    try:
+        ensure_ingestion_state_schema()
+        statement = text(
+            f"""
+            SELECT DISTINCT ON (mode)
+                {_INGESTION_SELECT}
+            FROM {INGESTION_STATE_TABLE}
+            ORDER BY mode, updated_at DESC
+            """
+        )
+        with engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+        return {
+            str(row["mode"]): _serialize_ingestion_row(row)
+            for row in rows
+            if row.get("mode")
+        }
+    except Exception:
+        return {}
 
 
 def get_fantasy_data_quality(
@@ -859,29 +891,29 @@ def get_fantasy_data_quality(
     """
     Data-quality summary for the fantasy_football foundation.
 
-    Prefer a live validation pass against persisted canonical
-    tables; fall back to the last ingestion_state report.
+    Live validation reloads canonical tables. The stored path
+    reads the last ingestion_state report and skips that load.
     """
 
-    from app.canonical.data_quality import (
-        validate_ingested_seasons,
-    )
-
-    current = nflverse_source.get_current_season()
-    resolved_seasons = (
-        resolve_scope_seasons(
-            "seasons",
-            seasons=seasons,
-            current_season=current,
-        )
-        if seasons
-        else historical_seasons(current_season=current)
-    )
     latest = get_latest_ingestion_state()
     validation: dict[str, Any] | None = None
     report_source = "none"
 
     if live:
+        from app.canonical.data_quality import (
+            validate_ingested_seasons,
+        )
+
+        current = nflverse_source.get_current_season()
+        resolved_seasons = (
+            resolve_scope_seasons(
+                "seasons",
+                seasons=seasons,
+                current_season=current,
+            )
+            if seasons
+            else historical_seasons(current_season=current)
+        )
         try:
             report = validate_ingested_seasons(
                 resolved_seasons,
@@ -892,6 +924,29 @@ def get_fantasy_data_quality(
             report_source = "live"
         except Exception:
             validation = None
+    else:
+        stored_season = (
+            latest.get("current_season") if latest else None
+        )
+        current = (
+            int(stored_season)
+            if stored_season
+            else nflverse_source.get_current_season()
+        )
+        if seasons:
+            resolved_seasons = resolve_scope_seasons(
+                "seasons",
+                seasons=seasons,
+                current_season=current,
+            )
+        elif latest and latest.get("seasons"):
+            resolved_seasons = [
+                int(season) for season in latest["seasons"]
+            ]
+        else:
+            resolved_seasons = historical_seasons(
+                current_season=current,
+            )
 
     if validation is None and latest is not None:
         detail = latest.get("detail") or {}

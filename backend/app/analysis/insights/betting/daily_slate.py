@@ -18,6 +18,7 @@ Strong/Lean qualification for selection or allocation.
 from __future__ import annotations
 
 import random
+import time
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from typing import Any
@@ -147,6 +148,10 @@ _RISK_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 
+_AVAILABILITY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_AVAILABILITY_TTL_SECONDS = 60.0
+
+
 def list_daily_sport_availability(
     *,
     slate_date: str | date | None = None,
@@ -159,12 +164,29 @@ def list_daily_sport_availability(
 
     Availability requires at least one vig-normalizable two-sided
     market — raw one-sided model picks do not count.
+
+    Skips logo enrichment and opening-line HTML scrapes so the
+    Daily Slate screen can unlock quickly. Results are cached briefly
+    so opening Slaterator repeatedly stays snappy.
     """
 
     target_date = _resolve_date(slate_date)
+    cache_key = target_date.isoformat()
+    cached = _AVAILABILITY_CACHE.get(cache_key)
+    now = time.monotonic()
+    if (
+        cached is not None
+        and now - cached[0] < _AVAILABILITY_TTL_SECONDS
+    ):
+        return cached[1]
+
     candidates, pool_meta = _collect_candidates(
         target_date,
         sports=set(_ALL_SPORTS),
+        attach_logos=False,
+        include_openings=False,
+        parallel=True,
+        prefer_db=True,
     )
     markets, _rejected = _build_eligible_markets(candidates)
 
@@ -210,7 +232,7 @@ def list_daily_sport_availability(
         for sport, row in by_sport.items()
         if row["available"]
     ]
-    return {
+    payload = {
         "date": target_date.isoformat(),
         "timezone": "America/New_York",
         "sports": [by_sport[sport] for sport in _ALL_SPORTS],
@@ -221,6 +243,8 @@ def list_daily_sport_availability(
             if sport not in available
         ],
     }
+    _AVAILABILITY_CACHE[cache_key] = (now, payload)
+    return payload
 
 
 def _resolve_max_picks(max_picks: int | None) -> int | None:
@@ -315,6 +339,10 @@ def generate_daily_betting_slate(
     candidates, pool_meta = _collect_candidates(
         target_date,
         sports=selected_sports,
+        prefer_db=True,
+        include_openings=False,
+        attach_logos=False,
+        parallel=True,
     )
     markets, rejected = _build_eligible_markets(candidates)
     if not markets:
@@ -322,9 +350,9 @@ def generate_daily_betting_slate(
             f"No eligible two-sided markets for "
             f"{target_date.isoformat()} in "
             f"{', '.join(sorted(selected_sports))}. "
-            "Refresh ScoresAndOdds odds and ensure selected "
-            "sports have games today with valid prices on "
-            "both sides."
+            "Refresh ScoresAndOdds odds on Data Refresh and "
+            "ensure selected sports have games today with "
+            "valid prices on both sides."
         )
 
     min_stake = int(profile["min_stake"])
@@ -476,6 +504,10 @@ def _collect_candidates(
     target_date: date,
     *,
     sports: set[str],
+    attach_logos: bool = True,
+    include_openings: bool = True,
+    parallel: bool = False,
+    prefer_db: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     Collect two-sided sportsbook candidates for the ET calendar day.
@@ -492,21 +524,42 @@ def _collect_candidates(
         "sports_requested": sorted(sports),
     }
 
-    for league in _SAO_LEAGUES:
+    leagues = [
+        league
+        for league in _SAO_LEAGUES
+        if _SAO_SPORT_LABEL[league] in sports
+    ]
+
+    def _load_league(league: str) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
         label = _SAO_SPORT_LABEL[league]
-        if label not in sports:
-            continue
         rows, sport_meta = _candidates_from_sao(
             league=league,
             target_date=target_date,
+            include_openings=include_openings,
+            prefer_db=prefer_db,
         )
         # Attach model-slate logos when the schedule matchup aligns.
-        if label in _MODEL_SPORT_BACKEND and rows:
+        if (
+            attach_logos
+            and label in _MODEL_SPORT_BACKEND
+            and rows
+        ):
             rows = _attach_model_logos_to_sao_rows(
                 rows,
                 public_sport=label,
                 target_date=target_date,
             )
+        return label, rows, sport_meta
+
+    if parallel and len(leagues) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=len(leagues)) as pool:
+            loaded = list(pool.map(_load_league, leagues))
+    else:
+        loaded = [_load_league(league) for league in leagues]
+
+    for label, rows, sport_meta in loaded:
         candidates.extend(rows)
         meta["sao_sports"][label] = sport_meta
 
@@ -796,6 +849,8 @@ def _candidates_from_sao(
     *,
     league: str,
     target_date: date,
+    include_openings: bool = True,
+    prefer_db: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     sport = _SAO_SPORT_LABEL[league]
     meta: dict[str, Any] = {
@@ -806,45 +861,64 @@ def _candidates_from_sao(
         "source": None,
         "error": None,
     }
-    # Prefer the live ScoresAndOdds board for the ET calendar day.
-    # A partial sports_odds DB snapshot (e.g. only early tip-offs)
-    # must not hide the rest of tonight's slate.
+    # prefer_db reads persisted ScoresAndOdds rows (sports_odds /
+    # fantasy_football / college_football). Live boards are only a
+    # fallback when the local snapshot has nothing for the day.
     games: list[dict[str, Any]] = []
-    try:
-        from app.sources import scoresandodds as sao
 
-        # Week boards (NFL/NCAAF) ignore dates= and return the
-        # current week; slate boards use the ET calendar date.
-        rows, _fetch_meta = sao.fetch_odds_rows(
-            league,
-            dates=[target_date.isoformat()],
-        )
-        games = [
-            row
-            for row in rows
-            if _sao_row_on_date(row, target_date)
-            and not _event_started(
-                {
-                    "start_time": row.get("start_time"),
-                    "status": row.get("status"),
-                }
-            )
-        ]
-        meta["source"] = "scoresandodds_live"
-    except Exception as exc:
-        meta["live_error"] = str(exc)
-        games = []
+    if prefer_db:
+        try:
+            games = _load_sao_games_for_date(league, target_date)
+            if games:
+                meta["source"] = "odds_db"
+        except Exception as exc:
+            meta["db_error"] = str(exc)
+            games = []
 
     if not games:
         try:
+            from app.sources import scoresandodds as sao
+
+            # Week boards (NFL/NCAAF) ignore dates= and return the
+            # current week; slate boards use the ET calendar date.
+            rows, _fetch_meta = sao.fetch_odds_rows(
+                league,
+                dates=[target_date.isoformat()],
+                include_openings=include_openings,
+            )
+            games = [
+                row
+                for row in rows
+                if _sao_row_on_date(row, target_date)
+                and not _event_started(
+                    {
+                        "start_time": row.get("start_time"),
+                        "status": row.get("status"),
+                    }
+                )
+            ]
+            meta["source"] = "scoresandodds_live"
+        except Exception as exc:
+            meta["live_error"] = str(exc)
+            games = []
+
+    if not games and not prefer_db:
+        try:
             games = _load_sao_games_for_date(league, target_date)
-            meta["source"] = "sports_odds_db"
+            meta["source"] = "odds_db"
         except Exception as exc:
             meta["error"] = str(exc)
             return [], meta
 
     if not games and meta.get("live_error") and not meta.get("error"):
         meta["error"] = meta["live_error"]
+    elif (
+        not games
+        and meta.get("db_error")
+        and not meta.get("error")
+        and not meta.get("live_error")
+    ):
+        meta["error"] = meta["db_error"]
 
     meta["games"] = len(games)
     candidates: list[dict[str, Any]] = []
@@ -1000,67 +1074,343 @@ def _team_logo_urls_by_abbreviation(
     return out
 
 
+def _normalize_game_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if hasattr(value, "date") and not isinstance(value, date):
+        try:
+            return value.date()  # type: ignore[no-any-return]
+        except Exception:
+            pass
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _record_on_target_date(
+    *,
+    start_time: Any,
+    game_date: Any,
+    target_date: date,
+) -> bool:
+    if start_time:
+        return _sao_row_on_date(
+            {"start_time": start_time},
+            target_date,
+        )
+    normalized = _normalize_game_date(game_date)
+    return normalized == target_date if normalized else False
+
+
+def _game_row_from_record(
+    record: dict[str, Any],
+    *,
+    home_abbr: str | None = None,
+    away_abbr: str | None = None,
+) -> dict[str, Any] | None:
+    start_time = (
+        record.get("start_time")
+        or record.get("timestamp")
+        or record.get("game_date")
+    )
+    source_ids = record.get("source_ids") or {}
+    if isinstance(source_ids, str):
+        import json
+
+        try:
+            source_ids = json.loads(source_ids)
+        except Exception:
+            source_ids = {}
+    if not isinstance(source_ids, dict):
+        source_ids = {}
+    home = str(
+        home_abbr
+        or record.get("home_abbr")
+        or source_ids.get("home_abbr")
+        or ""
+    ).upper()
+    away = str(
+        away_abbr
+        or record.get("away_abbr")
+        or source_ids.get("away_abbr")
+        or ""
+    ).upper()
+    if not home or not away:
+        return None
+    if _event_started(
+        {
+            "start_time": start_time,
+            "status": record.get("status")
+            or record.get("game_status"),
+        }
+    ):
+        return None
+    home_logo = (
+        record.get("home_logo_url")
+        or source_ids.get("home_logo_url")
+    )
+    away_logo = (
+        record.get("away_logo_url")
+        or source_ids.get("away_logo_url")
+    )
+    return {
+        "provider_game_id": str(record.get("game_id") or ""),
+        "home_abbr": home,
+        "away_abbr": away,
+        "home_name": record.get("home_name"),
+        "away_name": record.get("away_name"),
+        "home_logo_url": home_logo,
+        "away_logo_url": away_logo,
+        "start_time": start_time,
+        "spread": num(record.get("spread")),
+        "over_under": num(record.get("over_under")),
+        "home_moneyline": num(record.get("home_moneyline")),
+        "away_moneyline": num(record.get("away_moneyline")),
+        "status": record.get("status") or record.get("game_status"),
+    }
+
+
 def _load_sao_games_for_date(
     league: str,
     target_date: date,
 ) -> list[dict[str, Any]]:
-    from app.canonical.sports_odds.fact_game_market import (
-        load_fact_game_market_from_db,
-    )
+    """
+    Load same-day odds rows from persisted tables.
 
-    frame = load_fact_game_market_from_db(leagues=[league])
-    if frame is None or frame.empty:
-        return []
+    nba/nhl/mlb/ncaab → sports_odds.fact_game_market
+    nfl → fantasy_football.fact_game_market (+ dim_game/dim_team)
+    ncaaf → college_football.fact_game_market (+ dim_game/dim_team)
+    """
+
+    key = str(league or "").strip().lower()
+    if key in {"nba", "nhl", "mlb", "ncaab"}:
+        return _load_sports_odds_games_for_date(key, target_date)
+    if key == "nfl":
+        return _load_nfl_odds_games_for_date(target_date)
+    if key == "ncaaf":
+        return _load_ncaaf_odds_games_for_date(target_date)
+    return []
+
+
+def _load_sports_odds_games_for_date(
+    league: str,
+    target_date: date,
+) -> list[dict[str, Any]]:
+    from sqlalchemy import text
+
+    from app.canonical.sports_odds.schema import (
+        SPORTS_ODDS_SCHEMA,
+        ensure_sports_odds_schema,
+    )
+    from app.database import engine
+
+    ensure_sports_odds_schema()
+    # Pull a small window around the ET day so UTC tip-offs that
+    # land on the neighboring calendar date are still considered.
+    sql = text(
+        f"""
+        SELECT
+            game_id,
+            game_date,
+            timestamp,
+            start_time,
+            status,
+            home_abbr,
+            away_abbr,
+            home_name,
+            away_name,
+            spread,
+            over_under,
+            home_moneyline,
+            away_moneyline,
+            source_ids
+        FROM {SPORTS_ODDS_SCHEMA}.fact_game_market
+        WHERE league = :league
+          AND (
+            game_date BETWEEN CAST(:day AS DATE) - 1
+                AND CAST(:day AS DATE) + 1
+            OR start_time BETWEEN
+                CAST(:day AS TIMESTAMP) - INTERVAL '1 day'
+                AND CAST(:day AS TIMESTAMP) + INTERVAL '2 days'
+            OR timestamp BETWEEN
+                CAST(:day AS TIMESTAMP) - INTERVAL '1 day'
+                AND CAST(:day AS TIMESTAMP) + INTERVAL '2 days'
+          )
+        """
+    )
+    with engine.connect() as connection:
+        records = connection.execute(
+            sql,
+            {"league": league, "day": target_date.isoformat()},
+        ).mappings().all()
+
     rows: list[dict[str, Any]] = []
-    for record in frame.to_dict(orient="records"):
-        start_time = record.get("start_time") or record.get(
+    for record in records:
+        payload = dict(record)
+        start_time = payload.get("start_time") or payload.get(
             "timestamp"
         )
-        # Prefer ET calendar day from kickoff so late West Coast
-        # tips (UTC next-day) stay on tonight's slate. Fall back to
-        # stored game_date when start_time is missing/unusable.
-        if start_time:
-            on_date = _sao_row_on_date(
-                {"start_time": start_time},
-                target_date,
-            )
-        else:
-            on_date = False
-        if not on_date:
-            game_date = record.get("game_date")
-            if game_date is None:
-                continue
-            if hasattr(game_date, "date"):
-                game_date = game_date.date()
-            elif isinstance(game_date, str):
-                try:
-                    game_date = date.fromisoformat(game_date[:10])
-                except ValueError:
-                    continue
-            if game_date != target_date:
-                continue
-        if _event_started(
-            {
-                "start_time": start_time,
-                "status": record.get("status"),
-            }
+        if not _record_on_target_date(
+            start_time=start_time,
+            game_date=payload.get("game_date"),
+            target_date=target_date,
         ):
             continue
-        rows.append(
-            {
-                "provider_game_id": str(record.get("game_id") or ""),
-                "home_abbr": record.get("home_abbr"),
-                "away_abbr": record.get("away_abbr"),
-                "home_name": record.get("home_name"),
-                "away_name": record.get("away_name"),
-                "start_time": start_time,
-                "spread": num(record.get("spread")),
-                "over_under": num(record.get("over_under")),
-                "home_moneyline": num(record.get("home_moneyline")),
-                "away_moneyline": num(record.get("away_moneyline")),
-                "status": record.get("status"),
-            }
+        row = _game_row_from_record(payload)
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _load_nfl_odds_games_for_date(
+    target_date: date,
+) -> list[dict[str, Any]]:
+    from sqlalchemy import text
+
+    from app.canonical.schema import FANTASY_SCHEMA
+    from app.database import engine
+
+    sql = text(
+        f"""
+        SELECT
+            m.game_id,
+            m.timestamp,
+            m.spread,
+            m.over_under,
+            m.source_ids,
+            g.game_date,
+            g.game_status,
+            COALESCE(
+                m.source_ids->>'home_abbr',
+                ht.team_abbreviation
+            ) AS home_abbr,
+            COALESCE(
+                m.source_ids->>'away_abbr',
+                at.team_abbreviation
+            ) AS away_abbr
+        FROM {FANTASY_SCHEMA}.fact_game_market m
+        JOIN {FANTASY_SCHEMA}.dim_game g
+          ON g.game_id = m.game_id
+        LEFT JOIN {FANTASY_SCHEMA}.dim_team ht
+          ON ht.team_id = g.home_team_id
+        LEFT JOIN {FANTASY_SCHEMA}.dim_team at
+          ON at.team_id = g.away_team_id
+        WHERE m.source = 'scoresandodds'
+          AND g.game_date BETWEEN CAST(:day AS DATE) - 1
+              AND CAST(:day AS DATE) + 1
+        """
+    )
+    try:
+        with engine.connect() as connection:
+            records = connection.execute(
+                sql,
+                {"day": target_date.isoformat()},
+            ).mappings().all()
+    except Exception:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        payload = dict(record)
+        start_time = payload.get("timestamp") or payload.get(
+            "game_date"
         )
+        if not _record_on_target_date(
+            start_time=start_time,
+            game_date=payload.get("game_date"),
+            target_date=target_date,
+        ):
+            continue
+        row = _game_row_from_record(
+            payload,
+            home_abbr=payload.get("home_abbr"),
+            away_abbr=payload.get("away_abbr"),
+        )
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _load_ncaaf_odds_games_for_date(
+    target_date: date,
+) -> list[dict[str, Any]]:
+    from sqlalchemy import text
+
+    from app.canonical.cfb.schema import (
+        COLLEGE_SCHEMA,
+        ensure_college_schema,
+    )
+    from app.database import engine
+
+    ensure_college_schema()
+    sql = text(
+        f"""
+        SELECT
+            m.game_id,
+            m.timestamp,
+            m.spread,
+            m.over_under,
+            m.home_moneyline,
+            m.away_moneyline,
+            m.source_ids,
+            g.game_date,
+            g.game_status,
+            COALESCE(
+                m.source_ids->>'home_abbr',
+                ht.team_abbreviation
+            ) AS home_abbr,
+            COALESCE(
+                m.source_ids->>'away_abbr',
+                at.team_abbreviation
+            ) AS away_abbr
+        FROM {COLLEGE_SCHEMA}.fact_game_market m
+        JOIN {COLLEGE_SCHEMA}.dim_game g
+          ON g.game_id = m.game_id
+        LEFT JOIN {COLLEGE_SCHEMA}.dim_team ht
+          ON ht.team_id = g.home_team_id
+        LEFT JOIN {COLLEGE_SCHEMA}.dim_team at
+          ON at.team_id = g.away_team_id
+        WHERE m.source = 'scoresandodds'
+          AND g.game_date BETWEEN CAST(:day AS DATE) - 1
+              AND CAST(:day AS DATE) + 1
+        """
+    )
+    try:
+        with engine.connect() as connection:
+            records = connection.execute(
+                sql,
+                {"day": target_date.isoformat()},
+            ).mappings().all()
+    except Exception:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        payload = dict(record)
+        start_time = payload.get("timestamp") or payload.get(
+            "game_date"
+        )
+        if not _record_on_target_date(
+            start_time=start_time,
+            game_date=payload.get("game_date"),
+            target_date=target_date,
+        ):
+            continue
+        row = _game_row_from_record(
+            payload,
+            home_abbr=payload.get("home_abbr"),
+            away_abbr=payload.get("away_abbr"),
+        )
+        if row:
+            rows.append(row)
     return rows
 
 
@@ -1098,6 +1448,26 @@ def _expand_sao_game_candidates(
     spread_price = num(game.get("spread_price")) or _DEFAULT_PRICE
     over_price = num(game.get("total_over_price")) or _DEFAULT_PRICE
     under_price = num(game.get("total_under_price")) or _DEFAULT_PRICE
+    home_logo = game.get("home_logo_url")
+    away_logo = game.get("away_logo_url")
+    # College boards need explicit logo URLs; build Action Network CDN
+    # paths when the feed/DB row did not carry them.
+    if str(league).lower() in {"ncaab", "ncaaf"}:
+        try:
+            from app.sources.scoresandodds import team_logo_url as sao_logo
+        except Exception:
+            sao_logo = None
+        if sao_logo is not None:
+            if not home_logo:
+                home_logo = sao_logo(
+                    league,
+                    canonical_abbr_value=home,
+                )
+            if not away_logo:
+                away_logo = sao_logo(
+                    league,
+                    canonical_abbr_value=away,
+                )
 
     rows: list[dict[str, Any]] = []
 
@@ -1126,6 +1496,8 @@ def _expand_sao_game_candidates(
                 "price": float(price),
                 "home_team": home,
                 "away_team": away,
+                "home_logo_url": home_logo,
+                "away_logo_url": away_logo,
                 "start_time": start,
                 "raw_implied_probability": float(implied),
                 "probability_source": "american_implied",

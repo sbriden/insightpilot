@@ -3,296 +3,195 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { NATIVE_PRODUCTS } from "@/lib/prebuiltProducts";
+import PipelineDag from "@/components/refresh/PipelineDag";
+import RefreshJobCard from "@/components/refresh/RefreshJobCard";
+import {
+  jobsForPipeline,
+  readOddsLastRefresh,
+  writeOddsLastRefresh,
+  REFRESH_PIPELINES,
+  type OddsLastRefreshMap,
+  type RefreshJob,
+  type RefreshPipelineId,
+} from "@/lib/refreshJobs";
 import {
   getNflverseCatalog,
-  getNflverseDataQuality,
+  getNflverseIngestionStatus,
   getSportsdataverseCatalog,
-  getSportsdataverseDataQuality,
+  getSportsdataverseIngestionStatus,
   refreshNflverseData,
   refreshScoresandoddsData,
   refreshSportsdataverseData,
+  type ScoresandoddsLeague,
 } from "@/services/api";
-import type { ScoresandoddsLeague } from "@/services/api";
 import type {
+  IngestionStatusResult,
   NflverseCatalog,
-  NflverseDataQualityResult,
-  NflverseIngestMode,
   NflverseRefreshResult,
 } from "@/types/dataset";
 
-const LAYER_DETAILS: Record<
-  string,
-  { label: string; description: string }
-> = {
-  dims: {
-    label: "Dimensions",
-    description:
-      "Identity tables for teams, players, and games. Establishes "
-      + "canonical keys used by every downstream fact and analysis.",
-  },
-  facts: {
-    label: "Facts",
-    description:
-      "Game-level production, usage, efficiency, injuries, depth "
-      + "charts, and market lines ingested from nflverse sources.",
-  },
-  analytics: {
-    label: "Analytics",
-    description:
-      "Derived usage trends, opportunity, efficiency, matchup, and "
-      + "environment scores built from stored facts.",
-  },
-  intelligence: {
-    label: "Intelligence",
-    description:
-      "Fantasy profiles and InsightPilot signals that power Player "
-      + "Overview, DFS projections, and betting edges.",
-  },
-  domain: {
-    label: "Domain",
-    description:
-      "Domain-specific enrichment such as player fundamentals used "
-      + "by product analyses.",
-  },
-};
-
-const PRODUCT_REFRESH: Array<{
-  productId: string;
-  modes: NflverseIngestMode[];
-  summary: string;
-  consumes: string[];
-  outputs: string[];
-}> = [
-  {
-    productId: "fantasy_football",
-    modes: ["incremental", "historical", "reprocess"],
-    summary:
-      "Primary owner of the nflverse fantasy pipeline. Refresh "
-      + "updates dims/facts and rebuilds analytics used by Player "
-      + "Overview, DFS Optimizer, and Portfolio Builder.",
-    consumes: [
-      "nflverse schedules & rosters",
-      "player game / usage / efficiency",
-      "injuries & depth charts",
-    ],
-    outputs: [
-      "Player Snapshot / Overview",
-      "DFS slate projections",
-      "Fantasy signals & profiles",
-    ],
-  },
-  {
-    productId: "sports_betting",
-    modes: ["incremental", "reprocess"],
-    summary:
-      "Shares the same nflverse foundation (games/game markets and "
-      + "projection inputs). Incremental refresh pulls latest lines "
-      + "and scores; reprocess rebuilds projection calibration "
-      + "inputs without re-fetching raw sources.",
-    consumes: [
-      "fact_game_market / fact_market",
-      "team & game dims",
-      "projection / PPG context",
-    ],
-    outputs: [
-      "Market analysis slate",
-      "Model vs market edges",
-      "Results & calibration",
-    ],
-  },
-];
-
-const FALLBACK_MODES: Array<{
-  id: NflverseIngestMode;
-  label: string;
-  description: string;
-  layers: string[];
-  season_scope: string;
-}> = [
-  {
-    id: "incremental",
-    label: "Incremental update",
-    description:
-      "Retrieve and process newly available current-season data "
-      + "(weekly). Upserts the live season without rebuilding "
-      + "stored historical seasons.",
-    layers: ["dims", "facts", "analytics", "intelligence", "domain"],
-    season_scope: "current",
-  },
-  {
-    id: "historical",
-    label: "Historical load",
-    description:
-      "One-time initial ingestion across several seasons. Seeds "
-      + "dims, facts, analytics, and intelligence for trends, "
-      + "matchups, and backtesting.",
-    layers: ["dims", "facts", "analytics", "intelligence", "domain"],
-    season_scope: "historical",
-  },
-  {
-    id: "reprocess",
-    label: "Reprocess derived",
-    description:
-      "Rebuild analytics and intelligence from facts already in "
-      + "Postgres when transformation logic changes. Does not "
-      + "re-fetch raw nflverse source tables.",
-    layers: ["analytics", "intelligence"],
-    season_scope: "historical",
-  },
-];
-
 export default function DataRefreshPage() {
-  const [catalog, setCatalog] = useState<NflverseCatalog | null>(
-    null
-  );
+  const [catalog, setCatalog] = useState<NflverseCatalog | null>(null);
   const [cfbCatalog, setCfbCatalog] =
     useState<NflverseCatalog | null>(null);
-  const [quality, setQuality] =
-    useState<NflverseDataQualityResult | null>(null);
-  const [cfbQuality, setCfbQuality] = useState<Record<
-    string,
-    unknown
-  > | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [nflStatus, setNflStatus] =
+    useState<IngestionStatusResult | null>(null);
+  const [cfbStatus, setCfbStatus] =
+    useState<IngestionStatusResult | null>(null);
+  const [oddsLastRefresh, setOddsLastRefresh] =
+    useState<OddsLastRefreshMap>({});
+  const [statusLoading, setStatusLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [refreshLoading, setRefreshLoading] = useState<
-    NflverseIngestMode | null
-  >(null);
-  const [cfbRefreshLoading, setCfbRefreshLoading] = useState<
-    NflverseIngestMode | null
-  >(null);
-  const [oddsRefreshLoading, setOddsRefreshLoading] =
-    useState<ScoresandoddsLeague | null>(null);
+  const [refreshLoading, setRefreshLoading] = useState<string | null>(
+    null
+  );
   const [refreshMessage, setRefreshMessage] = useState<string | null>(
     null
   );
   const [lastResult, setLastResult] =
     useState<NflverseRefreshResult | null>(null);
+  const [activePipeline, setActivePipeline] =
+    useState<RefreshPipelineId>("nfl_fantasy");
 
   const load = useCallback(async () => {
-    setLoading(true);
+    setStatusLoading(true);
     setError(null);
-    try {
-      const [
-        catalogResult,
-        qualityResult,
-        cfbCatalogResult,
-        cfbQualityResult,
-      ] = await Promise.all([
-        getNflverseCatalog(),
-        getNflverseDataQuality(true),
-        getSportsdataverseCatalog().catch(() => null),
-        getSportsdataverseDataQuality(true).catch(() => null),
-      ]);
-      setCatalog(catalogResult);
-      setQuality(qualityResult);
-      setCfbCatalog(cfbCatalogResult);
-      setCfbQuality(cfbQualityResult);
-    } catch (loadError) {
-      setError(
-        loadError instanceof Error
-          ? loadError.message
-          : "Unable to load data refresh catalog."
-      );
-    } finally {
-      setLoading(false);
-    }
+    setOddsLastRefresh(readOddsLastRefresh());
+
+    await Promise.allSettled([
+      getNflverseCatalog().then(setCatalog).catch((reason: unknown) => {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Unable to load NFL catalog."
+        );
+      }),
+      getSportsdataverseCatalog()
+        .then(setCfbCatalog)
+        .catch(() => null),
+      getNflverseIngestionStatus()
+        .then(setNflStatus)
+        .catch(() => null),
+      getSportsdataverseIngestionStatus()
+        .then(setCfbStatus)
+        .catch(() => null),
+    ]);
+    setStatusLoading(false);
   }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const modes = useMemo(() => {
-    const fromCatalog = catalog?.ingest_modes;
-    if (fromCatalog && fromCatalog.length > 0) {
-      return fromCatalog.map((mode) => ({
-        id: mode.id as NflverseIngestMode,
-        label: mode.label,
-        description: mode.description,
-        layers: mode.layers,
-        season_scope: mode.season_scope,
-      }));
-    }
-    return FALLBACK_MODES;
-  }, [catalog]);
+  const pipelineMeta = useMemo(() => {
+    return {
+      nfl_fantasy: {
+        currentSeason: catalog?.current_season,
+        historical:
+          catalog?.historical_seasons?.length
+            ? `${catalog.historical_seasons[0]}–${
+              catalog.historical_seasons[
+                catalog.historical_seasons.length - 1
+              ]
+            }`
+            : null,
+      },
+      college_football: {
+        currentSeason: cfbCatalog?.current_season,
+        historical:
+          cfbCatalog?.historical_seasons?.length
+            ? `${cfbCatalog.historical_seasons[0]}–${
+              cfbCatalog.historical_seasons[
+                cfbCatalog.historical_seasons.length - 1
+              ]
+            }`
+            : null,
+      },
+      market_odds: {
+        currentSeason: null as number | null | undefined,
+        historical: null as string | null,
+      },
+    };
+  }, [catalog, cfbCatalog]);
 
-  const layers = catalog?.ingest_layers?.length
-    ? catalog.ingest_layers
-    : Object.keys(LAYER_DETAILS);
-
-  const pipelineByLayer = useMemo(() => {
-    const datasets = catalog?.datasets ?? [];
-    const grouped: Record<string, string[]> = {};
-    for (const layer of layers) {
-      grouped[layer] = [];
+  function lastRefreshedForJob(job: RefreshJob): {
+    at: string | null;
+    status: string | null;
+  } {
+    if (job.kind === "scoresandodds" && job.league) {
+      return {
+        at: oddsLastRefresh[job.league] ?? null,
+        status: oddsLastRefresh[job.league] ? "local" : null,
+      };
     }
-    // Catalog datasets may not expose layer; fall back to known ids
-    // from mode layer membership is enough for the ops view.
-    for (const dataset of datasets) {
-      const id = dataset.id;
-      if (!id) continue;
-      // Heuristic grouping when layer metadata is absent.
-      if (
-        id.startsWith("dim_")
-        || id === "dim_team"
-        || id === "dim_player"
-        || id === "dim_game"
-      ) {
-        grouped.dims = grouped.dims || [];
-        if (!grouped.dims.includes(id)) grouped.dims.push(id);
-      } else if (id.startsWith("fact_")) {
-        grouped.facts = grouped.facts || [];
-        if (!grouped.facts.includes(id)) grouped.facts.push(id);
-      } else if (
-        id.startsWith("player_")
-        && !id.includes("fantasy")
-        && !id.includes("fundamental")
-      ) {
-        grouped.analytics = grouped.analytics || [];
-        if (!grouped.analytics.includes(id)) {
-          grouped.analytics.push(id);
-        }
-      } else if (
-        id.includes("fantasy")
-        || id.includes("signal")
-      ) {
-        grouped.intelligence = grouped.intelligence || [];
-        if (!grouped.intelligence.includes(id)) {
-          grouped.intelligence.push(id);
-        }
-      } else if (id.includes("fundamental")) {
-        grouped.domain = grouped.domain || [];
-        if (!grouped.domain.includes(id)) grouped.domain.push(id);
-      }
+    const status =
+      job.kind === "nflverse" ? nflStatus : cfbStatus;
+    if (!job.mode || !status?.by_mode) {
+      return { at: null, status: null };
     }
-    return grouped;
-  }, [catalog, layers]);
+    const record = status.by_mode[job.mode];
+    return {
+      at: record?.finished_at ?? record?.updated_at ?? null,
+      status: record?.status ?? null,
+    };
+  }
 
-  async function handleRefresh(mode: NflverseIngestMode) {
+  async function handleRun(job: RefreshJob) {
     try {
-      setRefreshLoading(mode);
+      setRefreshLoading(job.id);
       setRefreshMessage(null);
       setError(null);
-      const result = await refreshNflverseData(mode);
-      setLastResult(result);
-      const accepted = result.status === "accepted" || result.background;
-      const message =
-        result.message
-        ?? result.validation?.message
-        ?? (accepted
-          ? `${mode} started in the background. Refresh Data Quality in a few minutes.`
-          : `${result.mode_label || mode} completed.`);
-      setRefreshMessage(message);
-      window.dispatchEvent(
-        new CustomEvent("insightpilot:fantasy-data-refreshed", {
-          detail: { mode, result },
-        })
-      );
-      if (!accepted) {
-        const qualityResult = await getNflverseDataQuality(true);
-        setQuality(qualityResult);
+
+      if (job.kind === "nflverse" && job.mode) {
+        const result = await refreshNflverseData(job.mode);
+        setLastResult(result);
+        setRefreshMessage(formatRunMessage(job.title, result));
+        window.dispatchEvent(
+          new CustomEvent("insightpilot:fantasy-data-refreshed", {
+            detail: { mode: job.mode, result },
+          })
+        );
+        const next = await getNflverseIngestionStatus();
+        setNflStatus(next);
+      } else if (job.kind === "sportsdataverse" && job.mode) {
+        const result = await refreshSportsdataverseData(job.mode);
+        setLastResult(result);
+        setRefreshMessage(formatRunMessage(job.title, result));
+        const next = await getSportsdataverseIngestionStatus();
+        setCfbStatus(next);
+      } else if (job.kind === "scoresandodds" && job.league) {
+        const result = await refreshScoresandoddsData({
+          league: job.league,
+        });
+        if (result.status === "accepted" || result.background) {
+          setRefreshMessage(
+            result.note
+              || result.message
+              || `${job.title} started in the background.`
+          );
+        } else {
+          setRefreshMessage(
+            `${job.title}: matched ${result.matched ?? 0} of `
+              + `${result.fetched ?? 0} games`
+              + (
+                result.weeks?.length
+                  ? ` (week ${result.weeks.join(", ")})`
+                  : ""
+              )
+              + "."
+          );
+        }
+        const iso = new Date().toISOString();
+        setOddsLastRefresh(writeOddsLastRefresh(job.league, iso));
+        window.dispatchEvent(
+          new CustomEvent("insightpilot:fantasy-data-refreshed", {
+            detail: {
+              mode: "scoresandodds",
+              league: job.league as ScoresandoddsLeague,
+              result,
+            },
+          })
+        );
       }
     } catch (runError) {
       const raw =
@@ -301,7 +200,10 @@ export default function DataRefreshPage() {
           : "Refresh failed.";
       setError(
         /failed to fetch/i.test(raw)
-          ? `${raw} — long refreshes should start in the background after you redeploy the API. For a first seed, use Render Shell on insightpilot-api: python -m app.scripts.seed_data`
+          ? `${raw} — long refreshes should start in the background `
+            + "after you redeploy the API. For a first seed, use "
+            + "Render Shell on insightpilot-api: "
+            + "python -m app.scripts.seed_data"
           : raw
       );
     } finally {
@@ -309,120 +211,11 @@ export default function DataRefreshPage() {
     }
   }
 
-  async function handleCfbRefresh(mode: NflverseIngestMode) {
-    try {
-      setCfbRefreshLoading(mode);
-      setRefreshMessage(null);
-      setError(null);
-      const result = await refreshSportsdataverseData(mode);
-      setLastResult(result);
-      const accepted = result.status === "accepted" || result.background;
-      const message =
-        result.message
-        ?? (accepted
-          ? `${mode} started in the background. Refresh CFB quality in a few minutes.`
-          : `${result.mode_label || mode} completed.`);
-      setRefreshMessage(message);
-      if (!accepted) {
-        const qualityResult =
-          await getSportsdataverseDataQuality(true);
-        setCfbQuality(qualityResult);
-        const catalogResult = await getSportsdataverseCatalog();
-        setCfbCatalog(catalogResult);
-      }
-    } catch (runError) {
-      setError(
-        runError instanceof Error
-          ? runError.message
-          : "College football refresh failed."
-      );
-    } finally {
-      setCfbRefreshLoading(null);
-    }
-  }
-
-  async function handleOddsRefresh(league: ScoresandoddsLeague) {
-    try {
-      setOddsRefreshLoading(league);
-      setRefreshMessage(null);
-      setError(null);
-      const result = await refreshScoresandoddsData({ league });
-      const label = league.toUpperCase();
-      if (result.status === "accepted" || result.background) {
-        setRefreshMessage(
-          result.note
-            || result.message
-            || `ScoresAndOdds ${label} refresh started in the background.`
-        );
-      } else {
-        setRefreshMessage(
-          `ScoresAndOdds ${label} odds refresh: matched `
-          + `${result.matched ?? 0} of ${result.fetched ?? 0} `
-          + `games`
-          + (
-            result.weeks?.length
-              ? ` (week ${result.weeks.join(", ")})`
-              : ""
-          )
-          + "."
-        );
-      }
-      window.dispatchEvent(
-        new CustomEvent("insightpilot:fantasy-data-refreshed", {
-          detail: { mode: "scoresandodds", league, result },
-        })
-      );
-    } catch (runError) {
-      setError(
-        runError instanceof Error
-          ? runError.message
-          : "ScoresAndOdds odds refresh failed."
-      );
-    } finally {
-      setOddsRefreshLoading(null);
-    }
-  }
-
-  const cfbModes = useMemo(() => {
-    const fromCatalog = cfbCatalog?.ingest_modes;
-    if (fromCatalog && fromCatalog.length > 0) {
-      return fromCatalog.map((mode) => ({
-        id: mode.id as NflverseIngestMode,
-        label: mode.label,
-        description: mode.description,
-        layers: mode.layers,
-        season_scope: mode.season_scope,
-      }));
-    }
-    return [
-      {
-        id: "incremental" as NflverseIngestMode,
-        label: "Incremental update",
-        description:
-          "Refresh the live CFB season into college_football.",
-        layers: ["dims", "facts"],
-        season_scope: "current",
-      },
-      {
-        id: "historical" as NflverseIngestMode,
-        label: "Historical load",
-        description:
-          "Bootstrap several CFB seasons (dims + facts).",
-        layers: ["dims", "facts"],
-        season_scope: "historical",
-      },
-      {
-        id: "reprocess" as NflverseIngestMode,
-        label: "Reprocess facts",
-        description:
-          "Rebuild fact tables from sportsdataverse loaders.",
-        layers: ["facts"],
-        season_scope: "historical",
-      },
-    ];
-  }, [cfbCatalog]);
-
-  const latest = quality?.latest_ingest;
+  const active = REFRESH_PIPELINES.find(
+    (pipeline) => pipeline.id === activePipeline
+  )!;
+  const jobs = jobsForPipeline(activePipeline);
+  const meta = pipelineMeta[activePipeline];
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -432,9 +225,9 @@ export default function DataRefreshPage() {
             Data Refresh
           </h1>
           <p className="mt-2 max-w-3xl text-gray-600">
-            Run InsightPilot source refresh operations for native
-            data products, review what each mode rebuilds, and
-            inspect the latest ingestion status.
+            One refresh per job — no overlapping product shortcuts.
+            Each job shows the tables it writes, the products that
+            depend on them, and when it last finished.
           </p>
         </div>
         <Link
@@ -457,511 +250,222 @@ export default function DataRefreshPage() {
         </div>
       ) : null}
 
-      {loading ? (
-        <p className="mt-8 text-sm text-gray-500">
-          Loading refresh catalog…
-        </p>
-      ) : (
-        <div className="mt-8 space-y-8">
-          <StatusPanel
-            quality={quality}
-            catalog={catalog}
-            latest={latest}
-          />
+      <section className="mt-8 grid gap-3 sm:grid-cols-3">
+        <StatusCard
+          label="NFL fantasy"
+          value={
+            statusLoading
+              ? "Loading…"
+              : formatRelative(
+                nflStatus?.latest?.finished_at
+                  ?? nflStatus?.latest?.updated_at
+              )
+          }
+          hint={
+            nflStatus?.latest?.mode
+              ? `Last mode: ${nflStatus.latest.mode}`
+              : "No ingest recorded yet"
+          }
+        />
+        <StatusCard
+          label="College football"
+          value={
+            statusLoading
+              ? "Loading…"
+              : formatRelative(
+                cfbStatus?.latest?.finished_at
+                  ?? cfbStatus?.latest?.updated_at
+              )
+          }
+          hint={
+            cfbStatus?.latest?.mode
+              ? `Last mode: ${cfbStatus.latest.mode}`
+              : "No ingest recorded yet"
+          }
+        />
+        <StatusCard
+          label="Pipelines"
+          value={String(REFRESH_PIPELINES.length)}
+          hint={`${jobsForPipeline("nfl_fantasy").length + jobsForPipeline("college_football").length + jobsForPipeline("market_odds").length} unique refresh jobs`}
+        />
+      </section>
 
-          <section>
+      <nav
+        className="mt-8 flex flex-wrap gap-2 border-b border-gray-200 pb-px"
+        aria-label="Refresh pipelines"
+      >
+        {REFRESH_PIPELINES.map((pipeline) => {
+          const selected = pipeline.id === activePipeline;
+          return (
+            <button
+              key={pipeline.id}
+              type="button"
+              onClick={() => setActivePipeline(pipeline.id)}
+              className={
+                "rounded-t-lg border px-4 py-2 text-sm font-medium transition-colors "
+                + (
+                  selected
+                    ? "border-gray-200 border-b-white bg-white text-gray-900"
+                    : "border-transparent text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                )
+              }
+            >
+              {pipeline.title}
+            </button>
+          );
+        })}
+      </nav>
+
+      <section className="rounded-b-xl rounded-tr-xl border border-gray-200 border-t-0 bg-white p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
             <h2 className="text-lg font-semibold text-gray-900">
-              Data products
+              {active.title}
             </h2>
-            <p className="mt-1 text-sm text-gray-600">
-              Each product below consumes the shared nflverse
-              lifecycle. Choose a refresh mode to update the data
-              powering its analyses.
+            <p className="mt-1 max-w-3xl text-sm text-gray-600">
+              {active.description}
             </p>
-            <div className="mt-4 grid gap-4 lg:grid-cols-2">
-              {PRODUCT_REFRESH.map((config) => {
-                const product = NATIVE_PRODUCTS.find(
-                  (item) => item.id === config.productId
-                );
-                if (!product) return null;
-                return (
-                  <ProductRefreshCard
-                    key={product.id}
-                    name={product.name}
-                    href={product.href}
-                    badge={product.badge}
-                    sourceLabel={product.sourceLabel}
-                    summary={config.summary}
-                    consumes={config.consumes}
-                    outputs={config.outputs}
-                    modes={modes.filter((mode) =>
-                      config.modes.includes(mode.id)
-                    )}
-                    refreshLoading={refreshLoading}
-                    onRefresh={handleRefresh}
-                  />
-                );
-              })}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
-            <h2 className="text-lg font-semibold text-gray-900">
-              College football (sportsdataverse)
-            </h2>
-            <p className="mt-1 text-sm text-gray-600">
-              Parallel ingest into the college_football schema —
-              teams, schedule, box scores, and historical lines.
-              {cfbCatalog?.current_season
-                ? ` Current season: ${cfbCatalog.current_season}.`
+            <p className="mt-2 text-xs text-gray-500">
+              Source: {active.source}
+              {" · "}
+              Schema: <span className="font-mono">{active.schema}</span>
+              {meta.currentSeason != null
+                ? ` · Current season ${meta.currentSeason}`
                 : ""}
-              {cfbQuality && typeof cfbQuality.message === "string"
-                ? ` ${cfbQuality.message}`
+              {meta.historical
+                ? ` · Historical ${meta.historical}`
                 : ""}
             </p>
-            <div className="mt-4 space-y-3">
-              {cfbModes.map((mode) => (
-                <article
-                  key={`cfb-${mode.id}`}
-                  className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-gray-100 bg-gray-50 p-4"
-                >
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-semibold text-gray-900">
-                      {mode.label}
-                    </h3>
-                    <p className="mt-1 text-sm text-gray-600">
-                      {mode.description}
-                    </p>
-                    <p className="mt-2 text-xs text-gray-500">
-                      Layers: {mode.layers.join(" → ")}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={cfbRefreshLoading != null}
-                    onClick={() => void handleCfbRefresh(mode.id)}
-                    className="rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-                  >
-                    {cfbRefreshLoading === mode.id
-                      ? "Running…"
-                      : `Run ${mode.label.toLowerCase()}`}
-                  </button>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
-            <h2 className="text-lg font-semibold text-gray-900">
-              Odds (ScoresAndOdds)
-            </h2>
-            <p className="mt-1 text-sm text-gray-600">
-              Consensus lines plus ScoresAndOdds Open-column openings
-              into fact_game_market. Football uses the current week;
-              NBA / NHL / MLB / NCAAB use the current dated slate.
-            </p>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {(
-                [
-                  {
-                    league: "ncaaf" as const,
-                    label: "NCAAF",
-                    target: "college_football.fact_game_market",
-                  },
-                  {
-                    league: "nfl" as const,
-                    label: "NFL",
-                    target: "fantasy_football.fact_game_market",
-                  },
-                  {
-                    league: "nba" as const,
-                    label: "NBA",
-                    target: "sports_odds.fact_game_market",
-                  },
-                  {
-                    league: "nhl" as const,
-                    label: "NHL",
-                    target: "sports_odds.fact_game_market",
-                  },
-                  {
-                    league: "mlb" as const,
-                    label: "MLB",
-                    target: "sports_odds.fact_game_market",
-                  },
-                  {
-                    league: "ncaab" as const,
-                    label: "NCAAB",
-                    target: "sports_odds.fact_game_market",
-                  },
-                ] as const
-              ).map((item) => (
-                <article
-                  key={item.league}
-                  className="rounded-lg border border-gray-100 bg-gray-50 p-4"
-                >
-                  <h3 className="text-sm font-semibold text-gray-900">
-                    {item.label}
-                  </h3>
-                  <p className="mt-1 text-sm text-gray-600">
-                    <a
-                      href={`https://www.scoresandodds.com/${item.league}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="underline underline-offset-2"
-                    >
-                      scoresandodds.com/{item.league}
-                    </a>
-                    {" "}→ {item.target}
-                  </p>
-                  <button
-                    type="button"
-                    disabled={oddsRefreshLoading != null}
-                    onClick={() => void handleOddsRefresh(item.league)}
-                    className="mt-3 rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-                  >
-                    {oddsRefreshLoading === item.league
-                      ? "Refreshing odds…"
-                      : `Refresh ${item.label} odds`}
-                  </button>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
-            <h2 className="text-lg font-semibold text-gray-900">
-              Refresh operations
-            </h2>
-            <p className="mt-1 text-sm text-gray-600">
-              Full detail for every ingest mode exposed by the
-              nflverse lifecycle engine.
-            </p>
-            <div className="mt-4 space-y-4">
-              {modes.map((mode) => (
-                <article
-                  key={mode.id}
-                  className="rounded-lg border border-gray-100 bg-gray-50 p-4"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-semibold text-gray-900">
-                        {mode.label}
-                      </h3>
-                      <p className="mt-1 text-sm text-gray-600">
-                        {mode.description}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={refreshLoading != null}
-                      onClick={() => void handleRefresh(mode.id)}
-                      className="rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-                    >
-                      {refreshLoading === mode.id
-                        ? "Running…"
-                        : `Run ${mode.label.toLowerCase()}`}
-                    </button>
-                  </div>
-                  <dl className="mt-3 grid gap-3 sm:grid-cols-3 text-sm">
-                    <div>
-                      <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                        Season scope
-                      </dt>
-                      <dd className="mt-0.5 capitalize text-gray-900">
-                        {mode.season_scope}
-                        {mode.season_scope === "current"
-                          && catalog?.current_season
-                          ? ` (${catalog.current_season})`
-                          : ""}
-                        {mode.season_scope === "historical"
-                          && catalog?.historical_seasons?.length
-                          ? ` (${catalog.historical_seasons[0]}–${catalog.historical_seasons[catalog.historical_seasons.length - 1]})`
-                          : ""}
-                      </dd>
-                    </div>
-                    <div className="sm:col-span-2">
-                      <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                        Pipeline layers
-                      </dt>
-                      <dd className="mt-0.5 text-gray-900">
-                        {mode.layers
-                          .map(
-                            (layer) =>
-                              LAYER_DETAILS[layer]?.label ?? layer
-                          )
-                          .join(" → ")}
-                      </dd>
-                    </div>
-                  </dl>
-                  <ul className="mt-3 space-y-1.5 text-sm text-gray-600">
-                    {mode.layers.map((layer) => (
-                      <li key={`${mode.id}-${layer}`}>
-                        <span className="font-medium text-gray-800">
-                          {LAYER_DETAILS[layer]?.label ?? layer}:
-                        </span>{" "}
-                        {LAYER_DETAILS[layer]?.description
-                          ?? "Pipeline stage."}
-                      </li>
-                    ))}
-                  </ul>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
-            <h2 className="text-lg font-semibold text-gray-900">
-              Pipeline layers
-            </h2>
-            <p className="mt-1 text-sm text-gray-600">
-              Ordered stages executed during refresh. Historical and
-              incremental modes run the full stack; reprocess starts
-              at analytics.
-            </p>
-            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {layers.map((layer, index) => {
-                const meta = LAYER_DETAILS[layer];
-                const datasets = pipelineByLayer[layer] ?? [];
-                return (
-                  <div
-                    key={layer}
-                    className="rounded-lg border border-gray-100 p-4"
-                  >
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                      Step {index + 1}
-                    </p>
-                    <h3 className="mt-1 text-sm font-semibold text-gray-900">
-                      {meta?.label ?? layer}
-                    </h3>
-                    <p className="mt-1 text-sm text-gray-600">
-                      {meta?.description ?? "Pipeline stage."}
-                    </p>
-                    {datasets.length > 0 ? (
-                      <p className="mt-2 text-xs text-gray-500">
-                        {datasets.slice(0, 8).join(", ")}
-                        {datasets.length > 8
-                          ? ` +${datasets.length - 8} more`
-                          : ""}
-                      </p>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-5">
-            <h2 className="text-lg font-semibold text-gray-900">
-              User-created data products
-            </h2>
-            <p className="mt-1 text-sm text-gray-600">
-              Uploaded CSV products refresh by remapping and
-              re-analyzing a new file from the product workspace —
-              they do not use the nflverse lifecycle above.
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Link
-                href="/"
-                className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50"
-              >
-                Browse data products
-              </Link>
-              <Link
-                href="/create"
-                className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50"
-              >
-                Create product
-              </Link>
-            </div>
-          </section>
-
-          {lastResult ? (
-            <section className="rounded-xl border border-gray-200 bg-white p-5">
-              <h2 className="text-lg font-semibold text-gray-900">
-                Last run details
-              </h2>
-              <dl className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
-                <Detail
-                  label="Mode"
-                  value={lastResult.mode_label || lastResult.mode || "—"}
-                />
-                <Detail
-                  label="Seasons"
-                  value={
-                    lastResult.seasons?.length
-                      ? lastResult.seasons.join(", ")
-                      : "—"
-                  }
-                />
-                <Detail
-                  label="Datasets"
-                  value={String(lastResult.datasets_refreshed ?? 0)}
-                />
-                <Detail
-                  label="Rows"
-                  value={
-                    lastResult.row_count_total != null
-                      ? lastResult.row_count_total.toLocaleString()
-                      : "—"
-                  }
-                />
-              </dl>
-              {lastResult.validation ? (
-                <p className="mt-3 text-sm text-gray-600">
-                  Validation: {lastResult.validation.status} —{" "}
-                  {lastResult.validation.message}
-                </p>
-              ) : null}
-            </section>
-          ) : null}
+          </div>
         </div>
-      )}
+
+        <div className="mt-5 rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-3">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+            Data freshness DAG
+          </p>
+          <PipelineDag pipeline={active} />
+        </div>
+
+        <div className="mt-6 space-y-4">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">
+                Refresh jobs
+              </h3>
+              <p className="mt-0.5 text-sm text-gray-600">
+                Each job below is unique — running one does not
+                duplicate another product&apos;s refresh button.
+              </p>
+            </div>
+          </div>
+
+          {jobs.map((job) => {
+            const last = lastRefreshedForJob(job);
+            return (
+              <RefreshJobCard
+                key={job.id}
+                job={job}
+                pipeline={active}
+                lastRefreshed={last.at}
+                lastStatus={
+                  last.status === "local"
+                    ? "from this browser"
+                    : last.status
+                }
+                loading={refreshLoading === job.id}
+                disabled={refreshLoading != null}
+                onRun={() => void handleRun(job)}
+              />
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="mt-8 rounded-xl border border-dashed border-gray-300 bg-gray-50 p-5">
+        <h2 className="text-lg font-semibold text-gray-900">
+          User-created data products
+        </h2>
+        <p className="mt-1 text-sm text-gray-600">
+          Uploaded CSV products refresh by remapping and re-analyzing
+          a new file from the product workspace — they do not use the
+          pipelines above.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Link
+            href="/"
+            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50"
+          >
+            Browse data products
+          </Link>
+          <Link
+            href="/create"
+            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50"
+          >
+            Create product
+          </Link>
+        </div>
+      </section>
+
+      {lastResult ? (
+        <section className="mt-8 rounded-xl border border-gray-200 bg-white p-5">
+          <h2 className="text-lg font-semibold text-gray-900">
+            Last run details
+          </h2>
+          <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <Detail
+              label="Mode"
+              value={lastResult.mode_label || lastResult.mode || "—"}
+            />
+            <Detail
+              label="Seasons"
+              value={
+                lastResult.seasons?.length
+                  ? lastResult.seasons.join(", ")
+                  : "—"
+              }
+            />
+            <Detail
+              label="Datasets"
+              value={String(lastResult.datasets_refreshed ?? 0)}
+            />
+            <Detail
+              label="Rows"
+              value={
+                lastResult.row_count_total != null
+                  ? lastResult.row_count_total.toLocaleString()
+                  : "—"
+              }
+            />
+          </dl>
+          {lastResult.validation ? (
+            <p className="mt-3 text-sm text-gray-600">
+              Validation: {lastResult.validation.status} —{" "}
+              {lastResult.validation.message}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
     </div>
   );
 }
 
-function StatusPanel({
-  quality,
-  catalog,
-  latest,
-}: {
-  quality: NflverseDataQualityResult | null;
-  catalog: NflverseCatalog | null;
-  latest?: NflverseDataQualityResult["latest_ingest"];
-}) {
+function formatRunMessage(
+  title: string,
+  result: NflverseRefreshResult
+): string {
+  const accepted = result.status === "accepted" || result.background;
   return (
-    <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      <StatCard
-        label="Source"
-        value="nflverse"
-        hint={
-          catalog?.current_season
-            ? `Current season ${catalog.current_season}`
-            : undefined
-        }
-      />
-      <StatCard
-        label="Quality status"
-        value={quality?.status ?? "—"}
-        hint={quality?.message}
-      />
-      <StatCard
-        label="Last ingest mode"
-        value={latest?.mode ?? "—"}
-        hint={
-          latest?.finished_at
-            ? `Finished ${formatTimestamp(latest.finished_at)}`
-            : latest?.updated_at
-              ? `Updated ${formatTimestamp(latest.updated_at)}`
-              : "No ingestion state yet"
-        }
-      />
-      <StatCard
-        label="Last ingest rows"
-        value={
-          latest?.row_count_total != null
-            ? latest.row_count_total.toLocaleString()
-            : "—"
-        }
-        hint={
-          latest?.seasons?.length
-            ? `Seasons ${latest.seasons.join(", ")}`
-            : undefined
-        }
-      />
-    </section>
+    result.message
+    ?? result.validation?.message
+    ?? (
+      accepted
+        ? `${title} started in the background. Check Data Quality in a few minutes.`
+        : `${result.mode_label || title} completed.`
+    )
   );
 }
 
-function ProductRefreshCard({
-  name,
-  href,
-  badge,
-  sourceLabel,
-  summary,
-  consumes,
-  outputs,
-  modes,
-  refreshLoading,
-  onRefresh,
-}: {
-  name: string;
-  href: string;
-  badge: string;
-  sourceLabel: string;
-  summary: string;
-  consumes: string[];
-  outputs: string[];
-  modes: Array<{
-    id: NflverseIngestMode;
-    label: string;
-    description: string;
-  }>;
-  refreshLoading: NflverseIngestMode | null;
-  onRefresh: (mode: NflverseIngestMode) => void;
-}) {
-  return (
-    <article className="flex flex-col rounded-xl border border-gray-200 bg-white p-5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-            {badge} · {sourceLabel}
-          </p>
-          <h3 className="mt-1 text-base font-semibold text-gray-900">
-            {name}
-          </h3>
-        </div>
-        <Link
-          href={href}
-          className="text-sm font-medium text-blue-600 hover:text-blue-700"
-        >
-          Open product
-        </Link>
-      </div>
-      <p className="mt-2 text-sm text-gray-600">{summary}</p>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2 text-sm">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-            Consumes
-          </p>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-gray-700">
-            {consumes.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-            Powers
-          </p>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-gray-700">
-            {outputs.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2">
-        {modes.map((mode) => (
-          <button
-            key={mode.id}
-            type="button"
-            title={mode.description}
-            disabled={refreshLoading != null}
-            onClick={() => onRefresh(mode.id)}
-            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
-          >
-            {refreshLoading === mode.id
-              ? "Running…"
-              : mode.label}
-          </button>
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function StatCard({
+function StatusCard({
   label,
   value,
   hint,
@@ -975,7 +479,7 @@ function StatCard({
       <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
         {label}
       </p>
-      <p className="mt-1 text-lg font-semibold capitalize text-gray-900">
+      <p className="mt-1 text-lg font-semibold text-gray-900">
         {value}
       </p>
       {hint ? (
@@ -1004,10 +508,12 @@ function Detail({
   );
 }
 
-function formatTimestamp(value: string): string {
+function formatRelative(value?: string | null): string {
+  if (!value) return "Never";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString();
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }

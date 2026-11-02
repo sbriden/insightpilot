@@ -122,6 +122,8 @@ def ingest_scoresandodds_markets(
                     "book_id": row.get("book_id"),
                     "home_abbr": home,
                     "away_abbr": away,
+                    "home_logo_url": row.get("home_logo_url"),
+                    "away_logo_url": row.get("away_logo_url"),
                     "league": config.id,
                     "opening_source": row.get("opening_source"),
                 },

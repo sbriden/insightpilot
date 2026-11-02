@@ -225,6 +225,29 @@ export interface NflverseRefreshResult {
   }>;
 }
 
+export interface IngestionStateRecord {
+  job_key?: string;
+  mode?: string;
+  seasons?: number[];
+  layers?: string[];
+  datasets_completed?: string[];
+  current_season?: number | null;
+  status?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  updated_at?: string | null;
+  row_count_total?: number;
+  detail?: Record<string, unknown>;
+}
+
+export interface IngestionStatusResult {
+  source_id: string;
+  latest: IngestionStateRecord | null;
+  by_mode?: Record<string, IngestionStateRecord>;
+  pipeline?: Record<string, string[]>;
+  layers?: string[];
+}
+
 
 export interface DatasetField {
   name: string;

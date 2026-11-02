@@ -6,6 +6,7 @@ import { AnalysisFormatProvider } from "@/components/analysis/AnalysisFormatCont
 import DailyFantasyAnalyzer from "@/components/fantasy/dfs/DailyFantasyAnalyzer";
 import PlayerAnalysisRuntime from "@/components/applications/PlayerAnalysisRuntime";
 import { useAppTheme } from "@/components/applications/ApplicationThemeContext";
+import DailyBetSlate from "@/components/betting/DailyBetSlate";
 import SportsBettingAnalyzer from "@/components/betting/SportsBettingAnalyzer";
 import { appTheme as defaultAppTheme } from "@/components/applications/appTheme";
 import {
@@ -99,8 +100,12 @@ function RuntimeBody({ analysis }: { analysis: RegistryAnalysis }) {
   }
   if (analysis.runtime === "sports_betting") {
     const view = analysis.view || "games";
+    // Daily-only apps (e.g. Slaterator) skip the full betting
+    // workspace so the generator paints immediately.
+    if (view === "daily") {
+      return <DailyBetSlate />;
+    }
     const tab =
-      view === "daily" ||
       view === "games" ||
       view === "markets" ||
       view === "portfolio" ||

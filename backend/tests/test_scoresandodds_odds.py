@@ -189,6 +189,46 @@ class ScoresandoddsNormalizeTests(unittest.TestCase):
         self.assertAlmostEqual(row["away_implied_total"], 24.0)
         self.assertEqual(row["source"], "scoresandodds")
         self.assertEqual(row["league"], "ncaaf")
+        self.assertIn(
+            "/teamlogos/ncaaf/500/shsu.png",
+            str(row.get("home_logo_url") or ""),
+        )
+        self.assertIn(
+            "/teamlogos/ncaaf/500/nmsu.png",
+            str(row.get("away_logo_url") or ""),
+        )
+
+    def test_team_logo_url_prefers_provider_and_aliases(self):
+        self.assertEqual(
+            sao.team_logo_url(
+                "ncaab",
+                provider_logo=(
+                    "https://static.sprtactn.co/teamlogos/"
+                    "ncaab/100/mich.png"
+                ),
+            ),
+            "https://static.sprtactn.co/teamlogos/ncaab/500/mich.png",
+        )
+        self.assertEqual(
+            sao.team_logo_url(
+                "ncaab",
+                canonical_abbr_value="CONN",
+            ),
+            "https://static.sprtactn.co/teamlogos/ncaab/500/uconn.png",
+        )
+        # ARIZ abbr maps to Action Network's ari.png slug.
+        self.assertEqual(
+            sao.team_logo_url(
+                "ncaab",
+                raw_abbr="ARIZ",
+                canonical_abbr_value="ARIZ",
+            ),
+            "https://static.sprtactn.co/teamlogos/ncaab/500/ari.png",
+        )
+        self.assertEqual(
+            sao.logo_slug_for_abbr("ncaab", "ARIZ"),
+            "ari",
+        )
 
     def test_abbr_aliases_map_to_dim_team(self):
         self.assertEqual(sao.canonical_abbr("BAMA"), "ALA")

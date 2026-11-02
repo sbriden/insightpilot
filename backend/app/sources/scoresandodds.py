@@ -402,6 +402,16 @@ def normalize_scoreboard_games(
                 ),
                 "home_name": home.get("full_name") or home.get("display_name"),
                 "away_name": away.get("full_name") or away.get("display_name"),
+                "home_logo_url": team_logo_url(
+                    config.id,
+                    raw_abbr=home.get("abbr"),
+                    provider_logo=home.get("logo"),
+                ),
+                "away_logo_url": team_logo_url(
+                    config.id,
+                    raw_abbr=away.get("abbr"),
+                    provider_logo=away.get("logo"),
+                ),
                 "home_team_provider_id": str(home_id) if home_id else None,
                 "away_team_provider_id": str(away_id) if away_id else None,
                 "spread": spread,
@@ -444,6 +454,7 @@ def fetch_odds_rows(
     weeks: list[int] | None = None,
     season: int | None = None,
     dates: list[str] | None = None,
+    include_openings: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     Fetch odds for a league.
@@ -457,7 +468,9 @@ def fetch_odds_rows(
 
     Current lines come from the Action Network scoreboard JSON.
     Opening lines prefer the ScoresAndOdds.com Open column (HTML),
-    falling back to the earliest Action Network game quote.
+    falling back to the earliest Action Network game quote. Pass
+    ``include_openings=False`` for availability checks that only
+    need current prices.
     """
 
     config = get_league(league)
@@ -467,6 +480,7 @@ def fetch_odds_rows(
             config,
             season=season,
             dates=dates,
+            include_openings=include_openings,
         )
 
     if weeks:
@@ -491,19 +505,20 @@ def fetch_odds_rows(
                 payload,
                 league=config.id,
             )
-            rows = _attach_homepage_openings(
-                rows,
-                league=config.id,
-                season=int(
-                    season
-                    or week_meta.get("season")
-                    or datetime.now(timezone.utc).year
-                ),
-                week=int(week),
-                season_type=str(
-                    week_meta.get("season_type") or "reg"
-                ),
-            )
+            if include_openings:
+                rows = _attach_homepage_openings(
+                    rows,
+                    league=config.id,
+                    season=int(
+                        season
+                        or week_meta.get("season")
+                        or datetime.now(timezone.utc).year
+                    ),
+                    week=int(week),
+                    season_type=str(
+                        week_meta.get("season_type") or "reg"
+                    ),
+                )
             all_rows.extend(rows)
         meta["row_count"] = len(all_rows)
         meta["opening_from_homepage"] = sum(
@@ -522,13 +537,18 @@ def fetch_odds_rows(
         or datetime.now(timezone.utc).year
     )
     resolved_week = meta.get("week")
-    rows = _attach_homepage_openings(
-        rows,
-        league=config.id,
-        season=resolved_season,
-        week=int(resolved_week) if resolved_week is not None else None,
-        season_type=str(meta.get("season_type") or "reg"),
-    )
+    if include_openings:
+        rows = _attach_homepage_openings(
+            rows,
+            league=config.id,
+            season=resolved_season,
+            week=(
+                int(resolved_week)
+                if resolved_week is not None
+                else None
+            ),
+            season_type=str(meta.get("season_type") or "reg"),
+        )
     meta["row_count"] = len(rows)
     meta["opening_from_homepage"] = sum(
         1
@@ -543,6 +563,7 @@ def _fetch_slate_odds_rows(
     *,
     season: int | None = None,
     dates: list[str] | None = None,
+    include_openings: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     date_list = [str(d).strip() for d in (dates or []) if str(d).strip()]
     if not date_list:
@@ -572,17 +593,20 @@ def _fetch_slate_odds_rows(
             payload,
             league=config.id,
         )
-        rows = _attach_homepage_openings(
-            rows,
-            league=config.id,
-            season=int(
-                season
-                or date_meta.get("season")
-                or datetime.now(timezone.utc).year
-            ),
-            week=None,
-            season_type=str(date_meta.get("season_type") or "reg"),
-        )
+        if include_openings:
+            rows = _attach_homepage_openings(
+                rows,
+                league=config.id,
+                season=int(
+                    season
+                    or date_meta.get("season")
+                    or datetime.now(timezone.utc).year
+                ),
+                week=None,
+                season_type=str(
+                    date_meta.get("season_type") or "reg"
+                ),
+            )
         all_rows.extend(rows)
 
     # Deduplicate by provider game when multiple dates overlap.
@@ -1094,6 +1118,189 @@ def _clean_abbr(
         return None
     mapping = aliases if aliases is not None else ABBR_ALIASES
     return mapping.get(text, text)
+
+
+# Action Network logo filenames often differ from the published abbr
+# (ARIZ → ari, DUKE → dukd, CONN → uconn, …).
+LOGO_SLUG_OVERRIDES: dict[str, dict[str, str]] = {
+    "ncaab": {
+        "ARIZ": "ari",
+        "ARMY": "arm",
+        "CHAT": "cht",
+        "CONN": "uconn",
+        "DUKE": "dukd",
+        "JKST": "jst",
+        "KU": "kan",
+        "MIA": "mfl",
+        "MONM": "mnm",
+        "MSU": "msud",
+        "TTU": "tt",
+        "UCONN": "uconn",
+        "UMASS": "umass",
+        "MASS": "umass",
+        "NCST": "ncst",
+        "NCSU": "ncst",
+        "NW": "nw",
+        "NU": "nw",
+    },
+    "ncaaf": {
+        "AFA": "af",
+        "ARIZ": "ari",
+        "ARI": "ari",
+        "ARMY": "arm",
+        "ARST": "arks",
+        "CIN": "cind",
+        "CLEM": "cle",
+        "CMU": "cmc",
+        "COLO": "col",
+        "DUKE": "dukd",
+        "EMU": "emc",
+        "FRES": "fre",
+        "GASO": "gso",
+        "GAST": "gst",
+        "IOWA": "iowd",
+        "JVST": "jvs",
+        "KSU": "kstd",
+        "KU": "kan",
+        "MASS": "umass",
+        "MIA": "mfl",
+        "MINN": "min",
+        "MISS": "mis",
+        "M-OH": "moh",
+        "MOST": "missst",
+        "MSU": "msud",
+        "MTSU": "mts",
+        "NAVY": "nav",
+        "OHIO": "ohi",
+        "OKST": "oks",
+        "ORST": "ors",
+        "OU": "okl",
+        "RICE": "riced",
+        "SAC": "sacst",
+        "SJSU": "sjs",
+        "TCU": "tcud",
+        "TOL": "told",
+        "TROY": "try",
+        "TTU": "tt",
+        "UK": "kend",
+        "UL": "ull",
+        "UMD": "mar",
+        "UNC": "nc",
+        "UNM": "nm",
+        "UNT": "ntx",
+        "USA": "sab",
+        "USU": "uts",
+        "UTAH": "uth",
+        "UTEP": "tep",
+        "WASH": "was",
+        "WKU": "wky",
+    },
+}
+
+
+def _upgrade_sao_logo_size(
+    url: str | None,
+    *,
+    size: int = 500,
+) -> str | None:
+    """Prefer larger Action Network CDN variants when present."""
+
+    text = str(url or "").strip()
+    if not text:
+        return None
+    return re.sub(
+        r"(/teamlogos/[^/]+/)\d+(/)",
+        rf"\g<1>{int(size)}\2",
+        text,
+        count=1,
+    )
+
+
+def _slug_from_logo_url(url: str | None) -> str | None:
+    text = str(url or "").strip()
+    if not text:
+        return None
+    match = re.search(
+        r"/teamlogos/[^/]+/\d+/([a-z0-9]+)\.png",
+        text,
+        re.I,
+    )
+    if not match:
+        return None
+    return match.group(1).lower()
+
+
+def logo_slug_for_abbr(
+    league: LeagueId | str,
+    abbr: str | None,
+) -> str | None:
+    """
+    Map a team abbreviation to the Action Network logo filename slug.
+    """
+
+    text = str(abbr or "").strip().upper()
+    if not text:
+        return None
+    config = get_league(league)
+    overrides = LOGO_SLUG_OVERRIDES.get(config.id) or {}
+    if text in overrides:
+        return overrides[text]
+    # Invert aliases so CONN → uconn for CDN paths when configured.
+    reverse = {
+        str(canonical).strip().upper(): str(raw).strip().lower()
+        for raw, canonical in (config.abbr_aliases or {}).items()
+        if str(canonical).strip() and str(raw).strip()
+    }
+    if text in reverse:
+        return reverse[text]
+    # Also try the raw alias key itself (UCONN → uconn).
+    if text.lower() in {
+        str(raw).strip().lower()
+        for raw in (config.abbr_aliases or {})
+    }:
+        return text.lower()
+    return text.lower()
+
+
+def team_logo_url(
+    league: LeagueId | str,
+    *,
+    raw_abbr: Any = None,
+    canonical_abbr_value: Any = None,
+    provider_logo: Any = None,
+    size: int = 500,
+) -> str | None:
+    """
+    Action Network / ScoresAndOdds team logo CDN URL.
+
+    College boards (ncaab/ncaaf) require these URLs — ESPN abbreviation
+    paths are not valid for NCAA assets. Prefer the provider logo path
+    (filename is authoritative) over guessing from abbreviations.
+    """
+
+    upgraded = _upgrade_sao_logo_size(
+        str(provider_logo or "").strip() or None,
+        size=size,
+    )
+    if upgraded:
+        return upgraded
+
+    config = get_league(league)
+    slug = _slug_from_logo_url(str(provider_logo or "").strip() or None)
+    if not slug:
+        # Try canonical first (ARIZ), then raw provider abbr.
+        slug = logo_slug_for_abbr(config.id, canonical_abbr_value)
+    if not slug:
+        slug = logo_slug_for_abbr(config.id, raw_abbr)
+    if not slug:
+        return None
+    # Final override pass in case raw lowercasing slipped through.
+    overrides = LOGO_SLUG_OVERRIDES.get(config.id) or {}
+    slug = overrides.get(slug.upper(), slug)
+    return (
+        f"https://static.sprtactn.co/teamlogos/{config.id}/"
+        f"{int(size)}/{slug}.png"
+    )
 
 
 def canonical_abbr(

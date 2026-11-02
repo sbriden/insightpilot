@@ -150,6 +150,108 @@ function espnLogoLeague(
   }
 }
 
+/** Action Network CDN league folder for college boards. */
+function actionNetworkLogoLeague(
+  sport: TeamSport
+): "ncaab" | "ncaaf" | null {
+  switch (normalizeTeamSport(sport)) {
+    case "NCAAB":
+      return "ncaab";
+    case "CFB":
+      return "ncaaf";
+    default:
+      return null;
+  }
+}
+
+/** Canonical abbr → Action Network logo filename overrides. */
+const ACTION_NETWORK_LOGO_SLUGS: Record<string, Record<string, string>> = {
+  ncaab: {
+    ARIZ: "ari",
+    ARMY: "arm",
+    CHAT: "cht",
+    CONN: "uconn",
+    DUKE: "dukd",
+    JKST: "jst",
+    KU: "kan",
+    MASS: "umass",
+    MIA: "mfl",
+    MONM: "mnm",
+    MSU: "msud",
+    NCSU: "ncst",
+    NU: "nw",
+    TTU: "tt",
+    UCONN: "uconn",
+    UMASS: "umass",
+  },
+  ncaaf: {
+    AFA: "af",
+    ARI: "ari",
+    ARIZ: "ari",
+    ARMY: "arm",
+    ARST: "arks",
+    CIN: "cind",
+    CLEM: "cle",
+    CMU: "cmc",
+    COLO: "col",
+    DUKE: "dukd",
+    EMU: "emc",
+    FRES: "fre",
+    GASO: "gso",
+    GAST: "gst",
+    IOWA: "iowd",
+    JVST: "jvs",
+    KSU: "kstd",
+    KU: "kan",
+    MASS: "umass",
+    MIA: "mfl",
+    MINN: "min",
+    MISS: "mis",
+    "M-OH": "moh",
+    MOST: "missst",
+    MSU: "msud",
+    MTSU: "mts",
+    NAVY: "nav",
+    OHIO: "ohi",
+    OKST: "oks",
+    ORST: "ors",
+    OU: "okl",
+    RICE: "riced",
+    SAC: "sacst",
+    SJSU: "sjs",
+    TCU: "tcud",
+    TOL: "told",
+    TROY: "try",
+    TTU: "tt",
+    UK: "kend",
+    UL: "ull",
+    UMD: "mar",
+    UNC: "nc",
+    UNM: "nm",
+    UNT: "ntx",
+    USA: "sab",
+    USU: "uts",
+    UTAH: "uth",
+    UTEP: "tep",
+    WASH: "was",
+    WKU: "wky",
+  },
+};
+
+function actionNetworkTeamLogoUrl(
+  abbreviation: string | null | undefined,
+  sport: TeamSport
+): string | null {
+  const league = actionNetworkLogoLeague(sport);
+  if (!league) return null;
+  const abbr = canonicalTeamAbbreviation(abbreviation, sport);
+  if (!abbr) return null;
+  const slug = (
+    ACTION_NETWORK_LOGO_SLUGS[league]?.[abbr] || abbr
+  ).toLowerCase();
+  return `https://static.sprtactn.co/teamlogos/${league}/500/${slug}.png`;
+}
+
 function abbreviationAliasesForSport(
   sport: TeamSport
 ): Record<string, string> {
@@ -196,10 +298,10 @@ export function teamLogoUrl(
   sport: TeamSport = "NFL"
 ): string | null {
   const league = espnLogoLeague(sport);
-  // College logos must use espn team ids (passed via logoUrl), never
-  // abbreviation paths — those collide with NFL assets.
+  // College: prefer Action Network abbr CDN (ScoresAndOdds source).
+  // ESPN ncaa paths require numeric team ids via logoUrl.
   if (!league) {
-    return null;
+    return actionNetworkTeamLogoUrl(abbreviation, sport);
   }
   const abbr = canonicalTeamAbbreviation(abbreviation, sport);
   if (!abbr) {
