@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { BarChart3, Sparkles, TrendingUp } from "lucide-react";
 
 import GuidedMarketSlate from "@/components/betting/GuidedMarketSlate";
+import SingleParlaySlate from "@/components/betting/SingleParlaySlate";
 import {
   DailySlatePickCard,
   StakeDisplay,
@@ -18,7 +19,7 @@ import {
   listDailyBettingSports,
 } from "@/services/api";
 
-type SlateMode = "auto" | "guided";
+type SlateMode = "auto" | "guided" | "parlay";
 
 const RISK_OPTIONS: Array<{
   id: DailyBettingRisk;
@@ -221,6 +222,15 @@ export default function DailyBetSlate() {
   if (mode === "guided") {
     return (
       <GuidedMarketSlate
+        dateLabel={dateLabel}
+        modeSwitcher={modeToggle}
+      />
+    );
+  }
+
+  if (mode === "parlay") {
+    return (
+      <SingleParlaySlate
         dateLabel={dateLabel}
         modeSwitcher={modeToggle}
       />
@@ -735,7 +745,7 @@ function ModeToggle({
 }) {
   return (
     <div
-      className="grid w-full grid-cols-2 gap-1 rounded-xl p-1"
+      className="grid w-full grid-cols-3 gap-1 rounded-xl p-1"
       style={{ background: snapshotTokens.background }}
       role="radiogroup"
       aria-label="Slate mode"
@@ -743,7 +753,8 @@ function ModeToggle({
       {(
         [
           { id: "auto", label: "Auto" },
-          { id: "guided", label: "Guided Market Slate" },
+          { id: "guided", label: "Guided" },
+          { id: "parlay", label: "Single Parlay" },
         ] as const
       ).map((option) => {
         const selected = mode === option.id;
@@ -754,7 +765,7 @@ function ModeToggle({
             role="radio"
             aria-checked={selected}
             onClick={() => onChange(option.id)}
-            className="rounded-lg px-3 py-2.5 text-sm font-semibold"
+            className="rounded-lg px-2 py-2.5 text-xs font-semibold sm:px-3 sm:text-sm"
             style={
               selected
                 ? {

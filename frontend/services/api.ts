@@ -4298,6 +4298,40 @@ export async function generateDailyBettingSlate(payload: {
   return handleResponse(response);
 }
 
+export interface SingleParlayResult extends DailyBettingSlateResult {
+  leg_count?: number;
+  target_odds?: number;
+  achieved_odds?: number;
+  odds_distance_decimal?: number;
+}
+
+export async function generateSingleParlay(payload: {
+  units: number;
+  leg_count: number;
+  target_odds: number | string;
+  date?: string | null;
+  sports?: DailyBettingSport[] | string[];
+  seed?: number | null;
+}): Promise<SingleParlayResult> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/daily-slate/single-parlay`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        units: payload.units,
+        leg_count: payload.leg_count,
+        target_odds: payload.target_odds,
+        date: payload.date ?? null,
+        sports: payload.sports ?? null,
+        seed: payload.seed ?? null,
+      }),
+      cache: "no-store",
+    }
+  );
+  return handleResponse(response);
+}
+
 /* ── Guided Market Slate ───────────────────────────────────── */
 
 export interface GuidedSlateCandidate {

@@ -471,6 +471,216 @@ def generate_daily_betting_slate(
     }
 
 
+_SINGLE_PARLAY_MODE = "single_parlay"
+_SINGLE_PARLAY_MODE_LABEL = "Single Parlay"
+_MIN_PARLAY_LEGS = 2
+_MAX_PARLAY_LEGS = 8
+_SINGLE_PARLAY_SEARCH_ATTEMPTS = 5000
+
+
+def generate_single_parlay(
+    *,
+    units: float,
+    leg_count: int,
+    target_odds: float | int | str,
+    slate_date: str | date | None = None,
+    sports: list[str] | None = None,
+    seed: int | None = None,
+    search_attempts: int | None = None,
+) -> dict[str, Any]:
+    """
+    Build one market-probability parlay sized to ``units`` with
+    ``leg_count`` legs whose combined American price aims at
+    ``target_odds``.
+    """
+
+    stake = int(round(float(units or 0.0)))
+    if stake < 1:
+        raise ValueError("units must be a whole number >= 1.")
+    legs_n = int(leg_count or 0)
+    if legs_n < _MIN_PARLAY_LEGS or legs_n > _MAX_PARLAY_LEGS:
+        raise ValueError(
+            f"leg_count must be between {_MIN_PARLAY_LEGS} and "
+            f"{_MAX_PARLAY_LEGS}."
+        )
+    target = _parse_american_odds(target_odds)
+    if target is None:
+        raise ValueError(
+            "target_odds must be a valid American price "
+            "(e.g. +250 or -110)."
+        )
+
+    selected_sports = _normalize_sports(sports)
+    target_date = _resolve_date(slate_date)
+    rng = random.Random(seed)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    attempts = int(
+        search_attempts
+        if search_attempts is not None
+        else _SINGLE_PARLAY_SEARCH_ATTEMPTS
+    )
+
+    candidates, pool_meta = _collect_candidates(
+        target_date,
+        sports=selected_sports,
+        prefer_db=True,
+        include_openings=False,
+        attach_logos=False,
+        parallel=True,
+    )
+    markets, rejected = _build_eligible_markets(candidates)
+    if not markets:
+        raise ValueError(
+            f"No eligible two-sided markets for "
+            f"{target_date.isoformat()} in "
+            f"{', '.join(sorted(selected_sports))}."
+        )
+
+    # One randomly chosen side per market; diversity is by event.
+    sides = [_sample_market_side(market, rng) for market in markets]
+    by_event: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for side in sides:
+        event_id = str(side.get("event_id") or "")
+        if not event_id:
+            continue
+        by_event[event_id].append(side)
+    event_ids = [eid for eid, rows in by_event.items() if rows]
+    if len(event_ids) < legs_n:
+        raise ValueError(
+            f"Need at least {legs_n} distinct games today to build "
+            f"this parlay; only {len(event_ids)} eligible."
+        )
+
+    best_legs: list[dict[str, Any]] | None = None
+    best_price: float | None = None
+    best_score = float("inf")
+    best_joint = -1.0
+    target_decimal = _american_to_decimal(target)
+    for _ in range(max(1, attempts)):
+        chosen_events = rng.sample(event_ids, legs_n)
+        legs = [
+            rng.choice(by_event[event_id]) for event_id in chosen_events
+        ]
+        price = _parlay_offered_american(legs)
+        if price is None:
+            continue
+        score = abs(_american_to_decimal(price) - target_decimal)
+        joint = _joint_fair_probability(legs)
+        # Prefer closer odds; break ties toward higher joint win p.
+        if score < best_score - 1e-12 or (
+            abs(score - best_score) <= 1e-12 and joint > best_joint
+        ):
+            best_score = score
+            best_joint = joint
+            best_legs = legs
+            best_price = float(price)
+            if score <= 0.02:
+                # Within ~2% decimal payout — good enough.
+                break
+
+    if not best_legs or best_price is None:
+        raise ValueError(
+            "Unable to assemble a parlay from today's markets."
+        )
+
+    parlay = _parlay_from_legs(
+        best_legs,
+        units=stake,
+        risk_label="Single",
+        exponent=1.0,
+        generated_at=generated_at,
+    )
+    parlay["slate_mode"] = _SINGLE_PARLAY_MODE
+    parlay["slate_mode_label"] = _SINGLE_PARLAY_MODE_LABEL
+    parlay["selection_method"] = "target_odds_parlay_search"
+    parlay["reason_codes"] = [
+        "single_parlay_target_odds",
+        f"legs_{legs_n}",
+        f"target_{int(round(target)):+d}",
+    ]
+    sports_used = sorted(
+        {
+            str(leg.get("sport") or "")
+            for leg in best_legs
+            if leg.get("sport")
+        }
+    )
+    return {
+        "date": target_date.isoformat(),
+        "risk": "single_parlay",
+        "risk_label": "Single Parlay",
+        "slate_mode": _SINGLE_PARLAY_MODE,
+        "slate_mode_label": _SINGLE_PARLAY_MODE_LABEL,
+        "total_units": stake,
+        "max_picks": 1,
+        "allocated_units": stake,
+        "unallocated_units": 0,
+        "unallocated_reason": None,
+        "sports": sports_used,
+        "sports_requested": sorted(selected_sports),
+        "leg_count": legs_n,
+        "target_odds": float(target),
+        "achieved_odds": float(best_price),
+        "odds_distance_decimal": round(float(best_score), 6),
+        "picks": [parlay],
+        "meta": {
+            "candidate_count": len(candidates),
+            "eligible_markets": len(markets),
+            "rejected_markets": len(rejected),
+            "selected_bets": 1,
+            "singles": 0,
+            "parlays": 1,
+            "leg_count": legs_n,
+            "target_odds": float(target),
+            "achieved_odds": float(best_price),
+            "odds_distance_decimal": round(float(best_score), 6),
+            "search_attempts": attempts,
+            "timezone": "America/New_York",
+            "selection_method": "target_odds_parlay_search",
+            "slate_mode": _SINGLE_PARLAY_MODE,
+            "slate_mode_label": _SINGLE_PARLAY_MODE_LABEL,
+            "probability_note": (
+                "Win probabilities are vig-adjusted sportsbook "
+                "implied probabilities, not InsightPilot "
+                "predictions."
+            ),
+            "parlay_probability_note": (
+                "Parlay win probability is the product of leg "
+                "market probabilities (illustrative; assumes "
+                "independence)."
+            ),
+            "pool": pool_meta,
+            "rejected": rejected[:50],
+            "seed": seed,
+            "generated_at": generated_at,
+        },
+    }
+
+
+def _parse_american_odds(raw: Any) -> float | None:
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+    else:
+        text = str(raw).strip().replace(",", "").replace(" ", "")
+        if not text or text in {"+", "-", "+-", "-+"}:
+            return None
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+    if abs(value) < 100:
+        return None
+    return value
+
+
+def _american_to_decimal(odds: float) -> float:
+    if odds > 0:
+        return 1.0 + (odds / 100.0)
+    return 1.0 + (100.0 / abs(odds))
+
+
 def _normalize_sports(sports: list[str] | None) -> set[str]:
     if not sports:
         return set(_ALL_SPORTS)

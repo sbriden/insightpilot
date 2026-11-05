@@ -179,15 +179,44 @@ function ticketToDailyPick(ticket: GuidedSlateTicket): DailyBettingPick {
   };
 }
 
+function todayEtDateIso(): string {
+  // en-CA yields YYYY-MM-DD; match backend slate_date (ET calendar day).
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function clearStoredSession() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Ignore quota / private mode failures.
+  }
+}
+
 function loadStoredSession(): GuidedSlateSession | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as GuidedSlateSession;
-    if (!parsed?.session_id) return null;
+    if (!parsed?.session_id) {
+      clearStoredSession();
+      return null;
+    }
+    // Prior-day (or dateless) sessions are not resumable — markets rotate.
+    const sessionDate = String(parsed.date || "").slice(0, 10);
+    if (!sessionDate || sessionDate !== todayEtDateIso()) {
+      clearStoredSession();
+      return null;
+    }
     return parsed;
   } catch {
+    clearStoredSession();
     return null;
   }
 }
@@ -196,7 +225,7 @@ function persistSession(session: GuidedSlateSession | null) {
   if (typeof window === "undefined") return;
   try {
     if (!session) {
-      window.localStorage.removeItem(STORAGE_KEY);
+      clearStoredSession();
       return;
     }
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
@@ -302,6 +331,16 @@ export default function GuidedMarketSlate({
     const stored = loadStoredSession();
     if (!stored) return;
     let cancelled = false;
+
+    function resetToConfig() {
+      clearStoredSession();
+      setSession(null);
+      setCurrentStep(null);
+      setCandidates([]);
+      setView("config");
+      setError(null);
+    }
+
     setSession(stored);
     const incomplete = (stored.steps || []).some(
       (step) => step.status !== "complete"
@@ -322,6 +361,12 @@ export default function GuidedMarketSlate({
             session: stored,
           });
           if (cancelled) return;
+          // Empty/stale candidate pools mean yesterday's locked picks
+          // are gone — force a clean start rather than a dead mid-flow.
+          if (!(response.candidates || []).length) {
+            resetToConfig();
+            return;
+          }
           setCandidates(response.candidates ?? []);
           setCandidateSampleSeed(Date.now() % 1_000_000_000);
           return;
@@ -338,8 +383,7 @@ export default function GuidedMarketSlate({
         setView("review");
       } catch {
         if (!cancelled) {
-          // Keep stored session; user can restart if candidates fail.
-          setView(incomplete ? "picking" : "review");
+          resetToConfig();
         }
       }
     })();

@@ -1139,6 +1139,61 @@ class DailySlateTests(unittest.TestCase):
         self.assertFalse(by_sport["NCAAF"]["available"])
         self.assertFalse(by_sport["NBA"]["available"])
 
+    def test_parse_american_odds(self):
+        self.assertEqual(mod._parse_american_odds("+250"), 250.0)
+        self.assertEqual(mod._parse_american_odds(-110), -110.0)
+        self.assertEqual(mod._parse_american_odds(" +180 "), 180.0)
+        self.assertIsNone(mod._parse_american_odds(50))
+        self.assertIsNone(mod._parse_american_odds("abc"))
+
+    def test_generate_single_parlay_hits_near_target(self):
+        pool = _two_way_pool(n_markets=12)
+        with patch.object(
+            mod,
+            "_collect_candidates",
+            return_value=(pool, {"mocked": True}),
+        ):
+            result = mod.generate_single_parlay(
+                units=5,
+                leg_count=3,
+                target_odds="+600",
+                slate_date="2026-10-24",
+                sports=["NFL"],
+                seed=7,
+                search_attempts=800,
+            )
+        self.assertEqual(result["slate_mode"], "single_parlay")
+        self.assertEqual(result["allocated_units"], 5)
+        self.assertEqual(len(result["picks"]), 1)
+        pick = result["picks"][0]
+        self.assertEqual(pick["kind"], "parlay")
+        self.assertEqual(len(pick["legs"]), 3)
+        self.assertEqual(pick["units"], 5)
+        self.assertIsNotNone(result["achieved_odds"])
+        # Distinct games.
+        events = {leg["event_id"] for leg in pick["legs"]}
+        self.assertEqual(len(events), 3)
+
+    def test_generate_single_parlay_rejects_bad_inputs(self):
+        with self.assertRaises(ValueError):
+            mod.generate_single_parlay(
+                units=0,
+                leg_count=3,
+                target_odds="+200",
+            )
+        with self.assertRaises(ValueError):
+            mod.generate_single_parlay(
+                units=5,
+                leg_count=1,
+                target_odds="+200",
+            )
+        with self.assertRaises(ValueError):
+            mod.generate_single_parlay(
+                units=5,
+                leg_count=3,
+                target_odds="oops",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

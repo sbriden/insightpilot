@@ -16,6 +16,7 @@ from app.analysis.insights.betting.portfolio import (
 )
 from app.analysis.insights.betting.daily_slate import (
     generate_daily_betting_slate,
+    generate_single_parlay,
     list_daily_sport_availability,
 )
 from app.analysis.insights.betting.guided_slate import (
@@ -48,6 +49,7 @@ __all__ = [
     "find_betting_event_by_matchup",
     "generate_betting_portfolio",
     "generate_daily_betting_slate",
+    "generate_single_parlay",
     "get_betting_event",
     "list_betting_weeks",
     "list_daily_sport_availability",

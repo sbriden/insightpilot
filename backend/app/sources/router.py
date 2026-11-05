@@ -2174,6 +2174,45 @@ def generate_nflverse_daily_betting_slate(payload: dict):
         ) from exc
 
 
+@router.post("/nflverse/betting/daily-slate/single-parlay")
+def generate_nflverse_single_parlay(payload: dict):
+    """
+    Generate one same-day parlay aiming at a target American price.
+    """
+
+    from app.analysis.insights.betting import generate_single_parlay
+
+    try:
+        seed_raw = payload.get("seed")
+        sports_raw = payload.get("sports")
+        units_raw = payload.get("units", payload.get("total_units"))
+        return generate_single_parlay(
+            units=float(units_raw or 0),
+            leg_count=int(payload.get("leg_count") or 0),
+            target_odds=payload.get("target_odds"),
+            slate_date=payload.get("date"),
+            sports=(
+                [str(item) for item in sports_raw]
+                if isinstance(sports_raw, list)
+                else None
+            ),
+            seed=(
+                int(seed_raw) if seed_raw is not None else None
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to generate single parlay: {exc}",
+        ) from exc
+
+
 def _guided_session_from_payload(payload: dict) -> dict:
     session = payload.get("session")
     if not isinstance(session, dict) or not session.get("session_id"):
