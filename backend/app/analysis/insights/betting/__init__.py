@@ -26,12 +26,23 @@ from app.analysis.insights.betting.guided_slate import (
     select_guided_pick,
     start_guided_slate,
 )
+from app.analysis.insights.betting.power_rankings import (
+    backtest_power_rankings_week,
+    build_cfb_power_rankings,
+    build_nfl_power_rankings,
+    build_power_rankings,
+    project_margin_from_power_rankings,
+)
 
 __all__ = [
     "analyze_betting_portfolio",
     "back_guided_step",
+    "backtest_power_rankings_week",
     "build_betting_results",
     "build_betting_slate",
+    "build_cfb_power_rankings",
+    "build_nfl_power_rankings",
+    "build_power_rankings",
     "confirm_guided_slate",
     "create_position_from_market",
     "find_betting_event_by_matchup",
@@ -40,6 +51,7 @@ __all__ = [
     "get_betting_event",
     "list_betting_weeks",
     "list_daily_sport_availability",
+    "project_margin_from_power_rankings",
     "replace_guided_pick",
     "review_guided_slate",
     "select_guided_pick",

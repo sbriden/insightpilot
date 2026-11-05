@@ -20,4 +20,10 @@ export const SPORTS_BETTING_ANALYSES: SportsBettingAnalysis[] = [
     description:
       "Generate a market-probability randomized daily card across sports with risk-based unit allocation and parlays.",
   },
+  {
+    id: "betting.power_rankings",
+    title: "Power Rankings",
+    description:
+      "Opponent-adjusted NFL and CFB team strength rankings with offense, defense, form, and schedule context.",
+  },
 ];

@@ -39,6 +39,7 @@ const BY_KEY: Record<string, LucideIcon> = {
   "betting.markets": LineChart,
   "betting.portfolio": Wallet,
   "betting.results": ClipboardCheck,
+  "betting.power_rankings": BarChart3,
 };
 
 const BY_RUNTIME: Record<string, LucideIcon> = {

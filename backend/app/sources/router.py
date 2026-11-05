@@ -2010,6 +2010,95 @@ def generate_nflverse_betting_portfolio(payload: dict):
         ) from exc
 
 
+@router.get("/nflverse/betting/power-rankings")
+def get_power_rankings(
+    sport: str = "NFL",
+    season: int | None = None,
+    week: int | None = None,
+    persist: bool = False,
+    half_life_weeks: float = 5.0,
+    prior_k: float = 5.0,
+):
+    """
+    Team power rankings (opponent-adjusted, recency-weighted).
+
+    Supports ``sport=NFL`` or ``sport=CFB``. Independent of sportsbook
+    prices. ``week`` is the slate week to exclude (ratings use only
+    completed games before that week).
+    """
+
+    from app.analysis.insights.betting import build_power_rankings
+    from app.analysis.insights.betting import list_betting_weeks
+    from app.analysis.insights.betting.betting_sport import (
+        normalize_betting_sport,
+    )
+
+    try:
+        sport_id = normalize_betting_sport(sport)
+        if season is None:
+            weeks_payload = list_betting_weeks(sport=sport_id)
+            season = int(
+                weeks_payload.get("season")
+                or weeks_payload.get("current_season")
+                or 0
+            )
+            if week is None:
+                week = weeks_payload.get("current_week") or weeks_payload.get(
+                    "week"
+                )
+        if not season:
+            raise ValueError(f"A valid {sport_id} season is required.")
+        return build_power_rankings(
+            sport=sport_id,
+            season=int(season),
+            week=int(week) if week is not None else None,
+            half_life_weeks=float(half_life_weeks),
+            prior_k=float(prior_k),
+            persist=bool(persist),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to build power rankings: {exc}",
+        ) from exc
+
+
+@router.get("/nflverse/betting/power-rankings/backtest")
+def backtest_power_rankings(
+    season: int,
+    week: int,
+    sport: str = "NFL",
+    half_life_weeks: float = 5.0,
+    prior_k: float = 5.0,
+):
+    """Chronological margin backtest for one week."""
+
+    from app.analysis.insights.betting import backtest_power_rankings_week
+    from app.analysis.insights.betting.betting_sport import (
+        normalize_betting_sport,
+    )
+
+    try:
+        return backtest_power_rankings_week(
+            season=int(season),
+            week=int(week),
+            sport=normalize_betting_sport(sport),
+            half_life_weeks=float(half_life_weeks),
+            prior_k=float(prior_k),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to backtest power rankings: {exc}",
+        ) from exc
+
+
 @router.get("/nflverse/betting/daily-slate/sports")
 def list_nflverse_daily_betting_sports(date: str | None = None):
     """

@@ -248,6 +248,19 @@ export const ANALYSIS_REGISTRY: RegistryAnalysis[] = [
     supported_context: ["game", "market", "week"],
     status: "available",
   },
+  {
+    analysis_key: "betting.power_rankings",
+    name: "Power Rankings",
+    description:
+      "Opponent-adjusted NFL and CFB team strength rankings with offense, defense, form, and schedule context — independent of sportsbook prices.",
+    data_product_id: "sports_betting",
+    data_product_label: "Sports Betting",
+    category: "Betting",
+    runtime: "sports_betting",
+    view: "power_rankings",
+    supported_context: ["team", "week", "season"],
+    status: "available",
+  },
 ];
 
 /** Earlier apps stored Player Overview as one analysis with inner tabs. */

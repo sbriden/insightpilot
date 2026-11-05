@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import {
   BarChart3,
   Check,
@@ -219,7 +219,13 @@ function applyResponse(
   persistSession(response.session);
 }
 
-export default function GuidedMarketSlate() {
+export default function GuidedMarketSlate({
+  dateLabel,
+  modeSwitcher,
+}: {
+  dateLabel?: string;
+  modeSwitcher?: ReactNode;
+} = {}) {
   const [ticketCount, setTicketCount] = useState(6);
   const [totalExposure, setTotalExposure] = useState(30);
   const [stakeDisplay, setStakeDisplay] =
@@ -527,23 +533,19 @@ export default function GuidedMarketSlate() {
   const showingConfig = view === "config" && !session;
 
   return (
-    <div className="grid w-full gap-5 lg:grid-cols-[minmax(280px,22rem)_minmax(0,1fr)] lg:items-start lg:gap-6">
-      <div className="space-y-5 lg:sticky lg:top-4">
+    <div className="grid w-full gap-5 lg:grid-cols-[minmax(280px,22rem)_minmax(0,1fr)] lg:items-stretch lg:gap-6">
+      <div className="space-y-5 lg:sticky lg:top-4 lg:self-start">
         <header>
           <p
             className="text-xs font-semibold uppercase tracking-[0.18em]"
             style={{ color: snapshotTokens.textMuted }}
           >
-            Guided Market Slate
-          </p>
-          <p
-            className="mt-1 text-sm"
-            style={{ color: snapshotTokens.textSecondary }}
-          >
-            Step through odds-based requirements. No model edge
-            ranking.
+            Daily slate
+            {dateLabel ? ` · ${dateLabel}` : ""}
           </p>
         </header>
+
+        {modeSwitcher}
 
         {(showingConfig || view === "config") && !session ? (
           <section
@@ -845,7 +847,7 @@ export default function GuidedMarketSlate() {
         )}
       </div>
 
-      <div className="min-w-0 space-y-3">
+      <div className="flex min-w-0 flex-col space-y-3 lg:h-full">
         {error ? (
           <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
             {error}
@@ -854,7 +856,7 @@ export default function GuidedMarketSlate() {
 
         {!session && !loading && !error ? (
           <div
-            className="rounded-2xl border border-dashed px-4 py-10 text-center text-sm"
+            className="flex flex-1 items-center justify-center rounded-2xl border border-dashed px-4 py-10 text-center text-sm"
             style={{
               borderColor: snapshotTokens.border,
               color: snapshotTokens.textMuted,

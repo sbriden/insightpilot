@@ -214,20 +214,22 @@ export default function DailyBetSlate() {
     }
   }
 
+  const modeToggle = (
+    <ModeToggle mode={mode} onChange={setMode} />
+  );
+
   if (mode === "guided") {
     return (
-      <div className="space-y-4">
-        <ModeToggle mode={mode} onChange={setMode} />
-        <GuidedMarketSlate />
-      </div>
+      <GuidedMarketSlate
+        dateLabel={dateLabel}
+        modeSwitcher={modeToggle}
+      />
     );
   }
 
   return (
-    <div className="space-y-4">
-    <ModeToggle mode={mode} onChange={setMode} />
-    <div className="grid w-full gap-5 lg:grid-cols-[minmax(280px,22rem)_minmax(0,1fr)] lg:items-start lg:gap-6">
-      <div className="space-y-5 lg:sticky lg:top-4">
+    <div className="grid w-full gap-5 lg:grid-cols-[minmax(280px,22rem)_minmax(0,1fr)] lg:items-stretch lg:gap-6">
+      <div className="space-y-5 lg:sticky lg:top-4 lg:self-start">
       <header>
         <p
           className="text-xs font-semibold uppercase tracking-[0.18em]"
@@ -236,6 +238,8 @@ export default function DailyBetSlate() {
           Daily slate · {dateLabel}
         </p>
       </header>
+
+      {modeToggle}
 
       <section
         className="space-y-4 rounded-2xl border bg-white p-4 sm:p-5"
@@ -584,7 +588,7 @@ export default function DailyBetSlate() {
       </section>
       </div>
 
-      <div className="min-w-0 space-y-3">
+      <div className="flex min-w-0 flex-col space-y-3 lg:h-full">
       {error ? (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           {error}
@@ -593,7 +597,7 @@ export default function DailyBetSlate() {
 
       {!result && !loading && !error ? (
         <div
-          className="rounded-2xl border border-dashed px-4 py-10 text-center text-sm lg:flex lg:min-h-[16rem] lg:items-center lg:justify-center"
+          className="flex flex-1 items-center justify-center rounded-2xl border border-dashed px-4 py-10 text-center text-sm"
           style={{
             borderColor: snapshotTokens.border,
             color: snapshotTokens.textMuted,
@@ -719,7 +723,6 @@ export default function DailyBetSlate() {
       ) : null}
       </div>
     </div>
-    </div>
   );
 }
 
@@ -732,7 +735,7 @@ function ModeToggle({
 }) {
   return (
     <div
-      className="grid grid-cols-2 gap-1 rounded-xl p-1 sm:max-w-md"
+      className="grid w-full grid-cols-2 gap-1 rounded-xl p-1"
       style={{ background: snapshotTokens.background }}
       role="radiogroup"
       aria-label="Slate mode"

@@ -7,6 +7,7 @@ import DailyFantasyAnalyzer from "@/components/fantasy/dfs/DailyFantasyAnalyzer"
 import PlayerAnalysisRuntime from "@/components/applications/PlayerAnalysisRuntime";
 import { useAppTheme } from "@/components/applications/ApplicationThemeContext";
 import DailyBetSlate from "@/components/betting/DailyBetSlate";
+import PowerRankings from "@/components/betting/PowerRankings";
 import SportsBettingAnalyzer from "@/components/betting/SportsBettingAnalyzer";
 import { appTheme as defaultAppTheme } from "@/components/applications/appTheme";
 import {
@@ -104,6 +105,9 @@ function RuntimeBody({ analysis }: { analysis: RegistryAnalysis }) {
     // workspace so the generator paints immediately.
     if (view === "daily") {
       return <DailyBetSlate />;
+    }
+    if (view === "power_rankings") {
+      return <PowerRankings />;
     }
     const tab =
       view === "games" ||

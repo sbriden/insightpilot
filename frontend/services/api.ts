@@ -3409,6 +3409,114 @@ export async function listBettingWeeks(
   return handleResponse(response);
 }
 
+export interface PowerRankingTeam {
+  team_id: string;
+  team_abbreviation?: string;
+  team_name?: string;
+  conference?: string;
+  sport?: string;
+  logo_url?: string | null;
+  season: number;
+  week: number;
+  rank: number;
+  previous_rank?: number | null;
+  rank_change?: number | null;
+  overall_power_rating: number;
+  offensive_rating: number;
+  defensive_rating: number;
+  special_teams_rating: number;
+  baseline_power_rating: number;
+  current_adjusted_rating: number;
+  personnel_adjustment?: number;
+  form_adjustment?: number;
+  sos_adjustment?: number;
+  record_adjustment?: number;
+  wins?: number;
+  losses?: number;
+  ties?: number;
+  win_pct?: number;
+  recent_form?: number;
+  strength_of_schedule?: number;
+  confidence?: number;
+  effective_games?: number;
+  rating_trend?: number | null;
+  explanation?: string;
+  calculation_version?: string;
+  calculated_at?: string;
+}
+
+/** @deprecated Prefer PowerRankingTeam */
+export type NflPowerRankingTeam = PowerRankingTeam;
+
+export interface PowerRankingsResult {
+  sport: string;
+  season: number;
+  week: number;
+  before_week?: number | null;
+  team_count: number;
+  games_used?: number;
+  league_avg_ppg?: number;
+  home_field_advantage?: number;
+  half_life_weeks?: number;
+  prior_k?: number;
+  opponent_adjustment_iterations?: number;
+  calculation_version?: string;
+  calculated_at?: string;
+  data_limitations?: string[];
+  metric_definitions?: Array<Record<string, string>>;
+  rankings: PowerRankingTeam[];
+  error?: string;
+}
+
+/** @deprecated Prefer PowerRankingsResult */
+export type NflPowerRankingsResult = PowerRankingsResult;
+
+export async function getPowerRankings(options?: {
+  sport?: BettingSport | string | null;
+  season?: number | null;
+  week?: number | null;
+  persist?: boolean;
+  half_life_weeks?: number;
+  prior_k?: number;
+}): Promise<PowerRankingsResult> {
+  const params = new URLSearchParams();
+  params.set("sport", options?.sport ?? "NFL");
+  if (options?.season != null) {
+    params.set("season", String(options.season));
+  }
+  if (options?.week != null) {
+    params.set("week", String(options.week));
+  }
+  if (options?.persist) {
+    params.set("persist", "true");
+  }
+  if (options?.half_life_weeks != null) {
+    params.set("half_life_weeks", String(options.half_life_weeks));
+  }
+  if (options?.prior_k != null) {
+    params.set("prior_k", String(options.prior_k));
+  }
+  const query = params.toString();
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/sources/nflverse/betting/power-rankings${
+      query ? `?${query}` : ""
+    }`,
+    { cache: "no-store" }
+  );
+  return handleResponse(response);
+}
+
+/** @deprecated Prefer getPowerRankings */
+export async function getNflPowerRankings(options?: {
+  season?: number | null;
+  week?: number | null;
+  persist?: boolean;
+  half_life_weeks?: number;
+  prior_k?: number;
+}): Promise<PowerRankingsResult> {
+  return getPowerRankings({ ...options, sport: "NFL" });
+}
+
 export async function getBettingSlate(options?: {
   season?: number | null;
   week?: number | null;

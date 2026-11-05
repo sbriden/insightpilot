@@ -229,6 +229,26 @@ class ScoresandoddsNormalizeTests(unittest.TestCase):
             sao.logo_slug_for_abbr("ncaab", "ARIZ"),
             "ari",
         )
+        self.assertEqual(
+            sao.logo_slug_for_abbr("ncaaf", "WAKE"),
+            "wf",
+        )
+        self.assertEqual(
+            sao.logo_slug_for_abbr("ncaaf", "JMU"),
+            "jmu_n",
+        )
+        self.assertEqual(
+            sao.logo_slug_for_abbr("ncaaf", "BOIS"),
+            "boise",
+        )
+        self.assertEqual(
+            sao.logo_slug_for_abbr("ncaaf", "NU"),
+            "nw",
+        )
+        self.assertEqual(
+            sao.logo_slug_for_abbr("ncaaf", "CONN"),
+            "uconn",
+        )
 
     def test_abbr_aliases_map_to_dim_team(self):
         self.assertEqual(sao.canonical_abbr("BAMA"), "ALA")

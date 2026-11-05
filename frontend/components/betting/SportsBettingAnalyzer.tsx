@@ -20,6 +20,7 @@ import BettingGameCard from "@/components/betting/BettingGameCard";
 import MarketOpportunityTable from "@/components/betting/MarketOpportunityTable";
 import ModelVsMarket from "@/components/betting/ModelVsMarket";
 import DailyBetSlate from "@/components/betting/DailyBetSlate";
+import PowerRankings from "@/components/betting/PowerRankings";
 import BettingPortfolio from "@/components/betting/portfolio/BettingPortfolio";
 import BettingResults from "@/components/betting/portfolio/BettingResults";
 import { snapshotTokens } from "@/components/fantasy/snapshot/tokens";
@@ -34,6 +35,7 @@ import {
 
 type WorkspaceTab =
   | "daily"
+  | "power_rankings"
   | "overview"
   | "games"
   | "markets"
@@ -52,6 +54,7 @@ type ConfidenceFilter = "all" | "High" | "Moderate" | "Low";
 
 const TABS: Array<{ id: WorkspaceTab; label: string }> = [
   { id: "daily", label: "Daily" },
+  { id: "power_rankings", label: "Power Rankings" },
   { id: "overview", label: "Overview" },
   { id: "games", label: "Games" },
   { id: "markets", label: "Markets" },
@@ -97,9 +100,9 @@ export default function SportsBettingAnalyzer({
   }, [initialTab]);
 
   useEffect(() => {
-    // Daily Bet Slate does not use the week / model-slate board.
-    // Skip that work so the daily generator can open immediately.
-    if (tab === "daily") {
+    // Daily / Power Rankings do not use the week / model-slate board.
+    // Skip that work so those views can open immediately.
+    if (tab === "daily" || tab === "power_rankings") {
       setLoading(false);
       setError(null);
       return;
@@ -265,8 +268,10 @@ export default function SportsBettingAnalyzer({
   }
 
   const isDailyTab = tab === "daily";
+  const isPowerRankingsTab = tab === "power_rankings";
+  const usesSlateBoard = !isDailyTab && !isPowerRankingsTab;
   const showTitle = useShowAnalysisTitle();
-  const showSportControls = !isDailyTab;
+  const showSportControls = usesSlateBoard;
   const showHeaderChrome =
     showTitle || showSportControls || !hideTabBar;
 
@@ -290,9 +295,11 @@ export default function SportsBettingAnalyzer({
             >
               {isDailyTab
                 ? "Daily Bet Slate"
-                : sport === "CFB"
-                  ? "CFB Market Analysis"
-                  : "NFL Market Analysis"}
+                : isPowerRankingsTab
+                  ? "Power Rankings"
+                  : sport === "CFB"
+                    ? "CFB Market Analysis"
+                    : "NFL Market Analysis"}
             </h2>
             <p
               className="mt-1 max-w-2xl text-sm"
@@ -300,7 +307,9 @@ export default function SportsBettingAnalyzer({
             >
               {isDailyTab
                 ? "Generate a same-day multi-sport card from units and risk."
-                : "Compare what the market is pricing with what InsightPilot expects — and where those differ."}
+                : isPowerRankingsTab
+                  ? "Opponent-adjusted team strength independent of sportsbook prices."
+                  : "Compare what the market is pricing with what InsightPilot expects — and where those differ."}
             </p>
           </div>
           ) : (
@@ -383,14 +392,15 @@ export default function SportsBettingAnalyzer({
       ) : null}
 
       {isDailyTab ? <DailyBetSlate /> : null}
+      {isPowerRankingsTab ? <PowerRankings /> : null}
 
-      {!isDailyTab && error ? (
+      {usesSlateBoard && error ? (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           {error}
         </div>
       ) : null}
 
-      {!isDailyTab && loading ? (
+      {usesSlateBoard && loading ? (
         <div
           className="rounded-xl border bg-white px-5 py-10 text-sm"
           style={{
@@ -402,7 +412,7 @@ export default function SportsBettingAnalyzer({
         </div>
       ) : null}
 
-      {!isDailyTab && !loading && slate ? (
+      {usesSlateBoard && !loading && slate ? (
         <>
           {(tab === "overview" || tab === "games" || tab === "markets") && (
             <SlateSummaryBar slate={slate} />
